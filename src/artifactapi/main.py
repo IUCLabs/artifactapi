@@ -23,7 +23,10 @@ class ArtifactRequest(BaseModel):
 app = FastAPI(title="Artifact Storage API", version="2.0.0")
 
 # Initialize components using config
-config = ConfigManager("remotes.yaml")
+config_path = os.environ.get("CONFIG_PATH")
+if not config_path:
+    raise ValueError("CONFIG_PATH environment variable is required")
+config = ConfigManager(config_path)
 
 # Get configurations
 s3_config = config.get_s3_config()

@@ -9,6 +9,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - CONFIG_PATH=/app/remotes.yaml
       - DBHOST=postgres
       - DBPORT=5432
       - DBUSER=artifacts

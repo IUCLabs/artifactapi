@@ -2,6 +2,7 @@ import os
 import hashlib
 from urllib.parse import urlparse
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
@@ -26,6 +27,10 @@ class S3Storage:
             endpoint_url=f"http{'s' if self.secure else ''}://{self.endpoint}",
             aws_access_key_id=self.access_key,
             aws_secret_access_key=self.secret_key,
+            config=Config(
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required"
+            )
         )
 
         # Try to ensure bucket exists, but don't fail if MinIO isn't ready yet

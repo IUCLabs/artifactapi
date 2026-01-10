@@ -24,7 +24,7 @@ class RedisCache:
             or file_path.endswith("Packages.gz")
             or file_path.endswith("repomd.xml")
             or "repodata/" in file_path
-            and file_path.endswith((".xml", ".xml.gz", ".xml.bz2", ".xml.xz"))
+            and file_path.endswith((".xml", ".xml.gz", ".xml.bz2", ".xml.xz", ".xml.zck", ".xml.zst"))
         )
 
     def get_index_cache_key(self, remote_name: str, path: str) -> str:

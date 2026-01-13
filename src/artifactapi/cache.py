@@ -66,9 +66,21 @@ class RedisCache:
             return
 
         try:
-            # Get the S3 key and remove it
-            s3_key = storage.get_object_key_from_path(remote_name, path)
-            if storage.exists(s3_key):
-                storage.client.delete_object(Bucket=storage.bucket, Key=s3_key)
+            # Construct the URL the same way as in the main flow
+            from .config import ConfigManager
+            import os
+            config_path = os.environ.get("CONFIG_PATH")
+            if config_path:
+                config = ConfigManager(config_path)
+                remote_config = config.get_remote_config(remote_name)
+                if remote_config:
+                    base_url = remote_config.get("base_url")
+                    if base_url:
+                        # Construct URL the same way as construct_remote_url
+                        remote_url = f"{base_url.rstrip('/')}/{path}"
+                        # Use URL-based key (same as cache_single_artifact)
+                        s3_key = storage.get_object_key(remote_url)
+                        if storage.exists(s3_key):
+                            storage.client.delete_object(Bucket=storage.bucket, Key=s3_key)
         except Exception:
             pass

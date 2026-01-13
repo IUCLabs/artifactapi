@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Artifact Storage API", version="2.0.1")
+app = FastAPI(title="Artifact Storage API", version="2.0.2")
 
 # Initialize components using config
 config_path = os.environ.get("CONFIG_PATH")
@@ -61,6 +61,81 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "healthy"}
+
+
+@app.put("/cache/flush")
+def flush_cache(
+    remote: str = Query(default=None, description="Specific remote to flush (optional)"),
+    cache_type: str = Query(default="all", description="Type to flush: 'all', 'index', 'files', 'metrics'")
+):
+    """Flush cache entries for specified remote or all remotes"""
+    try:
+        result = {
+            "remote": remote,
+            "cache_type": cache_type,
+            "flushed": {
+                "redis_keys": 0,
+                "s3_objects": 0,
+                "operations": []
+            }
+        }
+
+        # Flush Redis entries based on cache_type
+        if cache_type in ["all", "index", "metrics"] and cache.available and cache.client:
+            patterns = []
+
+            if cache_type in ["all", "index"]:
+                if remote:
+                    patterns.append(f"index:{remote}:*")
+                else:
+                    patterns.append("index:*")
+
+            if cache_type in ["all", "metrics"]:
+                if remote:
+                    patterns.append(f"metrics:*:{remote}")
+                else:
+                    patterns.append("metrics:*")
+
+            for pattern in patterns:
+                keys = cache.client.keys(pattern)
+                if keys:
+                    cache.client.delete(*keys)
+                    result["flushed"]["redis_keys"] += len(keys)
+                    logger.info(f"Cache flush: Deleted {len(keys)} Redis keys matching '{pattern}'")
+
+            if result["flushed"]["redis_keys"] > 0:
+                result["flushed"]["operations"].append(f"Deleted {result['flushed']['redis_keys']} Redis keys")
+
+        # Flush S3 objects if requested
+        if cache_type in ["all", "files"]:
+            try:
+                response = storage.client.list_objects_v2(Bucket=storage.bucket)
+                if 'Contents' in response:
+                    objects_to_delete = [obj['Key'] for obj in response['Contents']]
+
+                    for key in objects_to_delete:
+                        try:
+                            storage.client.delete_object(Bucket=storage.bucket, Key=key)
+                            result["flushed"]["s3_objects"] += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to delete S3 object {key}: {e}")
+
+                    if objects_to_delete:
+                        result["flushed"]["operations"].append(f"Deleted {len(objects_to_delete)} S3 objects")
+                        logger.info(f"Cache flush: Deleted {len(objects_to_delete)} S3 objects")
+
+            except Exception as e:
+                result["flushed"]["operations"].append(f"S3 flush failed: {str(e)}")
+                logger.error(f"Cache flush S3 error: {e}")
+
+        if not result["flushed"]["operations"]:
+            result["flushed"]["operations"].append("No cache entries found to flush")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Cache flush error: {e}")
+        raise HTTPException(status_code=500, detail=f"Cache flush failed: {str(e)}")
 
 
 async def construct_remote_url(remote_name: str, path: str) -> str:
@@ -204,7 +279,7 @@ async def get_artifact(remote_name: str, path: str):
 
     # For index files, check Redis TTL validity
     filename = os.path.basename(path)
-    is_index = cache.is_index_file(filename)
+    is_index = cache.is_index_file(path)  # Check full path, not just filename
 
     if cached_key and is_index:
         # Index file exists, but check if it's still valid

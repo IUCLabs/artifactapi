@@ -23,8 +23,13 @@ class RedisCache:
             file_path.endswith("APKINDEX.tar.gz")
             or file_path.endswith("Packages.gz")
             or file_path.endswith("repomd.xml")
-            or "repodata/" in file_path
-            and file_path.endswith((".xml", ".xml.gz", ".xml.bz2", ".xml.xz", ".xml.zck", ".xml.zst"))
+            or ("repodata/" in file_path
+                and file_path.endswith((
+                    ".xml", ".xml.gz", ".xml.bz2", ".xml.xz", ".xml.zck", ".xml.zst",
+                    ".sqlite", ".sqlite.gz", ".sqlite.bz2", ".sqlite.xz", ".sqlite.zck", ".sqlite.zst",
+                    ".yaml.xz", ".yaml.gz", ".yaml.bz2", ".yaml.zst",
+                    ".asc", ".txt"
+                )))
         )
 
     def get_index_cache_key(self, remote_name: str, path: str) -> str:

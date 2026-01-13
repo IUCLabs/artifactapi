@@ -37,6 +37,7 @@ RUN uv sync --frozen
 # Copy application source
 COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser remotes.yaml ./
+COPY --chown=appuser:appuser ca-bundle.pem ./
 
 # Expose port
 EXPOSE 8000

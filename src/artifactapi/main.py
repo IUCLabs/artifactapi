@@ -1,6 +1,7 @@
 import os
 import re
 import hashlib
+import logging
 from typing import Dict, Any, Optional
 import httpx
 from fastapi import FastAPI, HTTPException, Response, Query, File, UploadFile
@@ -20,7 +21,14 @@ class ArtifactRequest(BaseModel):
     include_pattern: str
 
 
-app = FastAPI(title="Artifact Storage API", version="2.0.0")
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Artifact Storage API", version="2.0.1")
 
 # Initialize components using config
 config_path = os.environ.get("CONFIG_PATH")
@@ -45,7 +53,7 @@ def read_root():
     config._check_reload()
     return {
         "message": "Artifact Storage API",
-        "version": "2.0.0",
+        "version": app.version,
         "remotes": list(config.config.get("remotes", {}).keys()),
     }
 
@@ -105,6 +113,7 @@ async def cache_single_artifact(url: str, remote_name: str, path: str) -> dict:
         key = storage.get_object_key_from_path(remote_name, path)
 
     if storage.exists(key):
+        logger.info(f"Cache ALREADY EXISTS: {url} (key: {key})")
         return {
             "url": url,
             "cached_url": storage.get_url(key),
@@ -117,6 +126,8 @@ async def cache_single_artifact(url: str, remote_name: str, path: str) -> dict:
             response.raise_for_status()
 
             storage_path = storage.upload(key, response.content)
+
+            logger.info(f"Cache ADD SUCCESS: {url} (size: {len(response.content)} bytes, key: {key})")
 
             return {
                 "url": url,
@@ -173,6 +184,7 @@ async def get_artifact(remote_name: str, path: str):
 
     # Check if artifact matches configured patterns
     if not await check_artifact_patterns(remote_name, repo_path, file_path, path):
+        logger.info(f"PATTERN BLOCKED: {remote_name}/{path} - not matching include patterns")
         raise HTTPException(
             status_code=403, detail="Artifact not allowed by configuration patterns"
         )
@@ -198,6 +210,7 @@ async def get_artifact(remote_name: str, path: str):
         # Index file exists, but check if it's still valid
         if not cache.is_index_valid(remote_name, path):
             # Index has expired, remove it from S3
+            logger.info(f"Index EXPIRED: {remote_name}/{path} - removing from cache")
             cache.cleanup_expired_index(storage, remote_name, path)
             cached_key = None  # Force re-download
 
@@ -206,6 +219,9 @@ async def get_artifact(remote_name: str, path: str):
         try:
             artifact_data = storage.download_object(cached_key)
             filename = os.path.basename(path)
+
+            # Log cache hit
+            logger.info(f"Cache HIT: {remote_name}/{path} (size: {len(artifact_data)} bytes, key: {cached_key})")
 
             # Determine content type based on file extension
             content_type = "application/octet-stream"
@@ -245,9 +261,11 @@ async def get_artifact(remote_name: str, path: str):
             )
 
     # Artifact not cached, cache it first
+    logger.info(f"Cache MISS: {remote_name}/{path} - fetching from remote: {remote_url}")
     result = await cache_single_artifact(remote_url, remote_name, path)
 
     if result["status"] == "error":
+        logger.error(f"Cache ADD FAILED: {remote_name}/{path} - {result['error']}")
         raise HTTPException(
             status_code=502, detail=f"Failed to fetch artifact: {result['error']}"
         )
@@ -258,6 +276,7 @@ async def get_artifact(remote_name: str, path: str):
         cache_config = config.get_cache_config(remote_name)
         index_ttl = cache_config.get("index_ttl", 300)  # Default 5 minutes
         cache.mark_index_cached(remote_name, path, index_ttl)
+        logger.info(f"Index file cached with TTL: {remote_name}/{path} (ttl: {index_ttl}s)")
 
     # Now return the cached artifact
     try:

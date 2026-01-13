@@ -1,6 +1,6 @@
 [project]
 name = "artifactapi"
-version = "2.0.1"
+version = "2.0.2"
 description = "Generic artifact caching system with support for various package managers"
 
 dependencies = [

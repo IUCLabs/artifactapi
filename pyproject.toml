@@ -1,6 +1,6 @@
 [project]
 name = "artifactapi"
-version = "2.0.2"
+version = "2.0.4"
 description = "Generic artifact caching system with support for various package managers"
 
 dependencies = [
@@ -40,4 +40,11 @@ dev = [
     "isort>=5.12.0",
     "mypy>=1.6.0",
     "ruff>=0.1.0",
+    "bump-my-version>=1.2.0",
 ]
+
+[tool.bumpversion]
+current_version = "2.0.4"
+commit = true
+tag = true
+message = "Bump version: {current_version} → {new_version}"

@@ -76,10 +76,8 @@ class RedisCache:
                 if remote_config:
                     base_url = remote_config.get("base_url")
                     if base_url:
-                        # Construct URL the same way as construct_remote_url
-                        remote_url = f"{base_url.rstrip('/')}/{path}"
-                        # Use URL-based key (same as cache_single_artifact)
-                        s3_key = storage.get_object_key(remote_url)
+                        # Use hierarchical path-based key (same as cache_single_artifact)
+                        s3_key = storage.get_object_key(remote_name, path)
                         if storage.exists(s3_key):
                             storage.client.delete_object(Bucket=storage.bucket, Key=s3_key)
         except Exception:

@@ -1,6 +1,5 @@
 import os
 import hashlib
-from urllib.parse import urlparse
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -55,17 +54,19 @@ class S3Storage:
         except ClientError:
             self.client.create_bucket(Bucket=self.bucket)
 
-    def get_object_key(self, url: str) -> str:
-        url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
-        parsed = urlparse(url)
-        filename = os.path.basename(parsed.path)
-        return f"{parsed.netloc}/{url_hash}/{filename}"
+    def get_object_key(self, remote_name: str, path: str) -> str:
+        # Extract directory path and filename
+        clean_path = path.lstrip('/')
+        filename = os.path.basename(clean_path)
+        directory_path = os.path.dirname(clean_path)
 
-    def get_object_key_from_path(self, remote_name: str, path: str) -> str:
-        # Create a key based on the API path for direct access
-        path_hash = hashlib.sha256(path.encode()).hexdigest()[:16]
-        filename = os.path.basename(path)
-        return f"{remote_name}/{path_hash}/{filename}"
+        # Hash the directory path to keep keys manageable while preserving remote structure
+        if directory_path:
+            path_hash = hashlib.sha256(directory_path.encode()).hexdigest()[:16]
+            return f"{remote_name}/{path_hash}/{filename}"
+        else:
+            # If no directory, just use remote and filename
+            return f"{remote_name}/{filename}"
 
     def exists(self, key: str) -> bool:
         try:

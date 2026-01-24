@@ -40,4 +40,18 @@ dev = [
     "isort>=5.12.0",
     "mypy>=1.6.0",
     "ruff>=0.1.0",
+    "bumpver>=2025.1131",
 ]
+
+[tool.bumpver]
+current_version = "2.0.2"
+version_pattern = "MAJOR.MINOR.PATCH"
+commit_message = "Bump version {old_version} → {new_version}"
+commit = true
+tag = true
+push = false
+
+[[tool.bumpver.files]]
+filename = "pyproject.toml"
+search = 'version = "{current_version}"'
+replace = 'version = "{new_version}"'

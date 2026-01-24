@@ -9,6 +9,13 @@ from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
+try:
+    from importlib.metadata import version
+    __version__ = version("artifactapi")
+except ImportError:
+    # Fallback for development when package isn't installed
+    __version__ = "dev"
+
 from .config import ConfigManager
 from .database import DatabaseManager
 from .storage import S3Storage
@@ -28,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Artifact Storage API", version="2.0.2")
+app = FastAPI(title="Artifact Storage API", version=__version__)
 
 # Initialize components using config
 config_path = os.environ.get("CONFIG_PATH")
@@ -181,11 +188,8 @@ async def check_artifact_patterns(
 
 
 async def cache_single_artifact(url: str, remote_name: str, path: str) -> dict:
-    # Check if using URL-based key or path-based key
-    if url.startswith("http"):
-        key = storage.get_object_key(url)
-    else:
-        key = storage.get_object_key_from_path(remote_name, path)
+    # Use hierarchical path-based key
+    key = storage.get_object_key(remote_name, path)
 
     if storage.exists(key):
         logger.info(f"Cache ALREADY EXISTS: {url} (key: {key})")
@@ -267,15 +271,10 @@ async def get_artifact(remote_name: str, path: str):
     # Construct the remote URL
     remote_url = await construct_remote_url(remote_name, path)
 
-    # Check if artifact is already cached (try both URL and path-based keys)
-    url_key = storage.get_object_key(remote_url)
-    path_key = storage.get_object_key_from_path(remote_name, path)
-
-    cached_key = None
-    if storage.exists(url_key):
-        cached_key = url_key
-    elif storage.exists(path_key):
-        cached_key = path_key
+    # Check if artifact is already cached
+    cached_key = storage.get_object_key(remote_name, path)
+    if not storage.exists(cached_key):
+        cached_key = None
 
     # For index files, check Redis TTL validity
     filename = os.path.basename(path)
@@ -355,7 +354,7 @@ async def get_artifact(remote_name: str, path: str):
 
     # Now return the cached artifact
     try:
-        cache_key = storage.get_object_key(remote_url)
+        cache_key = storage.get_object_key(remote_name, path)
         artifact_data = storage.download_object(cache_key)
         filename = os.path.basename(path)
 
@@ -377,7 +376,7 @@ async def get_artifact(remote_name: str, path: str):
         metrics.record_cache_miss(remote_name, len(artifact_data))
 
         # Record artifact mapping in database
-        cache_key = storage.get_object_key(remote_url)
+        cache_key = storage.get_object_key(remote_name, path)
         database.record_artifact_mapping(
             cache_key, remote_name, path, len(artifact_data)
         )
@@ -625,7 +624,11 @@ async def list_cached_artifacts(
 
         cached_artifacts = []
         for url in matching_urls:
-            key = storage.get_object_key(url)
+            # Extract path from URL for hierarchical key generation
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            path = parsed.path
+            key = storage.get_object_key(remote, path)
             if storage.exists(key):
                 cached_artifacts.append(
                     {"url": url, "cached_url": storage.get_url(key), "key": key}

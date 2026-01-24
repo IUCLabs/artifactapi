@@ -45,3 +45,7 @@ uv.lock
 
 # Docker volumes
 minio_data/
+
+# Local configuration overrides
+docker-compose.yml
+ca-bundle.pem

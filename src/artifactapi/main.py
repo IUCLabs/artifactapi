@@ -116,7 +116,12 @@ def flush_cache(
         # Flush S3 objects if requested
         if cache_type in ["all", "files"]:
             try:
-                response = storage.client.list_objects_v2(Bucket=storage.bucket)
+                # Use prefix filtering for remote-specific deletion
+                list_params = {"Bucket": storage.bucket}
+                if remote:
+                    list_params["Prefix"] = f"{remote}/"
+
+                response = storage.client.list_objects_v2(**list_params)
                 if 'Contents' in response:
                     objects_to_delete = [obj['Key'] for obj in response['Contents']]
 
@@ -128,8 +133,9 @@ def flush_cache(
                             logger.warning(f"Failed to delete S3 object {key}: {e}")
 
                     if objects_to_delete:
-                        result["flushed"]["operations"].append(f"Deleted {len(objects_to_delete)} S3 objects")
-                        logger.info(f"Cache flush: Deleted {len(objects_to_delete)} S3 objects")
+                        scope = f" for remote '{remote}'" if remote else ""
+                        result["flushed"]["operations"].append(f"Deleted {len(objects_to_delete)} S3 objects{scope}")
+                        logger.info(f"Cache flush: Deleted {len(objects_to_delete)} S3 objects{scope}")
 
             except Exception as e:
                 result["flushed"]["operations"].append(f"S3 flush failed: {str(e)}")

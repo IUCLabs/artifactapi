@@ -1,6 +1,6 @@
 [project]
 name = "artifactapi"
-version = "2.0.4"
+version = "2.0.5"
 description = "Generic artifact caching system with support for various package managers"
 
 dependencies = [
@@ -44,7 +44,7 @@ dev = [
 ]
 
 [tool.bumpversion]
-current_version = "2.0.4"
+current_version = "2.0.5"
 commit = true
 tag = true
 message = "Bump version: {current_version} → {new_version}"

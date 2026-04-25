@@ -167,7 +167,7 @@ async def construct_remote_url(remote_name: str, path: str) -> str:
         )
 
     # Handle Docker registry URLs
-    if remote_config.get("type") == "docker":
+    if remote_config.get("package") == "docker":
         # Convert Docker paths to v2 API format
         # e.g., library/nginx/manifests/latest -> v2/library/nginx/manifests/latest
         return f"{base_url}/v2/{path}"
@@ -215,7 +215,7 @@ async def cache_single_artifact(url: str, remote_name: str, path: str) -> dict:
 
     try:
         remote_config = config.get_remote_config(remote_name) or {}
-        is_docker = remote_config.get("type") == "docker" or "/v2/" in url
+        is_docker = remote_config.get("package") == "docker" or "/v2/" in url
 
         # Prepare headers for Docker registry requests
         headers = {}
@@ -449,7 +449,7 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
     remote_config = config.get_remote_config(remote_name)
     if not remote_config:
         raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
-    if remote_config.get("type") != "docker":
+    if remote_config.get("package") != "docker":
         raise HTTPException(status_code=400, detail=f"Remote '{remote_name}' is not a docker remote")
 
     # Check include_patterns against the image name (e.g. "library/nginx")

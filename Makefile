@@ -74,4 +74,3 @@ major:
 
 _tag:
 	git push origin $(TAG)
-	docker-compose build --no-cache --build-arg VERSION=$(TAG:v%=%)

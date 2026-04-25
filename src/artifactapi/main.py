@@ -1,10 +1,11 @@
 import os
 import re
+import json
 import hashlib
 import logging
 from typing import Dict, Any, Optional
 import httpx
-from fastapi import FastAPI, HTTPException, Response, Query, File, UploadFile
+from fastapi import FastAPI, HTTPException, Response, Request, Query, File, UploadFile
 from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
@@ -21,6 +22,7 @@ from .database import DatabaseManager
 from .storage import S3Storage
 from .cache import RedisCache
 from .metrics import MetricsManager
+from .docker_auth import get_docker_token_for_response
 
 
 class ArtifactRequest(BaseModel):
@@ -164,6 +166,12 @@ async def construct_remote_url(remote_name: str, path: str) -> str:
             status_code=500, detail=f"No base_url configured for remote '{remote_name}'"
         )
 
+    # Handle Docker registry URLs
+    if remote_config.get("type") == "docker":
+        # Convert Docker paths to v2 API format
+        # e.g., library/nginx/manifests/latest -> v2/library/nginx/manifests/latest
+        return f"{base_url}/v2/{path}"
+
     return f"{base_url}/{path}"
 
 
@@ -206,8 +214,35 @@ async def cache_single_artifact(url: str, remote_name: str, path: str) -> dict:
         }
 
     try:
+        remote_config = config.get_remote_config(remote_name) or {}
+        is_docker = remote_config.get("type") == "docker" or "/v2/" in url
+
+        # Prepare headers for Docker registry requests
+        headers = {}
+        if is_docker:
+            if "/manifests/" in url:
+                headers["Accept"] = (
+                    "application/vnd.docker.distribution.manifest.v2+json,"
+                    "application/vnd.oci.image.manifest.v1+json,"
+                    "application/vnd.oci.image.index.v1+json,"
+                    "application/vnd.docker.distribution.manifest.list.v2+json"
+                )
+            elif "/blobs/" in url:
+                headers["Accept"] = "application/octet-stream"
+
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
+
+            # Handle Docker Bearer token challenge
+            if response.status_code == 401 and is_docker:
+                www_auth = response.headers.get("WWW-Authenticate", "")
+                username = remote_config.get("username")
+                password = remote_config.get("password")
+                token = await get_docker_token_for_response(www_auth, username, password)
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                    response = await client.get(url, headers=headers)
+
             response.raise_for_status()
 
             storage_path = storage.upload(key, response.content)
@@ -398,6 +433,79 @@ async def get_artifact(remote_name: str, path: str):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error serving artifact: {str(e)}")
+
+
+@app.get("/v2/")
+async def docker_v2_ping():
+    return Response(
+        content="{}",
+        media_type="application/json",
+        headers={"Docker-Distribution-Api-Version": "registry/2.0"},
+    )
+
+
+@app.api_route("/v2/{remote_name}/{path:path}", methods=["GET", "HEAD"])
+async def docker_v2_proxy(request: Request, remote_name: str, path: str):
+    remote_config = config.get_remote_config(remote_name)
+    if not remote_config:
+        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
+    if remote_config.get("type") != "docker":
+        raise HTTPException(status_code=400, detail=f"Remote '{remote_name}' is not a docker remote")
+
+    remote_url = await construct_remote_url(remote_name, path)
+
+    cached_key = storage.get_object_key(remote_name, path)
+    if not storage.exists(cached_key):
+        cached_key = None
+
+    is_index = cache.is_index_file(path)
+
+    if cached_key and is_index:
+        if not cache.is_index_valid(remote_name, path):
+            logger.info(f"Index EXPIRED: {remote_name}/{path} - removing from cache")
+            cache.cleanup_expired_index(storage, remote_name, path)
+            cached_key = None
+
+    if not cached_key:
+        logger.info(f"Cache MISS: {remote_name}/{path} - fetching from remote: {remote_url}")
+        result = await cache_single_artifact(remote_url, remote_name, path)
+        if result["status"] == "error":
+            raise HTTPException(status_code=502, detail=f"Failed to fetch: {result['error']}")
+        if result["status"] == "cached" and is_index:
+            cache_config = config.get_cache_config(remote_name)
+            index_ttl = cache_config.get("index_ttl", 300)
+            cache.mark_index_cached(remote_name, path, index_ttl)
+            logger.info(f"Index file cached with TTL: {remote_name}/{path} (ttl: {index_ttl}s)")
+
+    artifact_data = storage.download_object(storage.get_object_key(remote_name, path))
+
+    is_blob = "/blobs/" in path
+    if is_blob:
+        content_type = "application/octet-stream"
+    else:
+        try:
+            manifest_json = json.loads(artifact_data)
+            content_type = manifest_json.get("mediaType")
+            if not content_type:
+                if "manifests" in manifest_json:
+                    content_type = "application/vnd.oci.image.index.v1+json"
+                else:
+                    content_type = "application/vnd.oci.image.manifest.v1+json"
+        except Exception:
+            content_type = "application/vnd.oci.image.manifest.v1+json"
+
+    digest = f"sha256:{hashlib.sha256(artifact_data).hexdigest()}"
+    headers = {
+        "Docker-Distribution-Api-Version": "registry/2.0",
+        "Docker-Content-Digest": digest,
+        "Content-Length": str(len(artifact_data)),
+    }
+
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=headers, media_type=content_type)
+
+    metrics.record_cache_hit(remote_name, len(artifact_data))
+    return Response(content=artifact_data, media_type=content_type, headers=headers)
 
 
 async def discover_artifacts(remote: str, include_pattern: str) -> list[str]:

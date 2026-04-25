@@ -30,6 +30,13 @@ class RedisCache:
                     ".yaml.xz", ".yaml.gz", ".yaml.bz2", ".yaml.zst",
                     ".asc", ".txt"
                 )))
+            # Docker tag-based manifests are mutable (index); digest-pinned are immutable (file)
+            or (
+                "/manifests/" in file_path
+                and not file_path.split("/manifests/", 1)[1].startswith("sha256:")
+            )
+            or "/tags/list" in file_path
+            or file_path.endswith("/tags/list")
         )
 
     def get_index_cache_key(self, remote_name: str, path: str) -> str:

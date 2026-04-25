@@ -1,6 +1,6 @@
 [project]
 name = "artifactapi"
-version = "2.0.5"
+dynamic = ["version"]
 description = "Generic artifact caching system with support for various package managers"
 
 dependencies = [
@@ -23,8 +23,11 @@ license = {text = "MIT"}
 artifactapi = "artifactapi.main:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -40,11 +43,4 @@ dev = [
     "isort>=5.12.0",
     "mypy>=1.6.0",
     "ruff>=0.1.0",
-    "bump-my-version>=1.2.0",
 ]
-
-[tool.bumpversion]
-current_version = "2.0.5"
-commit = true
-tag = true
-message = "Bump version: {current_version} → {new_version}"

@@ -32,7 +32,8 @@ COPY --chown=appuser:appuser pyproject.toml uv.lock README.md ./
 
 # Switch to appuser and install Python dependencies
 USER appuser
-RUN uv sync --frozen
+ARG VERSION=dev
+RUN HATCH_VCS_PRETEND_VERSION=${VERSION} uv sync --frozen
 
 # Copy application source
 COPY --chown=appuser:appuser src/ ./src/

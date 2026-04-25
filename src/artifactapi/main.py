@@ -179,7 +179,8 @@ async def check_artifact_patterns(
     remote_name: str, repo_path: str, file_path: str, full_path: str
 ) -> bool:
     # First check if this is an index file - always allow index files
-    if cache.is_index_file(file_path) or cache.is_index_file(full_path):
+    index_patterns = config.get_index_patterns(remote_name)
+    if cache.is_index_file(file_path, index_patterns) or cache.is_index_file(full_path, index_patterns):
         return True
 
     # Then check basic include patterns
@@ -319,7 +320,7 @@ async def get_artifact(remote_name: str, path: str):
 
     # For index files, check Redis TTL validity
     filename = os.path.basename(path)
-    is_index = cache.is_index_file(path)  # Check full path, not just filename
+    is_index = cache.is_index_file(path, config.get_index_patterns(remote_name))
 
     if cached_key and is_index:
         # Index file exists, but check if it's still valid
@@ -467,7 +468,7 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
     if not storage.exists(cached_key):
         cached_key = None
 
-    is_index = cache.is_index_file(path)
+    is_index = cache.is_index_file(path, config.get_index_patterns(remote_name))
 
     if cached_key and is_index:
         if not cache.is_index_valid(remote_name, path):

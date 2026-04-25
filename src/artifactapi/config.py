@@ -4,6 +4,25 @@ import yaml
 from typing import Optional
 
 
+_PACKAGE_INDEX_PATTERNS: dict[str, list[str]] = {
+    "alpine": [
+        r"APKINDEX\.tar\.gz$",
+    ],
+    "rpm": [
+        r"repomd\.xml$",
+        r"repodata/.*\.(xml|xml\.gz|xml\.bz2|xml\.xz|xml\.zck|xml\.zst"
+        r"|sqlite|sqlite\.gz|sqlite\.bz2|sqlite\.xz|sqlite\.zck|sqlite\.zst"
+        r"|yaml\.xz|yaml\.gz|yaml\.bz2|yaml\.zst|asc|txt)$",
+        r"Packages\.gz$",
+    ],
+    "docker": [
+        r"/manifests/(?!sha256:)[^/]+$",
+        r"/tags/list$",
+    ],
+    "generic": [],
+}
+
+
 class ConfigManager:
     def __init__(self, config_file: str = "remotes.yaml"):
         self.config_file = config_file
@@ -110,6 +129,20 @@ class ConfigManager:
 
         db_url = f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
         return {"url": db_url}
+
+    def get_index_patterns(self, remote_name: str) -> list[str]:
+        """Return index-file patterns for a remote.
+
+        Merges the package-level defaults with any extra patterns listed under
+        ``index_patterns`` in the remote's config.
+        """
+        remote_config = self.get_remote_config(remote_name)
+        if not remote_config:
+            return []
+        package = remote_config.get("package", "generic")
+        defaults = _PACKAGE_INDEX_PATTERNS.get(package, [])
+        extra = remote_config.get("index_patterns", [])
+        return defaults + [p for p in extra if p not in defaults]
 
     def get_cache_config(self, remote_name: str) -> dict:
         """Get cache configuration for a specific remote"""

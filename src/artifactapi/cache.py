@@ -1,5 +1,7 @@
-import time
 import hashlib
+import re
+import time
+
 import redis
 
 
@@ -17,35 +19,17 @@ class RedisCache:
             self.client = None
             self.available = False
 
-    def is_index_file(self, file_path: str) -> bool:
-        """Check if the file is an index file that should have TTL"""
-        return (
-            file_path.endswith("APKINDEX.tar.gz")
-            or file_path.endswith("Packages.gz")
-            or file_path.endswith("repomd.xml")
-            or ("repodata/" in file_path
-                and file_path.endswith((
-                    ".xml", ".xml.gz", ".xml.bz2", ".xml.xz", ".xml.zck", ".xml.zst",
-                    ".sqlite", ".sqlite.gz", ".sqlite.bz2", ".sqlite.xz", ".sqlite.zck", ".sqlite.zst",
-                    ".yaml.xz", ".yaml.gz", ".yaml.bz2", ".yaml.zst",
-                    ".asc", ".txt"
-                )))
-            # Docker tag-based manifests are mutable (index); digest-pinned are immutable (file)
-            or (
-                "/manifests/" in file_path
-                and not file_path.split("/manifests/", 1)[1].startswith("sha256:")
-            )
-            or "/tags/list" in file_path
-            or file_path.endswith("/tags/list")
-        )
+    def is_index_file(self, file_path: str, patterns: list[str] | None = None) -> bool:
+        """Return True if file_path matches any of the index patterns."""
+        if patterns is None:
+            patterns = []
+        return any(re.search(p, file_path) for p in patterns)
 
     def get_index_cache_key(self, remote_name: str, path: str) -> str:
         """Generate cache key for index files"""
         return f"index:{remote_name}:{hashlib.sha256(path.encode()).hexdigest()[:16]}"
 
-    def is_index_valid(
-        self, remote_name: str, path: str, ttl_override: int = None
-    ) -> bool:
+    def is_index_valid(self, remote_name: str, path: str, ttl_override: int = None) -> bool:
         """Check if index file is still valid (not expired)"""
         if not self.available:
             return False
@@ -74,8 +58,10 @@ class RedisCache:
 
         try:
             # Construct the URL the same way as in the main flow
-            from .config import ConfigManager
             import os
+
+            from .config import ConfigManager
+
             config_path = os.environ.get("CONFIG_PATH")
             if config_path:
                 config = ConfigManager(config_path)

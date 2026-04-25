@@ -1,28 +1,30 @@
+import hashlib
+import json
+import logging
 import os
 import re
-import json
-import hashlib
-import logging
-from typing import Dict, Any, Optional
+from typing import Any
+
 import httpx
-from fastapi import FastAPI, HTTPException, Response, Request, Query, File, UploadFile
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import JSONResponse, PlainTextResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 try:
     from importlib.metadata import version
+
     __version__ = version("artifactapi")
 except ImportError:
     # Fallback for development when package isn't installed
     __version__ = "dev"
 
+from .cache import RedisCache
 from .config import ConfigManager
 from .database import DatabaseManager
-from .storage import S3Storage
-from .cache import RedisCache
-from .metrics import MetricsManager
 from .docker_auth import get_docker_token_for_response
+from .metrics import MetricsManager
+from .storage import S3Storage
 
 
 class ArtifactRequest(BaseModel):
@@ -31,10 +33,7 @@ class ArtifactRequest(BaseModel):
 
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Artifact Storage API", version=__version__)
@@ -75,19 +74,11 @@ def health_check():
 @app.put("/cache/flush")
 def flush_cache(
     remote: str = Query(default=None, description="Specific remote to flush (optional)"),
-    cache_type: str = Query(default="all", description="Type to flush: 'all', 'index', 'files', 'metrics'")
+    cache_type: str = Query(default="all", description="Type to flush: 'all', 'index', 'files', 'metrics'"),
 ):
     """Flush cache entries for specified remote or all remotes"""
     try:
-        result = {
-            "remote": remote,
-            "cache_type": cache_type,
-            "flushed": {
-                "redis_keys": 0,
-                "s3_objects": 0,
-                "operations": []
-            }
-        }
+        result = {"remote": remote, "cache_type": cache_type, "flushed": {"redis_keys": 0, "s3_objects": 0, "operations": []}}
 
         # Flush Redis entries based on cache_type
         if cache_type in ["all", "index", "metrics"] and cache.available and cache.client:
@@ -124,8 +115,8 @@ def flush_cache(
                     list_params["Prefix"] = f"{remote}/"
 
                 response = storage.client.list_objects_v2(**list_params)
-                if 'Contents' in response:
-                    objects_to_delete = [obj['Key'] for obj in response['Contents']]
+                if "Contents" in response:
+                    objects_to_delete = [obj["Key"] for obj in response["Contents"]]
 
                     for key in objects_to_delete:
                         try:
@@ -156,15 +147,11 @@ def flush_cache(
 async def construct_remote_url(remote_name: str, path: str) -> str:
     remote_config = config.get_remote_config(remote_name)
     if not remote_config:
-        raise HTTPException(
-            status_code=404, detail=f"Remote '{remote_name}' not configured"
-        )
+        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
 
     base_url = remote_config.get("base_url")
     if not base_url:
-        raise HTTPException(
-            status_code=500, detail=f"No base_url configured for remote '{remote_name}'"
-        )
+        raise HTTPException(status_code=500, detail=f"No base_url configured for remote '{remote_name}'")
 
     # Handle Docker registry URLs
     if remote_config.get("package") == "docker":
@@ -175,11 +162,10 @@ async def construct_remote_url(remote_name: str, path: str) -> str:
     return f"{base_url}/{path}"
 
 
-async def check_artifact_patterns(
-    remote_name: str, repo_path: str, file_path: str, full_path: str
-) -> bool:
+async def check_artifact_patterns(remote_name: str, repo_path: str, file_path: str, full_path: str) -> bool:
     # First check if this is an index file - always allow index files
-    if cache.is_index_file(file_path) or cache.is_index_file(full_path):
+    index_patterns = config.get_index_patterns(remote_name)
+    if cache.is_index_file(file_path, index_patterns) or cache.is_index_file(full_path, index_patterns):
         return True
 
     # Then check basic include patterns
@@ -266,9 +252,7 @@ async def get_artifact(remote_name: str, path: str):
     # Check if remote is configured
     remote_config = config.get_remote_config(remote_name)
     if not remote_config:
-        raise HTTPException(
-            status_code=404, detail=f"Remote '{remote_name}' not configured"
-        )
+        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
 
     # Check if this is a local repository
     if remote_config.get("type") == "local":
@@ -288,9 +272,7 @@ async def get_artifact(remote_name: str, path: str):
         return Response(
             content=content,
             media_type=content_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={os.path.basename(path)}"
-            },
+            headers={"Content-Disposition": f"attachment; filename={os.path.basename(path)}"},
         )
 
     # Extract repository path for pattern checking
@@ -305,9 +287,7 @@ async def get_artifact(remote_name: str, path: str):
     # Check if artifact matches configured patterns
     if not await check_artifact_patterns(remote_name, repo_path, file_path, path):
         logger.info(f"PATTERN BLOCKED: {remote_name}/{path} - not matching include patterns")
-        raise HTTPException(
-            status_code=403, detail="Artifact not allowed by configuration patterns"
-        )
+        raise HTTPException(status_code=403, detail="Artifact not allowed by configuration patterns")
 
     # Construct the remote URL
     remote_url = await construct_remote_url(remote_name, path)
@@ -319,7 +299,7 @@ async def get_artifact(remote_name: str, path: str):
 
     # For index files, check Redis TTL validity
     filename = os.path.basename(path)
-    is_index = cache.is_index_file(path)  # Check full path, not just filename
+    is_index = cache.is_index_file(path, config.get_index_patterns(remote_name))
 
     if cached_key and is_index:
         # Index file exists, but check if it's still valid
@@ -357,9 +337,7 @@ async def get_artifact(remote_name: str, path: str):
             metrics.record_cache_hit(remote_name, len(artifact_data))
 
             # Record artifact mapping in database if not already recorded
-            database.record_artifact_mapping(
-                cached_key, remote_name, path, len(artifact_data)
-            )
+            database.record_artifact_mapping(cached_key, remote_name, path, len(artifact_data))
 
             return Response(
                 content=artifact_data,
@@ -371,9 +349,7 @@ async def get_artifact(remote_name: str, path: str):
                 },
             )
         except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Error retrieving cached artifact: {str(e)}"
-            )
+            raise HTTPException(status_code=500, detail=f"Error retrieving cached artifact: {str(e)}")
 
     # Artifact not cached, cache it first
     logger.info(f"Cache MISS: {remote_name}/{path} - fetching from remote: {remote_url}")
@@ -381,9 +357,7 @@ async def get_artifact(remote_name: str, path: str):
 
     if result["status"] == "error":
         logger.error(f"Cache ADD FAILED: {remote_name}/{path} - {result['error']}")
-        raise HTTPException(
-            status_code=502, detail=f"Failed to fetch artifact: {result['error']}"
-        )
+        raise HTTPException(status_code=502, detail=f"Failed to fetch artifact: {result['error']}")
 
     # Mark index files as cached in Redis if this was a new download
     if result["status"] == "cached" and is_index:
@@ -418,9 +392,7 @@ async def get_artifact(remote_name: str, path: str):
 
         # Record artifact mapping in database
         cache_key = storage.get_object_key(remote_name, path)
-        database.record_artifact_mapping(
-            cache_key, remote_name, path, len(artifact_data)
-        )
+        database.record_artifact_mapping(cache_key, remote_name, path, len(artifact_data))
 
         return Response(
             content=artifact_data,
@@ -467,7 +439,7 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
     if not storage.exists(cached_key):
         cached_key = None
 
-    is_index = cache.is_index_file(path)
+    is_index = cache.is_index_file(path, config.get_index_patterns(remote_name))
 
     if cached_key and is_index:
         if not cache.is_index_valid(remote_name, path):
@@ -532,9 +504,7 @@ async def discover_github_releases(remote: str, include_pattern: str) -> list[st
     owner, repo = match.groups()
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
-        response = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/releases"
-        )
+        response = await client.get(f"https://api.github.com/repos/{owner}/{repo}/releases")
 
         if response.status_code != 200:
             raise HTTPException(
@@ -563,14 +533,10 @@ async def upload_file(remote_name: str, path: str, file: UploadFile = File(...))
     # Check if remote is configured and is local
     remote_config = config.get_remote_config(remote_name)
     if not remote_config:
-        raise HTTPException(
-            status_code=404, detail=f"Remote '{remote_name}' not configured"
-        )
+        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
 
     if remote_config.get("type") != "local":
-        raise HTTPException(
-            status_code=400, detail="Upload only supported for local repositories"
-        )
+        raise HTTPException(status_code=400, detail="Upload only supported for local repositories")
 
     try:
         # Read file content
@@ -632,9 +598,7 @@ def check_file_exists(remote_name: str, path: str):
     # Check if remote is configured
     remote_config = config.get_remote_config(remote_name)
     if not remote_config:
-        raise HTTPException(
-            status_code=404, detail=f"Remote '{remote_name}' not configured"
-        )
+        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
 
     # Handle local repository
     if remote_config.get("type") == "local":
@@ -646,16 +610,10 @@ def check_file_exists(remote_name: str, path: str):
             return Response(
                 headers={
                     "Content-Length": str(metadata["size_bytes"]),
-                    "Content-Type": metadata.get(
-                        "content_type", "application/octet-stream"
-                    ),
+                    "Content-Type": metadata.get("content_type", "application/octet-stream"),
                     "X-SHA256": metadata["sha256_sum"],
-                    "X-Created-At": metadata["created_at"].isoformat()
-                    if metadata["created_at"]
-                    else "",
-                    "X-Uploaded-At": metadata["uploaded_at"].isoformat()
-                    if metadata["uploaded_at"]
-                    else "",
+                    "X-Created-At": metadata["created_at"].isoformat() if metadata["created_at"] else "",
+                    "X-Uploaded-At": metadata["uploaded_at"].isoformat() if metadata["uploaded_at"] else "",
                 }
             )
         except HTTPException:
@@ -664,9 +622,7 @@ def check_file_exists(remote_name: str, path: str):
             raise HTTPException(status_code=500, detail=f"Check failed: {str(e)}")
     else:
         # For remote repositories, just return 405 Method Not Allowed
-        raise HTTPException(
-            status_code=405, detail="HEAD method only supported for local repositories"
-        )
+        raise HTTPException(status_code=405, detail="HEAD method only supported for local repositories")
 
 
 @app.delete("/api/v1/remote/{remote_name}/{path:path}")
@@ -675,14 +631,10 @@ def delete_file(remote_name: str, path: str):
     # Check if remote is configured and is local
     remote_config = config.get_remote_config(remote_name)
     if not remote_config:
-        raise HTTPException(
-            status_code=404, detail=f"Remote '{remote_name}' not configured"
-        )
+        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
 
     if remote_config.get("type") != "local":
-        raise HTTPException(
-            status_code=400, detail="Delete only supported for local repositories"
-        )
+        raise HTTPException(status_code=400, detail="Delete only supported for local repositories")
 
     try:
         # Get S3 key before deleting from database
@@ -703,11 +655,9 @@ def delete_file(remote_name: str, path: str):
 
 
 @app.post("/api/v1/artifacts/cache")
-async def cache_artifact(request: ArtifactRequest) -> Dict[str, Any]:
+async def cache_artifact(request: ArtifactRequest) -> dict[str, Any]:
     try:
-        matching_urls = await discover_artifacts(
-            request.remote, request.include_pattern
-        )
+        matching_urls = await discover_artifacts(request.remote, request.include_pattern)
 
         if not matching_urls:
             return {
@@ -722,11 +672,7 @@ async def cache_artifact(request: ArtifactRequest) -> Dict[str, Any]:
             result = await cache_single_artifact(url, "", "")
             cached_artifacts.append(result)
 
-        cached_count = sum(
-            1
-            for artifact in cached_artifacts
-            if artifact["status"] in ["cached", "already_cached"]
-        )
+        cached_count = sum(1 for artifact in cached_artifacts if artifact["status"] in ["cached", "already_cached"])
 
         return {
             "message": f"Processed {len(matching_urls)} artifacts, {cached_count} successfully cached",
@@ -739,9 +685,7 @@ async def cache_artifact(request: ArtifactRequest) -> Dict[str, Any]:
 
 
 @app.get("/api/v1/artifacts/{remote:path}")
-async def list_cached_artifacts(
-    remote: str, include_pattern: str = ".*"
-) -> Dict[str, Any]:
+async def list_cached_artifacts(remote: str, include_pattern: str = ".*") -> dict[str, Any]:
     try:
         matching_urls = await discover_artifacts(remote, include_pattern)
 
@@ -749,13 +693,12 @@ async def list_cached_artifacts(
         for url in matching_urls:
             # Extract path from URL for hierarchical key generation
             from urllib.parse import urlparse
+
             parsed = urlparse(url)
             path = parsed.path
             key = storage.get_object_key(remote, path)
             if storage.exists(key):
-                cached_artifacts.append(
-                    {"url": url, "cached_url": storage.get_url(key), "key": key}
-                )
+                cached_artifacts.append({"url": url, "cached_url": storage.get_url(key), "key": key})
 
         return {
             "remote": remote,
@@ -771,9 +714,7 @@ async def list_cached_artifacts(
 
 @app.get("/metrics")
 def get_metrics(
-    json: Optional[bool] = Query(
-        False, description="Return JSON format instead of Prometheus"
-    ),
+    json: bool | None = Query(False, description="Return JSON format instead of Prometheus"),
 ):
     """Get comprehensive metrics about the artifact storage system"""
     config._check_reload()

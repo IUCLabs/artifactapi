@@ -1,7 +1,25 @@
-import os
 import json
+import os
+
 import yaml
-from typing import Optional
+
+_PACKAGE_INDEX_PATTERNS: dict[str, list[str]] = {
+    "alpine": [
+        r"APKINDEX\.tar\.gz$",
+    ],
+    "rpm": [
+        r"repomd\.xml$",
+        r"repodata/.*\.(xml|xml\.gz|xml\.bz2|xml\.xz|xml\.zck|xml\.zst"
+        r"|sqlite|sqlite\.gz|sqlite\.bz2|sqlite\.xz|sqlite\.zck|sqlite\.zst"
+        r"|yaml\.xz|yaml\.gz|yaml\.bz2|yaml\.zst|asc|txt)$",
+        r"Packages\.gz$",
+    ],
+    "docker": [
+        r"/manifests/(?!sha256:)[^/]+$",
+        r"/tags/list$",
+    ],
+    "generic": [],
+}
 
 
 class ConfigManager:
@@ -12,10 +30,8 @@ class ConfigManager:
 
     def _load_config(self) -> dict:
         try:
-            with open(self.config_file, "r") as f:
-                if self.config_file.endswith(".yaml") or self.config_file.endswith(
-                    ".yml"
-                ):
+            with open(self.config_file) as f:
+                if self.config_file.endswith(".yaml") or self.config_file.endswith(".yml"):
                     return yaml.safe_load(f)
                 else:
                     return json.load(f)
@@ -35,7 +51,7 @@ class ConfigManager:
         except OSError:
             pass
 
-    def get_remote_config(self, remote_name: str) -> Optional[dict]:
+    def get_remote_config(self, remote_name: str) -> dict | None:
         self._check_reload()
         return self.config.get("remotes", {}).get(remote_name)
 
@@ -92,9 +108,7 @@ class ConfigManager:
         if not redis_url:
             raise ValueError("REDIS_URL environment variable is required")
 
-        return {
-            "url": redis_url
-        }
+        return {"url": redis_url}
 
     def get_database_config(self) -> dict:
         """Get database configuration from environment variables"""
@@ -105,11 +119,29 @@ class ConfigManager:
         db_name = os.getenv("DBNAME")
 
         if not all([db_host, db_port, db_user, db_pass, db_name]):
-            missing = [var for var, val in [("DBHOST", db_host), ("DBPORT", db_port), ("DBUSER", db_user), ("DBPASS", db_pass), ("DBNAME", db_name)] if not val]
+            missing = [
+                var
+                for var, val in [("DBHOST", db_host), ("DBPORT", db_port), ("DBUSER", db_user), ("DBPASS", db_pass), ("DBNAME", db_name)]
+                if not val
+            ]
             raise ValueError(f"All database environment variables are required: {', '.join(missing)}")
 
         db_url = f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
         return {"url": db_url}
+
+    def get_index_patterns(self, remote_name: str) -> list[str]:
+        """Return index-file patterns for a remote.
+
+        Merges the package-level defaults with any extra patterns listed under
+        ``index_patterns`` in the remote's config.
+        """
+        remote_config = self.get_remote_config(remote_name)
+        if not remote_config:
+            return []
+        package = remote_config.get("package", "generic")
+        defaults = _PACKAGE_INDEX_PATTERNS.get(package, [])
+        extra = remote_config.get("index_patterns", [])
+        return defaults + [p for p in extra if p not in defaults]
 
     def get_cache_config(self, remote_name: str) -> dict:
         """Get cache configuration for a specific remote"""

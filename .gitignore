@@ -43,6 +43,18 @@ remotes.yaml
 # uv
 uv.lock
 
+# tox
+.tox/
+
+# pytest
+.pytest_cache/
+
+# pre-commit
+.pre-commit-cache/
+
+# ruff
+.ruff_cache/
+
 # Docker volumes
 minio_data/
 

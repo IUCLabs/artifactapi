@@ -1,0 +1,8 @@
+when:
+  - event: pull_request
+
+steps:
+  - name: test
+    image: registry.example.com/example/almalinux9-base:20260308
+    commands:
+      - uvx --python 3.11 --with tox-uv tox

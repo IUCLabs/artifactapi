@@ -452,6 +452,15 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
     if remote_config.get("type") != "docker":
         raise HTTPException(status_code=400, detail=f"Remote '{remote_name}' is not a docker remote")
 
+    # Check include_patterns against the image name (e.g. "library/nginx")
+    patterns = config.get_repository_patterns(remote_name, "")
+    if patterns:
+        path_parts = path.split("/")
+        image_name = "/".join(path_parts[:2]) if len(path_parts) >= 2 else path
+        if not any(re.search(p, path) or re.search(p, image_name) for p in patterns):
+            logger.info(f"PATTERN BLOCKED: {remote_name}/{path}")
+            raise HTTPException(status_code=403, detail="Image not allowed by configuration patterns")
+
     remote_url = await construct_remote_url(remote_name, path)
 
     cached_key = storage.get_object_key(remote_name, path)

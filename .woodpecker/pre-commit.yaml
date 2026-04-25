@@ -6,3 +6,4 @@ steps:
     image: registry.example.com/example/almalinux9-base:20260308
     commands:
       - uvx pre-commit run --all-files
+

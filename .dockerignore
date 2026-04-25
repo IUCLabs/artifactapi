@@ -1,0 +1,15 @@
+.git/
+.venv/
+dist/
+tests/
+remotes.yaml
+ca-bundle.pem
+.env
+*.log
+docker-compose.yml
+.woodpecker/
+.tox/
+.ruff_cache/
+.pytest_cache/
+.pre-commit-cache/
+minio_data/

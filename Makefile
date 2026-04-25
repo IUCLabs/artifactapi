@@ -1,7 +1,7 @@
 .PHONY: build install dev clean test lint format pre-commit tox docker-build docker-up docker-down docker-logs docker-rebuild docker-clean docker-restart
 
 build:
-	docker build --no-cache -t artifactapi:latest .
+	docker build -t artifactapi:dev .
 
 install: build
 

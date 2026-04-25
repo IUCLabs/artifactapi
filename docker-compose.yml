@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  artifactapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - VERSION=dev
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./remotes.yaml:/app/remotes.yaml:ro
+      - ./ca-bundle.pem:/app/ca-bundle.pem:ro
+    environment:
+      - CONFIG_PATH=/app/remotes.yaml
+      - DBHOST=postgres
+      - DBPORT=5432
+      - DBUSER=artifacts
+      - DBPASS=artifacts123
+      - DBNAME=artifacts
+      - REDIS_URL=redis://redis:6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET=artifacts
+      - MINIO_SECURE=false
+      - REQUESTS_CA_BUNDLE=/app/ca-bundle.pem
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 20 1
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: artifacts
+      POSTGRES_USER: artifacts
+      POSTGRES_PASSWORD: artifacts123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U artifacts -d artifacts"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  minio_data:
+  redis_data:
+  postgres_data:

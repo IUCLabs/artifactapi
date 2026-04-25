@@ -1,4 +1,4 @@
-.PHONY: build install dev clean test lint format docker-build docker-up docker-down docker-logs docker-rebuild docker-clean docker-restart
+.PHONY: build install dev clean test lint format pre-commit tox docker-build docker-up docker-down docker-logs docker-rebuild docker-clean docker-restart
 
 build:
 	docker build --no-cache -t artifactapi:latest .
@@ -17,7 +17,13 @@ clean:
 	rm -rf *.egg-info/
 
 test:
-	uv run pytest
+	uvx --python 3.11 --with tox-uv tox
+
+tox:
+	uvx --python 3.11 --with tox-uv tox
+
+pre-commit:
+	uvx --python 3.11 pre-commit run --all-files
 
 lint:
 	uv run ruff check --fix .

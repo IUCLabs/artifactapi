@@ -1,5 +1,3 @@
-import os
-from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
@@ -54,25 +52,15 @@ class DatabaseManager:
                 """)
 
                 # Create indexes separately
-                cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_s3_key ON artifact_mappings (s3_key)"
-                )
-                cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_remote_name ON artifact_mappings (remote_name)"
-                )
-                cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_local_repo_path ON local_files (repository_name, file_path)"
-                )
-                cursor.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_local_s3_key ON local_files (s3_key)"
-                )
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_s3_key ON artifact_mappings (s3_key)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_remote_name ON artifact_mappings (remote_name)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_repo_path ON local_files (repository_name, file_path)")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_s3_key ON local_files (s3_key)")
                 print("Database schema initialized")
         except Exception as e:
             print(f"Error creating schema: {e}")
 
-    def record_artifact_mapping(
-        self, s3_key: str, remote_name: str, file_path: str, size_bytes: int
-    ):
+    def record_artifact_mapping(self, s3_key: str, remote_name: str, file_path: str, size_bytes: int):
         """Record mapping between S3 key and remote"""
         if not self.available:
             return
@@ -112,7 +100,7 @@ class DatabaseManager:
             print(f"Error getting storage by remote: {e}")
             return {}
 
-    def get_remote_for_s3_key(self, s3_key: str) -> Optional[str]:
+    def get_remote_for_s3_key(self, s3_key: str) -> str | None:
         """Get remote name for given S3 key"""
         if not self.available:
             return None

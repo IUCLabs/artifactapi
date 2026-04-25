@@ -1,5 +1,6 @@
-import os
 import hashlib
+import os
+
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -21,23 +22,22 @@ class S3Storage:
         self.bucket = bucket
         self.secure = secure
 
-        ca_bundle = os.environ.get('REQUESTS_CA_BUNDLE') or os.environ.get('SSL_CERT_FILE')
-        config_kwargs = {
-            "request_checksum_calculation": "when_required",
-            "response_checksum_validation": "when_required"
-        }
+        ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")
+        config_kwargs = {"request_checksum_calculation": "when_required", "response_checksum_validation": "when_required"}
         client_kwargs = {
             "endpoint_url": f"http{'s' if self.secure else ''}://{self.endpoint}",
             "aws_access_key_id": self.access_key,
             "aws_secret_access_key": self.secret_key,
-            "config": Config(**config_kwargs)
+            "config": Config(**config_kwargs),
         }
 
         if ca_bundle and os.path.exists(ca_bundle):
             client_kwargs["verify"] = ca_bundle
             print(f"Debug: Using CA bundle: {ca_bundle}")
         else:
-            print(f"Debug: No CA bundle found. REQUESTS_CA_BUNDLE={os.environ.get('REQUESTS_CA_BUNDLE')}, SSL_CERT_FILE={os.environ.get('SSL_CERT_FILE')}")
+            print(
+                f"Debug: No CA bundle found. REQUESTS_CA_BUNDLE={os.environ.get('REQUESTS_CA_BUNDLE')}, SSL_CERT_FILE={os.environ.get('SSL_CERT_FILE')}"
+            )
 
         self.client = boto3.client("s3", **client_kwargs)
 
@@ -56,7 +56,7 @@ class S3Storage:
 
     def get_object_key(self, remote_name: str, path: str) -> str:
         # Extract directory path and filename
-        clean_path = path.lstrip('/')
+        clean_path = path.lstrip("/")
         filename = os.path.basename(clean_path)
         directory_path = os.path.dirname(clean_path)
 

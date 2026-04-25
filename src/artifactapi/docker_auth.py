@@ -1,7 +1,7 @@
-import time
 import logging
 import re
-from typing import Optional
+import time
+
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -17,11 +17,11 @@ _WWW_AUTH_RE = re.compile(
 )
 
 
-def _cache_key(realm: str, service: str, scope: str, username: Optional[str]) -> str:
+def _cache_key(realm: str, service: str, scope: str, username: str | None) -> str:
     return f"{realm}|{service}|{scope}|{username or ''}"
 
 
-def _get_cached_token(key: str) -> Optional[str]:
+def _get_cached_token(key: str) -> str | None:
     entry = _token_cache.get(key)
     if entry and entry[1] > time.time():
         return entry[0]
@@ -38,9 +38,9 @@ async def fetch_token(
     realm: str,
     service: str,
     scope: str,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
-) -> Optional[str]:
+    username: str | None = None,
+    password: str | None = None,
+) -> str | None:
     """Fetch a Bearer token from a Docker registry auth server."""
     key = _cache_key(realm, service, scope, username)
     cached = _get_cached_token(key)
@@ -75,7 +75,7 @@ async def fetch_token(
     return token
 
 
-def parse_www_authenticate(header: str) -> Optional[tuple[str, str, str]]:
+def parse_www_authenticate(header: str) -> tuple[str, str, str] | None:
     """Parse WWW-Authenticate: Bearer header. Returns (realm, service, scope) or None."""
     m = _WWW_AUTH_RE.search(header)
     if not m:
@@ -85,9 +85,9 @@ def parse_www_authenticate(header: str) -> Optional[tuple[str, str, str]]:
 
 async def get_docker_token_for_response(
     www_authenticate: str,
-    username: Optional[str] = None,
-    password: Optional[str] = None,
-) -> Optional[str]:
+    username: str | None = None,
+    password: str | None = None,
+) -> str | None:
     """Given a WWW-Authenticate header value, fetch and return a Bearer token."""
     parsed = parse_www_authenticate(www_authenticate)
     if not parsed:

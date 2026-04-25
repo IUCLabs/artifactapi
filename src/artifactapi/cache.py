@@ -1,6 +1,7 @@
+import hashlib
 import re
 import time
-import hashlib
+
 import redis
 
 
@@ -28,9 +29,7 @@ class RedisCache:
         """Generate cache key for index files"""
         return f"index:{remote_name}:{hashlib.sha256(path.encode()).hexdigest()[:16]}"
 
-    def is_index_valid(
-        self, remote_name: str, path: str, ttl_override: int = None
-    ) -> bool:
+    def is_index_valid(self, remote_name: str, path: str, ttl_override: int = None) -> bool:
         """Check if index file is still valid (not expired)"""
         if not self.available:
             return False
@@ -59,8 +58,10 @@ class RedisCache:
 
         try:
             # Construct the URL the same way as in the main flow
-            from .config import ConfigManager
             import os
+
+            from .config import ConfigManager
+
             config_path = os.environ.get("CONFIG_PATH")
             if config_path:
                 config = ConfigManager(config_path)

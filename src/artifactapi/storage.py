@@ -60,6 +60,14 @@ class S3Storage:
         filename = os.path.basename(clean_path)
         directory_path = os.path.dirname(clean_path)
 
+        # Special handling for Docker registry blobs (use digest as key for deduplication)
+        if "/blobs/sha256:" in clean_path:
+            # Extract the SHA256 digest for Docker blobs
+            parts = clean_path.split("/blobs/sha256:")
+            if len(parts) == 2:
+                digest = parts[1]
+                return f"{remote_name}/blobs/sha256/{digest}"
+
         # Hash the directory path to keep keys manageable while preserving remote structure
         if directory_path:
             path_hash = hashlib.sha256(directory_path.encode()).hexdigest()[:16]

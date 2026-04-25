@@ -5,6 +5,7 @@ Module-level setup (env vars + connection patches) runs before any test
 module is imported, so the FastAPI app initialises against mocks rather
 than real S3 / Redis / PostgreSQL services.
 """
+
 import os
 import tempfile
 from unittest.mock import MagicMock, patch
@@ -75,19 +76,21 @@ _config_path = os.path.join(_tmpdir, "remotes.yaml")
 with open(_config_path, "w") as _f:
     yaml.dump(TEST_REMOTES, _f)
 
-os.environ.update({
-    "CONFIG_PATH": _config_path,
-    "MINIO_ENDPOINT": "localhost:9000",
-    "MINIO_ACCESS_KEY": "testkey",
-    "MINIO_SECRET_KEY": "testsecret",
-    "MINIO_BUCKET": "testbucket",
-    "REDIS_URL": "redis://localhost:6379/0",
-    "DBHOST": "localhost",
-    "DBPORT": "5432",
-    "DBUSER": "test",
-    "DBPASS": "test",
-    "DBNAME": "test",
-})
+os.environ.update(
+    {
+        "CONFIG_PATH": _config_path,
+        "MINIO_ENDPOINT": "localhost:9000",
+        "MINIO_ACCESS_KEY": "testkey",
+        "MINIO_SECRET_KEY": "testsecret",
+        "MINIO_BUCKET": "testbucket",
+        "REDIS_URL": "redis://localhost:6379/0",
+        "DBHOST": "localhost",
+        "DBPORT": "5432",
+        "DBUSER": "test",
+        "DBPASS": "test",
+        "DBNAME": "test",
+    }
+)
 
 # Patch external service connections before the package is imported.
 # These stay active for the whole session (process exits after tests finish).
@@ -109,6 +112,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 @pytest.fixture(scope="session")
 def app():
     from artifactapi.main import app as fastapi_app
+
     return fastapi_app
 
 

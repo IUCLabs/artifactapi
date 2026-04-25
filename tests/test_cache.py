@@ -1,5 +1,7 @@
 """Tests for RedisCache, focusing on is_index_file with configurable patterns."""
-from unittest.mock import MagicMock, patch
+
+import hashlib
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -39,6 +41,7 @@ def cache_with_redis(mock_redis_client):
 # is_index_file — alpine patterns
 # ---------------------------------------------------------------------------
 
+
 class TestIsIndexFileAlpine:
     def test_apkindex_tarball_is_index(self, bare_cache):
         patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
@@ -56,10 +59,20 @@ class TestIsIndexFileAlpine:
         patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
         assert not bare_cache.is_index_file("some/path/archive.tar.gz", patterns)
 
+    def test_apkindex_signature_file_is_not_index(self, bare_cache):
+        # Signature file adjacent to the index should not be treated as an index
+        patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
+        assert not bare_cache.is_index_file("alpine/v3.18/x86_64/APKINDEX.tar.gz.sig", patterns)
+
+    def test_apkindex_tmp_file_is_not_index(self, bare_cache):
+        patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
+        assert not bare_cache.is_index_file("alpine/v3.18/x86_64/APKINDEX.tar.gz.tmp", patterns)
+
 
 # ---------------------------------------------------------------------------
 # is_index_file — rpm patterns
 # ---------------------------------------------------------------------------
+
 
 class TestIsIndexFileRpm:
     def test_repomd_xml_is_index(self, bare_cache):
@@ -82,7 +95,10 @@ class TestIsIndexFileRpm:
         patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
         assert bare_cache.is_index_file("repo/repodata/comps.yaml.xz", patterns)
 
-    def test_packages_gz_is_index(self, bare_cache):
+    def test_packages_gz_pattern_matches_any_path(self, bare_cache):
+        # The Packages.gz$ regex is a carryover from the original hardcoded logic and
+        # deliberately matches any path ending in Packages.gz — including Debian-style paths.
+        # This test documents that intentional behaviour.
         patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
         assert bare_cache.is_index_file("debian/dists/stable/main/binary-amd64/Packages.gz", patterns)
 
@@ -99,6 +115,7 @@ class TestIsIndexFileRpm:
 # is_index_file — docker patterns
 # ---------------------------------------------------------------------------
 
+
 class TestIsIndexFileDocker:
     def test_tag_manifest_is_index(self, bare_cache):
         patterns = _PACKAGE_INDEX_PATTERNS["docker"]
@@ -107,6 +124,14 @@ class TestIsIndexFileDocker:
     def test_version_tag_manifest_is_index(self, bare_cache):
         patterns = _PACKAGE_INDEX_PATTERNS["docker"]
         assert bare_cache.is_index_file("library/nginx/manifests/1.25.3", patterns)
+
+    def test_hyphenated_tag_manifest_is_index(self, bare_cache):
+        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
+        assert bare_cache.is_index_file("library/nginx/manifests/latest-rc", patterns)
+
+    def test_numeric_date_tag_manifest_is_index(self, bare_cache):
+        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
+        assert bare_cache.is_index_file("library/nginx/manifests/20240101", patterns)
 
     def test_digest_manifest_is_not_index(self, bare_cache):
         patterns = _PACKAGE_INDEX_PATTERNS["docker"]
@@ -125,6 +150,7 @@ class TestIsIndexFileDocker:
 # ---------------------------------------------------------------------------
 # is_index_file — edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestIsIndexFileEdgeCases:
     def test_empty_patterns_nothing_is_index(self, bare_cache):
@@ -151,11 +177,15 @@ class TestIsIndexFileEdgeCases:
 # get_index_cache_key
 # ---------------------------------------------------------------------------
 
+
 class TestGetIndexCacheKey:
-    def test_same_inputs_produce_same_key(self, bare_cache):
-        k1 = bare_cache.get_index_cache_key("alpine-test", "alpine/v3.18/x86_64/APKINDEX.tar.gz")
-        k2 = bare_cache.get_index_cache_key("alpine-test", "alpine/v3.18/x86_64/APKINDEX.tar.gz")
-        assert k1 == k2
+    def test_key_format_is_deterministic(self, bare_cache):
+        # Assert against a pre-computed value to pin the hash algorithm,
+        # truncation length, and format string in one assertion.
+        path = "alpine/v3.18/x86_64/APKINDEX.tar.gz"
+        expected_hash = hashlib.sha256(path.encode()).hexdigest()[:16]
+        key = bare_cache.get_index_cache_key("alpine-test", path)
+        assert key == f"index:alpine-test:{expected_hash}"
 
     def test_different_paths_produce_different_keys(self, bare_cache):
         k1 = bare_cache.get_index_cache_key("alpine-test", "alpine/v3.18/x86_64/APKINDEX.tar.gz")
@@ -171,15 +201,27 @@ class TestGetIndexCacheKey:
         key = bare_cache.get_index_cache_key("myremote", "some/path")
         assert key.startswith("index:myremote:")
 
+    def test_key_hash_segment_is_16_chars(self, bare_cache):
+        key = bare_cache.get_index_cache_key("myremote", "some/path/file.xml")
+        # Format: index:<remote>:<16-char hash> — the fixed length matters for key-space hygiene
+        parts = key.split(":")
+        assert len(parts) == 3
+        assert len(parts[2]) == 16
+
 
 # ---------------------------------------------------------------------------
 # mark_index_cached / is_index_valid
 # ---------------------------------------------------------------------------
 
+
 class TestIndexValidity:
-    def test_marked_then_valid(self, cache_with_redis, mock_redis_client):
-        mock_redis_client.exists.return_value = 1
+    def test_mark_index_cached_calls_setex_with_correct_ttl(self, cache_with_redis, mock_redis_client):
         cache_with_redis.mark_index_cached("remote", "path/APKINDEX.tar.gz", 300)
+        expected_key = cache_with_redis.get_index_cache_key("remote", "path/APKINDEX.tar.gz")
+        mock_redis_client.setex.assert_called_once_with(expected_key, 300, ANY)
+
+    def test_present_key_is_valid(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.exists.return_value = 1
         assert cache_with_redis.is_index_valid("remote", "path/APKINDEX.tar.gz")
 
     def test_missing_key_is_not_valid(self, cache_with_redis, mock_redis_client):
@@ -190,4 +232,6 @@ class TestIndexValidity:
         assert not unavailable_cache.is_index_valid("remote", "some/path")
 
     def test_mark_cached_no_op_when_unavailable(self, unavailable_cache):
+        # client is None when Redis is unavailable — setex cannot be called
+        assert unavailable_cache.client is None
         unavailable_cache.mark_index_cached("remote", "some/path", 300)  # must not raise

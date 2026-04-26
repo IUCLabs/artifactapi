@@ -35,7 +35,6 @@ env/
 
 # Environment variables
 .env
-remotes.yaml
 
 # Logs
 *.log

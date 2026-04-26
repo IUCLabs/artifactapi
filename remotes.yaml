@@ -1,0 +1,190 @@
+# Example remotes configuration — copy and adapt for your environment.
+#
+# immutable_patterns: artifacts cached forever (e.g. release binaries, versioned tags).
+# mutable_patterns:   artifacts that expire after cache.mutable_ttl seconds and are
+#                     re-fetched from upstream on next request (e.g. index files,
+#                     branch archives). Defaults to the package-type built-ins when
+#                     not set (APKINDEX, repomd.xml, Docker manifests, etc.).
+# cache:
+#   immutable_ttl: TTL for immutable files (0 = forever, rarely needed to change).
+#   mutable_ttl:   TTL in seconds for mutable files. Omit to use the default (3600).
+#
+# WARNING: this file may contain credentials — do not commit real values.
+#
+# Global configuration
+#s3:
+#  endpoint: "localhost:9000"
+#  access_key: "minioadmin"
+#  secret_key: "minioadmin"
+#  bucket: "artifacts"
+#  secure: false
+#
+#redis:
+#  url: "redis://localhost:6379/0"
+#
+#database:
+#  url: "postgresql://artifacts:artifacts123@localhost:5432/artifacts"
+#
+remotes:
+  github:
+    base_url: "https://github.com"
+    type: "remote"
+    package: "generic"
+    description: "GitHub releases and files"
+    immutable_patterns:
+      - "gruntwork-io/terragrunt/.*terragrunt_linux_amd64.*"
+      - "lxc/incus/.*\\.tar\\.gz$"
+      - "prometheus/node_exporter/.*/node_exporter-.*\\.linux-amd64\\.tar\\.gz$"
+      - "VictoriaMetrics/VictoriaMetrics/.*/vmutils-linux-amd64-.*\\.tar\\.gz$"
+      - "VictoriaMetrics/VictoriaMetrics/.*/victoria-metrics-linux-amd64-.*-cluster\\.tar\\.gz$"
+      - "VictoriaMetrics/VictoriaMetrics/.*/victoria-logs-linux-amd64-.*\\.tar\\.gz$"
+      - "VictoriaMetrics/VictoriaMetrics/.*/vlutils-linux-amd64-.*\\.tar\\.gz$"
+      - "prometheus-community/bind_exporter/.*/bind_exporter-.*\\.linux-amd64\\.tar\\.gz$"
+      - "prometheus-community/pgbouncer_exporter/.*/pgbouncer_exporter-.*\\.linux-amd64\\.tar\\.gz$"
+      - "prometheus-community/postgres_exporter/.*/postgres_exporter-.*\\.linux-amd64\\.tar\\.gz$"
+      - "onedr0p/exportarr/.*/exportarr_.*_linux_amd64\\.tar\\.gz$"
+      - "tynany/frr_exporter/.*/frr_exporter-.*\\.linux-amd64\\.tar\\.gz$"
+      - "camptocamp/prometheus-puppetdb-exporter/.*/prometheus-puppetdb-exporter-.*\\.linux-amd64\\.tar\\.gz$"
+      - "grafana/jsonnet-language-server/.*/jsonnet-language-server_.*_linux_amd64$"
+      - "helmfile/helmfile/.*/helmfile_.*_linux_amd64\\.tar\\.gz$"
+      - "helmfile/vals/.*/vals_.*_linux_amd64\\.tar\\.gz$"
+      - "openbao/openbao-plugins/.*/openbao-plugin-secrets-consul_linux_amd64_.*\\.tar\\.gz$"
+      - "openbao/openbao-plugins/.*/openbao-plugin-secrets-nomad_linux_amd64_.*\\.tar\\.gz$"
+      - "apple/foundationdb/.*/libfdb_c\\.x86_64\\.so$"
+      - "stalwartlabs/stalwart/.*/stalwart-cli-x86_64-unknown-linux-gnu\\.tar\\.gz$"
+      - "stalwartlabs/stalwart/.*/stalwart-foundationdb-x86_64-unknown-linux-gnu\\.tar\\.gz$"
+      - "stalwartlabs/stalwart/.*/stalwart-x86_64-unknown-linux-gnu\\.tar\\.gz$"
+    cache:
+      immutable_ttl: 0  # Files cached indefinitely
+      mutable_ttl: 0
+
+  github-archive:
+    base_url: "https://github.com"
+    type: "remote"
+    package: "generic"
+    description: "GitHub repository archive tarballs"
+    immutable_patterns:
+      # Tag archives are immutable — a tag never changes
+      - ".*/archive/refs/tags/.*\\.tar\\.gz$"
+    mutable_patterns:
+      # Branch archives can change on every push
+      - ".*/archive/refs/heads/main\\.tar\\.gz$"
+      - ".*/archive/refs/heads/master\\.tar\\.gz$"
+    cache:
+      immutable_ttl: 0       # Tag archives cached indefinitely
+      mutable_ttl: 86400     # Branch archives refreshed after 1 day
+
+  gitea-dl:
+    base_url: "https://dl.gitea.com"
+    type: "remote"
+    package: "generic"
+    description: "Gitea download site"
+    immutable_patterns:
+      - "act_runner/.*/act_runner-.*-linux-amd64$"
+    cache:
+      immutable_ttl: 0  # Files cached indefinitely
+      mutable_ttl: 0
+
+  hashicorp-releases:
+    base_url: "https://releases.hashicorp.com"
+    type: "remote"
+    package: "generic"
+    description: "HashiCorp product releases"
+    immutable_patterns:
+      - "terraform/.*terraform_.*_linux_amd64\\.zip$"
+      - "terraform/.*terraform_.*_windows_amd64\\.zip$"
+      - "terraform/.*terraform_.*_darwin_amd64\\.zip$"
+      - "vault/.*vault_.*_linux_amd64\\.zip$"
+      - "vault/.*vault_.*_windows_amd64\\.zip$"
+      - "vault/.*vault_.*_darwin_amd64\\.zip$"
+      - "consul-cni/.*/consul-cni_.*_linux_amd64\\.zip$"
+      - "consul/.*/consul_.*_linux_amd64\\.zip$"
+      - "nomad-autoscaler/.*/nomad-autoscaler_.*_linux_amd64\\.zip$"
+      - "nomad/.*/nomad_.*_linux_amd64\\.zip$"
+      - "packer/.*/packer_.*_linux_amd64\\.zip$"
+    cache:
+      immutable_ttl: 0  # Files cached indefinitely
+      mutable_ttl: 0
+
+  alpine:
+    base_url: "https://dl-cdn.alpinelinux.org"
+    type: "remote"
+    package: "alpine"
+    description: "Alpine Linux APK package repository"
+    immutable_patterns:
+      - ".*/x86_64/.*\\.apk$"
+    cache:
+      immutable_ttl: 0  # Files cached indefinitely
+      mutable_ttl: 7200  # Index files (APKINDEX.tar.gz) cached for 2 hours
+
+  almalinux:
+    base_url: "https://gsl-syd.mm.fcix.net/almalinux"
+    type: "remote"
+    package: "rpm"
+    description: "AlmaLinux RPM package repository"
+    immutable_patterns:
+      - ".*/x86_64/.*\\.rpm$"
+      - ".*/noarch/.*\\.rpm$"
+      - ".*/repodata/.*$"
+      - ".*\\.rpm$"  # Allow all RPM files
+    cache:
+      immutable_ttl: 0  # Files cached indefinitely
+      mutable_ttl: 7200  # Metadata files cached for 1 hour
+
+  epel:
+    base_url: "http://mirror.aarnet.edu.au/pub/epel"
+    type: "remote"
+    package: "rpm"
+    description: "EPEL (Extra Packages for Enterprise Linux)"
+    immutable_patterns:
+      - "8/Everything/x86_64/.*\\.rpm$"
+      - "9/Everything/x86_64/.*\\.rpm$"
+      - "10/Everything/x86_64/.*\\.rpm$"
+      - ".*/noarch/.*\\.rpm$"
+      - ".*/repodata/.*$"
+    cache:
+      immutable_ttl: 0  # Files cached indefinitely
+      mutable_ttl: 7200  # Metadata files cached for 2 hours
+
+  fedora:
+    base_url: "https://gsl-syd.mm.fcix.net/fedora/linux"
+    type: "remote"
+    package: "rpm"
+    description: "Fedora Linux RPM package repository"
+    immutable_patterns:
+      - "releases/.*/Everything/x86_64/.*\\.rpm$"
+      - "updates/.*/Everything/x86_64/.*\\.rpm$"
+      - "development/.*/Everything/x86_64/.*\\.rpm$"
+      - ".*/noarch/.*\\.rpm$"
+      - "updates/.*/Everything/x86_64/repodata/.*$"
+    cache:
+      immutable_ttl: 0  # Files cached indefinitely
+      mutable_ttl: 300  # Metadata files cached for 5 minutes
+
+  ghcr:
+    base_url: "https://ghcr.io"
+    type: "remote"
+    package: "docker"
+    description: "GitHub Container Registry"
+    # username: "your-github-username"
+    # password: "your-github-pat"  # needs read:packages scope
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 300
+
+  dockerhub:
+    base_url: "https://registry-1.docker.io"
+    type: "remote"
+    package: "docker"
+    description: "Docker Hub registry"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 300
+
+  local-generic:
+    type: "local"
+    package: "generic"
+    description: "Local generic file repository"
+    cache:
+      immutable_ttl: 0  # Files cached indefinitely
+      mutable_ttl: 0

@@ -19,8 +19,8 @@ class RedisCache:
             self.client = None
             self.available = False
 
-    def is_index_file(self, file_path: str, patterns: list[str] | None = None) -> bool:
-        """Return True if file_path matches any of the index patterns."""
+    def is_mutable_file(self, file_path: str, patterns: list[str] | None = None) -> bool:
+        """Return True if file_path matches any of the mutable patterns."""
         if patterns is None:
             patterns = []
         return any(re.search(p, file_path) for p in patterns)

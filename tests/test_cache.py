@@ -1,4 +1,4 @@
-"""Tests for RedisCache, focusing on is_index_file with configurable patterns."""
+"""Tests for RedisCache, focusing on is_mutable_file with configurable patterns."""
 
 import hashlib
 from unittest.mock import ANY, MagicMock, patch
@@ -6,7 +6,7 @@ from unittest.mock import ANY, MagicMock, patch
 import pytest
 
 from artifactapi.cache import RedisCache
-from artifactapi.config import _PACKAGE_INDEX_PATTERNS
+from artifactapi.config import _PACKAGE_MUTABLE_PATTERNS
 
 
 @pytest.fixture
@@ -38,139 +38,139 @@ def cache_with_redis(mock_redis_client):
 
 
 # ---------------------------------------------------------------------------
-# is_index_file — alpine patterns
+# is_mutable_file — alpine patterns
 # ---------------------------------------------------------------------------
 
 
-class TestIsIndexFileAlpine:
+class TestIsMutableFileAlpine:
     def test_apkindex_tarball_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
-        assert bare_cache.is_index_file("alpine/v3.18/x86_64/APKINDEX.tar.gz", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["alpine"]
+        assert bare_cache.is_mutable_file("alpine/v3.18/x86_64/APKINDEX.tar.gz", patterns)
 
     def test_nested_apkindex_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
-        assert bare_cache.is_index_file("mirrors/dl-cdn/alpine/v3.19/community/x86_64/APKINDEX.tar.gz", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["alpine"]
+        assert bare_cache.is_mutable_file("mirrors/dl-cdn/alpine/v3.19/community/x86_64/APKINDEX.tar.gz", patterns)
 
     def test_apk_package_is_not_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
-        assert not bare_cache.is_index_file("alpine/v3.18/x86_64/musl-1.2.4-r2.apk", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["alpine"]
+        assert not bare_cache.is_mutable_file("alpine/v3.18/x86_64/musl-1.2.4-r2.apk", patterns)
 
     def test_random_tarball_is_not_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
-        assert not bare_cache.is_index_file("some/path/archive.tar.gz", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["alpine"]
+        assert not bare_cache.is_mutable_file("some/path/archive.tar.gz", patterns)
 
     def test_apkindex_signature_file_is_not_index(self, bare_cache):
         # Signature file adjacent to the index should not be treated as an index
-        patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
-        assert not bare_cache.is_index_file("alpine/v3.18/x86_64/APKINDEX.tar.gz.sig", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["alpine"]
+        assert not bare_cache.is_mutable_file("alpine/v3.18/x86_64/APKINDEX.tar.gz.sig", patterns)
 
     def test_apkindex_tmp_file_is_not_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["alpine"]
-        assert not bare_cache.is_index_file("alpine/v3.18/x86_64/APKINDEX.tar.gz.tmp", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["alpine"]
+        assert not bare_cache.is_mutable_file("alpine/v3.18/x86_64/APKINDEX.tar.gz.tmp", patterns)
 
 
 # ---------------------------------------------------------------------------
-# is_index_file — rpm patterns
+# is_mutable_file — rpm patterns
 # ---------------------------------------------------------------------------
 
 
-class TestIsIndexFileRpm:
+class TestIsMutableFileRpm:
     def test_repomd_xml_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
-        assert bare_cache.is_index_file("almalinux/9/x86_64/repomd.xml", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["rpm"]
+        assert bare_cache.is_mutable_file("almalinux/9/x86_64/repomd.xml", patterns)
 
     def test_repodata_primary_xml_gz_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
-        assert bare_cache.is_index_file("repo/repodata/primary.xml.gz", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["rpm"]
+        assert bare_cache.is_mutable_file("repo/repodata/primary.xml.gz", patterns)
 
     def test_repodata_sqlite_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
-        assert bare_cache.is_index_file("repo/repodata/primary.sqlite", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["rpm"]
+        assert bare_cache.is_mutable_file("repo/repodata/primary.sqlite", patterns)
 
     def test_repodata_sqlite_bz2_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
-        assert bare_cache.is_index_file("repo/repodata/other.sqlite.bz2", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["rpm"]
+        assert bare_cache.is_mutable_file("repo/repodata/other.sqlite.bz2", patterns)
 
     def test_repodata_yaml_xz_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
-        assert bare_cache.is_index_file("repo/repodata/comps.yaml.xz", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["rpm"]
+        assert bare_cache.is_mutable_file("repo/repodata/comps.yaml.xz", patterns)
 
     def test_packages_gz_pattern_matches_any_path(self, bare_cache):
         # The Packages.gz$ regex is a carryover from the original hardcoded logic and
         # deliberately matches any path ending in Packages.gz — including Debian-style paths.
         # This test documents that intentional behaviour.
-        patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
-        assert bare_cache.is_index_file("debian/dists/stable/main/binary-amd64/Packages.gz", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["rpm"]
+        assert bare_cache.is_mutable_file("debian/dists/stable/main/binary-amd64/Packages.gz", patterns)
 
     def test_rpm_package_is_not_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
-        assert not bare_cache.is_index_file("almalinux/9/x86_64/Packages/bash-5.1.8.x86_64.rpm", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["rpm"]
+        assert not bare_cache.is_mutable_file("almalinux/9/x86_64/Packages/bash-5.1.8.x86_64.rpm", patterns)
 
     def test_arbitrary_xml_outside_repodata_is_not_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["rpm"]
-        assert not bare_cache.is_index_file("some/path/config.xml", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["rpm"]
+        assert not bare_cache.is_mutable_file("some/path/config.xml", patterns)
 
 
 # ---------------------------------------------------------------------------
-# is_index_file — docker patterns
+# is_mutable_file — docker patterns
 # ---------------------------------------------------------------------------
 
 
-class TestIsIndexFileDocker:
+class TestIsMutableFileDocker:
     def test_tag_manifest_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
-        assert bare_cache.is_index_file("library/nginx/manifests/latest", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["docker"]
+        assert bare_cache.is_mutable_file("library/nginx/manifests/latest", patterns)
 
     def test_version_tag_manifest_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
-        assert bare_cache.is_index_file("library/nginx/manifests/1.25.3", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["docker"]
+        assert bare_cache.is_mutable_file("library/nginx/manifests/1.25.3", patterns)
 
     def test_hyphenated_tag_manifest_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
-        assert bare_cache.is_index_file("library/nginx/manifests/latest-rc", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["docker"]
+        assert bare_cache.is_mutable_file("library/nginx/manifests/latest-rc", patterns)
 
     def test_numeric_date_tag_manifest_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
-        assert bare_cache.is_index_file("library/nginx/manifests/20240101", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["docker"]
+        assert bare_cache.is_mutable_file("library/nginx/manifests/20240101", patterns)
 
     def test_digest_manifest_is_not_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
+        patterns = _PACKAGE_MUTABLE_PATTERNS["docker"]
         digest = "sha256:" + "a" * 64
-        assert not bare_cache.is_index_file(f"library/nginx/manifests/{digest}", patterns)
+        assert not bare_cache.is_mutable_file(f"library/nginx/manifests/{digest}", patterns)
 
     def test_tags_list_is_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
-        assert bare_cache.is_index_file("library/nginx/tags/list", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["docker"]
+        assert bare_cache.is_mutable_file("library/nginx/tags/list", patterns)
 
     def test_blob_is_not_index(self, bare_cache):
-        patterns = _PACKAGE_INDEX_PATTERNS["docker"]
-        assert not bare_cache.is_index_file("library/nginx/blobs/sha256:abc123", patterns)
+        patterns = _PACKAGE_MUTABLE_PATTERNS["docker"]
+        assert not bare_cache.is_mutable_file("library/nginx/blobs/sha256:abc123", patterns)
 
 
 # ---------------------------------------------------------------------------
-# is_index_file — edge cases
+# is_mutable_file — edge cases
 # ---------------------------------------------------------------------------
 
 
-class TestIsIndexFileEdgeCases:
+class TestIsMutableFileEdgeCases:
     def test_empty_patterns_nothing_is_index(self, bare_cache):
-        assert not bare_cache.is_index_file("APKINDEX.tar.gz", [])
-        assert not bare_cache.is_index_file("repomd.xml", [])
-        assert not bare_cache.is_index_file("library/nginx/manifests/latest", [])
+        assert not bare_cache.is_mutable_file("APKINDEX.tar.gz", [])
+        assert not bare_cache.is_mutable_file("repomd.xml", [])
+        assert not bare_cache.is_mutable_file("library/nginx/manifests/latest", [])
 
     def test_none_patterns_nothing_is_index(self, bare_cache):
-        assert not bare_cache.is_index_file("APKINDEX.tar.gz", None)
-        assert not bare_cache.is_index_file("repomd.xml", None)
+        assert not bare_cache.is_mutable_file("APKINDEX.tar.gz", None)
+        assert not bare_cache.is_mutable_file("repomd.xml", None)
 
     def test_custom_patterns_match(self, bare_cache):
         patterns = [r"metadata\.json$", r"index\.yaml$"]
-        assert bare_cache.is_index_file("repo/metadata.json", patterns)
-        assert bare_cache.is_index_file("repo/subdir/index.yaml", patterns)
-        assert not bare_cache.is_index_file("repo/data.tar.gz", patterns)
+        assert bare_cache.is_mutable_file("repo/metadata.json", patterns)
+        assert bare_cache.is_mutable_file("repo/subdir/index.yaml", patterns)
+        assert not bare_cache.is_mutable_file("repo/data.tar.gz", patterns)
 
     def test_custom_pattern_does_not_match_standard_index(self, bare_cache):
         patterns = [r"metadata\.json$"]
-        assert not bare_cache.is_index_file("APKINDEX.tar.gz", patterns)
+        assert not bare_cache.is_mutable_file("APKINDEX.tar.gz", patterns)
 
 
 # ---------------------------------------------------------------------------

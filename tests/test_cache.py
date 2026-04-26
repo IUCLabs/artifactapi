@@ -235,3 +235,51 @@ class TestIndexValidity:
         # client is None when Redis is unavailable — setex cannot be called
         assert unavailable_cache.client is None
         unavailable_cache.mark_index_cached("remote", "some/path", 300)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# mutable meta (ETag / Last-Modified storage)
+# ---------------------------------------------------------------------------
+
+
+class TestMutableMeta:
+    def test_meta_key_format(self, bare_cache):
+        path = "repo/metadata.json"
+        expected_hash = hashlib.sha256(path.encode()).hexdigest()[:16]
+        assert bare_cache.get_mutable_meta_key("myremote", path) == f"mutable:meta:myremote:{expected_hash}"
+
+    def test_meta_key_hash_is_16_chars(self, bare_cache):
+        key = bare_cache.get_mutable_meta_key("remote", "some/path/file.json")
+        assert len(key.split(":")[-1]) == 16
+
+    def test_store_and_retrieve_etag(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.hgetall.return_value = {"etag": '"abc123"'}
+        cache_with_redis.store_mutable_meta("remote", "path/meta.json", '"abc123"', None)
+        mock_redis_client.hset.assert_called_once()
+        meta = cache_with_redis.get_mutable_meta("remote", "path/meta.json")
+        assert meta["etag"] == '"abc123"'
+
+    def test_store_and_retrieve_last_modified(self, cache_with_redis, mock_redis_client):
+        lm = "Mon, 01 Jan 2024 00:00:00 GMT"
+        mock_redis_client.hgetall.return_value = {"last_modified": lm}
+        cache_with_redis.store_mutable_meta("remote", "path/meta.json", None, lm)
+        meta = cache_with_redis.get_mutable_meta("remote", "path/meta.json")
+        assert meta["last_modified"] == lm
+
+    def test_store_no_op_when_both_none(self, cache_with_redis, mock_redis_client):
+        cache_with_redis.store_mutable_meta("remote", "path/meta.json", None, None)
+        mock_redis_client.hset.assert_not_called()
+
+    def test_store_no_op_when_unavailable(self, unavailable_cache):
+        unavailable_cache.store_mutable_meta("remote", "path", "etag", None)  # must not raise
+
+    def test_get_returns_empty_when_unavailable(self, unavailable_cache):
+        assert unavailable_cache.get_mutable_meta("remote", "path") == {}
+
+    def test_delete_removes_meta_key(self, cache_with_redis, mock_redis_client):
+        expected_key = cache_with_redis.get_mutable_meta_key("remote", "path/meta.json")
+        cache_with_redis.delete_mutable_meta("remote", "path/meta.json")
+        mock_redis_client.delete.assert_called_once_with(expected_key)
+
+    def test_delete_no_op_when_unavailable(self, unavailable_cache):
+        unavailable_cache.delete_mutable_meta("remote", "path")  # must not raise

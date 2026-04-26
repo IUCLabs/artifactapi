@@ -209,6 +209,39 @@ class TestGetImmutablePatterns:
 
 
 # ---------------------------------------------------------------------------
+# get_user_mutable_patterns
+# ---------------------------------------------------------------------------
+
+
+class TestGetUserMutablePatterns:
+    def test_returns_only_user_patterns(self, make_config):
+        cfg = make_config(
+            {
+                "r": {
+                    "type": "remote",
+                    "package": "alpine",
+                    "base_url": "https://x.com",
+                    "mutable_patterns": [r"custom\.json$"],
+                }
+            }
+        )
+        assert cfg.get_user_mutable_patterns("r") == [r"custom\.json$"]
+
+    def test_excludes_package_defaults(self, make_config):
+        # Package defaults (APKINDEX etc.) must NOT appear here
+        cfg = make_config({"r": {"type": "remote", "package": "alpine", "base_url": "https://x.com"}})
+        assert cfg.get_user_mutable_patterns("r") == []
+
+    def test_returns_empty_for_missing_remote(self, make_config):
+        cfg = make_config({})
+        assert cfg.get_user_mutable_patterns("nonexistent") == []
+
+    def test_returns_empty_when_key_absent(self, make_config):
+        cfg = make_config({"r": {"type": "remote", "package": "generic", "base_url": "https://x.com"}})
+        assert cfg.get_user_mutable_patterns("r") == []
+
+
+# ---------------------------------------------------------------------------
 # get_cache_config
 # ---------------------------------------------------------------------------
 

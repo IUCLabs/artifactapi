@@ -124,6 +124,13 @@ class ConfigManager:
         db_url = f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
         return {"url": db_url}
 
+    def get_user_mutable_patterns(self, remote_name: str) -> list[str]:
+        """Return only user-configured mutable_patterns, excluding package-type defaults."""
+        remote_config = self.get_remote_config(remote_name)
+        if not remote_config:
+            return []
+        return remote_config.get("mutable_patterns", [])
+
     def get_mutable_patterns(self, remote_name: str) -> list[str]:
         """Return mutable-file patterns for a remote (TTL is configured per-remote in cache.index_ttl).
 

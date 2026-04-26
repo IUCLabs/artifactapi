@@ -70,6 +70,10 @@ remotes:
       # Branch archives can change on every push
       - ".*/archive/refs/heads/main\\.tar\\.gz$"
       - ".*/archive/refs/heads/master\\.tar\\.gz$"
+    # Before re-downloading an expired branch archive, check whether it has
+    # actually changed (304 Not Modified → just refresh the TTL, no transfer).
+    # Only applies to user-defined mutable_patterns, not package-type defaults.
+    check_mutable_updates: true
     cache:
       immutable_ttl: 0       # Tag archives cached indefinitely
       mutable_ttl: 86400     # Branch archives refreshed after 1 day
@@ -113,6 +117,9 @@ remotes:
     description: "Alpine Linux APK package repository"
     immutable_patterns:
       - ".*/x86_64/.*\\.apk$"
+    # check_mutable_updates not set: APKINDEX.tar.gz is a package-type default
+    # and is always re-fetched on expiry — conditional checks are skipped for
+    # built-in mutable patterns regardless of this flag.
     cache:
       immutable_ttl: 0  # Files cached indefinitely
       mutable_ttl: 7200  # Index files (APKINDEX.tar.gz) cached for 2 hours
@@ -127,9 +134,12 @@ remotes:
       - ".*/noarch/.*\\.rpm$"
       - ".*/repodata/.*$"
       - ".*\\.rpm$"  # Allow all RPM files
+    # repomd.xml / repodata are package-type defaults — always re-fetched on
+    # expiry. check_mutable_updates would only apply to any custom
+    # mutable_patterns added here.
     cache:
       immutable_ttl: 0  # Files cached indefinitely
-      mutable_ttl: 7200  # Metadata files cached for 1 hour
+      mutable_ttl: 7200  # Metadata files cached for 2 hours
 
   epel:
     base_url: "http://mirror.aarnet.edu.au/pub/epel"
@@ -168,6 +178,9 @@ remotes:
     description: "GitHub Container Registry"
     # username: "your-github-username"
     # password: "your-github-pat"  # needs read:packages scope
+    # Docker manifest/tag-list patterns are package-type defaults — always
+    # re-fetched on expiry. check_mutable_updates only applies to any custom
+    # mutable_patterns you add (e.g. a metadata endpoint).
     cache:
       immutable_ttl: 0
       mutable_ttl: 300

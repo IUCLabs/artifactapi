@@ -59,6 +59,14 @@ TEST_REMOTES = {
             "mutable_patterns": ["metadata\\.json$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
         },
+        "check-mutable-test": {
+            "base_url": "https://example.com",
+            "type": "remote",
+            "package": "generic",
+            "mutable_patterns": ["metadata\\.json$"],
+            "check_mutable_updates": True,
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
+        },
         "local-test": {
             "type": "local",
             "package": "generic",

@@ -87,8 +87,10 @@ def flush_cache(
             if cache_type in ["all", "index"]:
                 if remote:
                     patterns.append(f"index:{remote}:*")
+                    patterns.append(f"mutable:meta:{remote}:*")
                 else:
                     patterns.append("index:*")
+                    patterns.append("mutable:meta:*")
 
             if cache_type in ["all", "metrics"]:
                 if remote:
@@ -240,10 +242,34 @@ async def cache_single_artifact(url: str, remote_name: str, path: str) -> dict:
                 "storage_path": storage_path,
                 "size": len(response.content),
                 "status": "cached",
+                "etag": response.headers.get("ETag"),
+                "last_modified": response.headers.get("Last-Modified"),
             }
 
     except Exception as e:
         return {"url": url, "status": "error", "error": str(e)}
+
+
+async def check_upstream_changed(remote_url: str, remote_name: str, path: str) -> bool:
+    """Conditional HEAD against upstream. Returns False only on a definitive 304."""
+    meta = cache.get_mutable_meta(remote_name, path)
+    if not meta:
+        return True
+
+    headers = {}
+    if meta.get("etag"):
+        headers["If-None-Match"] = meta["etag"]
+    if meta.get("last_modified"):
+        headers["If-Modified-Since"] = meta["last_modified"]
+    if not headers:
+        return True
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.head(remote_url, headers=headers)
+        return response.status_code != 304
+    except Exception:
+        return True
 
 
 @app.get("/api/v1/remote/{remote_name}/{path:path}")
@@ -302,9 +328,23 @@ async def get_artifact(remote_name: str, path: str):
 
     if cached_key and is_mutable:
         if not cache.is_index_valid(remote_name, path):
-            logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
-            cache.cleanup_expired_index(storage, remote_name, path)
-            cached_key = None  # Force re-download
+            remote_cfg = config.get_remote_config(remote_name) or {}
+            check_updates = remote_cfg.get("check_mutable_updates", False)
+            user_mutable = check_updates and cache.is_mutable_file(path, config.get_user_mutable_patterns(remote_name))
+            if user_mutable:
+                changed = await check_upstream_changed(remote_url, remote_name, path)
+                if not changed:
+                    mutable_ttl = config.get_cache_config(remote_name).get("mutable_ttl", 3600)
+                    cache.mark_index_cached(remote_name, path, mutable_ttl)
+                    logger.info(f"Mutable file UNCHANGED: {remote_name}/{path} - TTL refreshed ({mutable_ttl}s)")
+                else:
+                    logger.info(f"Mutable file CHANGED: {remote_name}/{path} - re-downloading")
+                    cache.cleanup_expired_index(storage, remote_name, path)
+                    cached_key = None
+            else:
+                logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
+                cache.cleanup_expired_index(storage, remote_name, path)
+                cached_key = None
 
     if cached_key:
         # Return cached artifact
@@ -362,6 +402,8 @@ async def get_artifact(remote_name: str, path: str):
         mutable_ttl = cache_config.get("mutable_ttl", 3600)
         cache.mark_index_cached(remote_name, path, mutable_ttl)
         logger.info(f"Mutable file cached with TTL: {remote_name}/{path} (ttl: {mutable_ttl}s)")
+        if result.get("etag") or result.get("last_modified"):
+            cache.store_mutable_meta(remote_name, path, result.get("etag"), result.get("last_modified"))
 
     # Now return the cached artifact
     try:
@@ -439,9 +481,23 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
 
     if cached_key and is_mutable:
         if not cache.is_index_valid(remote_name, path):
-            logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
-            cache.cleanup_expired_index(storage, remote_name, path)
-            cached_key = None
+            remote_cfg = config.get_remote_config(remote_name) or {}
+            check_updates = remote_cfg.get("check_mutable_updates", False)
+            user_mutable = check_updates and cache.is_mutable_file(path, config.get_user_mutable_patterns(remote_name))
+            if user_mutable:
+                changed = await check_upstream_changed(remote_url, remote_name, path)
+                if not changed:
+                    mutable_ttl = config.get_cache_config(remote_name).get("mutable_ttl", 3600)
+                    cache.mark_index_cached(remote_name, path, mutable_ttl)
+                    logger.info(f"Mutable file UNCHANGED: {remote_name}/{path} - TTL refreshed ({mutable_ttl}s)")
+                else:
+                    logger.info(f"Mutable file CHANGED: {remote_name}/{path} - re-downloading")
+                    cache.cleanup_expired_index(storage, remote_name, path)
+                    cached_key = None
+            else:
+                logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
+                cache.cleanup_expired_index(storage, remote_name, path)
+                cached_key = None
 
     if not cached_key:
         logger.info(f"Cache MISS: {remote_name}/{path} - fetching from remote: {remote_url}")
@@ -453,6 +509,8 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
             mutable_ttl = cache_config.get("mutable_ttl", 3600)
             cache.mark_index_cached(remote_name, path, mutable_ttl)
             logger.info(f"Mutable file cached with TTL: {remote_name}/{path} (ttl: {mutable_ttl}s)")
+            if result.get("etag") or result.get("last_modified"):
+                cache.store_mutable_meta(remote_name, path, result.get("etag"), result.get("last_modified"))
 
     artifact_data = storage.download_object(storage.get_object_key(remote_name, path))
 

@@ -685,7 +685,7 @@ class TestPyPIRemote:
         response = client.get("/api/v1/remote/pypi-test/simple/requests/")
         assert response.status_code == 200
         assert b"files.pythonhosted.org" not in response.content
-        assert b"/api/v1/remote/pypi-files-test/packages/requests-2.31.0.tar.gz" in response.content
+        assert b"/api/v1/remote/pypi-test/packages/requests-2.31.0.tar.gz" in response.content
 
     def test_simple_index_content_type_is_html(self, client, patched_deps):
         deps = patched_deps
@@ -722,7 +722,7 @@ class TestPyPIRemote:
         deps["storage"].download_object.return_value = b"PK wheel bytes"
         deps["cache"].is_mutable_file.return_value = False
 
-        response = client.get("/api/v1/remote/pypi-files-test/packages/requests-2.31.0-py3-none-any.whl")
+        response = client.get("/api/v1/remote/pypi-test/packages/requests-2.31.0-py3-none-any.whl")
         assert response.status_code == 200
         assert "application/zip" in response.headers["content-type"]
         assert response.headers["X-Artifact-Source"] == "cache"
@@ -733,13 +733,13 @@ class TestPyPIRemote:
         deps["storage"].download_object.return_value = b"tar bytes"
         deps["cache"].is_mutable_file.return_value = False
 
-        response = client.get("/api/v1/remote/pypi-files-test/packages/requests-2.31.0.tar.gz")
+        response = client.get("/api/v1/remote/pypi-test/packages/requests-2.31.0.tar.gz")
         assert response.status_code == 200
         assert "application/gzip" in response.headers["content-type"]
 
-    def test_blocked_path_on_files_remote_returns_403(self, client, patched_deps):
-        """Paths that don't match immutable_patterns on pypi-files-test are blocked."""
-        response = client.get("/api/v1/remote/pypi-files-test/packages/requests.unknown")
+    def test_unknown_extension_on_pypi_remote_returns_403(self, client, patched_deps):
+        """Paths that don't match immutable_patterns and aren't mutable are blocked."""
+        response = client.get("/api/v1/remote/pypi-test/packages/requests.unknown")
         assert response.status_code == 403
 
 

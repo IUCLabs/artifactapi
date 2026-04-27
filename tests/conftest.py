@@ -72,6 +72,25 @@ TEST_REMOTES = {
             "package": "generic",
             "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
         },
+        "pypi-test": {
+            "base_url": "https://pypi.org",
+            "type": "remote",
+            "package": "pypi",
+            "pypi_files_url": "https://files.pythonhosted.org",
+            "pypi_files_remote": "pypi-files-test",
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
+        },
+        "pypi-files-test": {
+            "base_url": "https://files.pythonhosted.org",
+            "type": "remote",
+            "package": "generic",
+            "immutable_patterns": [
+                "packages/.*\\.whl$",
+                "packages/.*\\.whl\\.metadata$",
+                "packages/.*\\.tar\\.gz$",
+            ],
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
+        },
     }
 }
 

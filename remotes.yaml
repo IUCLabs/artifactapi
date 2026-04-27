@@ -194,6 +194,55 @@ remotes:
       immutable_ttl: 0
       mutable_ttl: 300
 
+  pypi:
+    base_url: "https://pypi.org"
+    type: "remote"
+    package: "pypi"
+    description: "Python Package Index — simple repository API"
+    # pypi_files_url: the upstream host used in simple-index hrefs (default: files.pythonhosted.org)
+    # pypi_files_remote: our proxy remote that will serve those files (default: pypi-files)
+    pypi_files_url: "https://files.pythonhosted.org"
+    pypi_files_remote: "pypi-files"
+    check_mutable_updates: true
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 600  # Simple index pages refreshed after 10 minutes
+
+  pypi-gitea:
+    base_url: "https://gitea.example.com/api/packages/myorg/pypi"
+    type: "remote"
+    package: "pypi"
+    description: "Private Gitea PyPI registry"
+    # username: "your-gitea-username"
+    # password: "your-personal-access-token"  # needs package:read scope
+    # Files are served from the same Gitea instance — rewrite back to this same remote
+    pypi_files_url: "https://gitea.example.com/api/packages/myorg/pypi"
+    pypi_files_remote: "pypi-gitea"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "files/.*\\.whl$"
+      - "files/.*\\.whl\\.metadata$"
+      - "files/.*\\.tar\\.gz$"
+      - "files/.*\\.zip$"
+      - "files/.*\\.egg$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 600
+
+  pypi-files:
+    base_url: "https://files.pythonhosted.org"
+    type: "remote"
+    package: "generic"
+    description: "Python Package Index — file storage (wheels, sdists)"
+    immutable_patterns:
+      - "packages/.*\\.whl$"
+      - "packages/.*\\.whl\\.metadata$"
+      - "packages/.*\\.tar\\.gz$"
+      - "packages/.*\\.zip$"
+      - "packages/.*\\.egg$"
+    cache:
+      immutable_ttl: 0  # Package files are content-addressed — cache forever
+
   local-generic:
     type: "local"
     package: "generic"

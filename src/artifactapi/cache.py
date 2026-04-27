@@ -19,18 +19,20 @@ class RedisCache:
             self.client = None
             self.available = False
 
-    def is_index_file(self, file_path: str, patterns: list[str] | None = None) -> bool:
-        """Return True if file_path matches any of the index patterns."""
+    def is_mutable_file(self, file_path: str, patterns: list[str] | None = None) -> bool:
+        """Return True if file_path matches any of the mutable patterns."""
         if patterns is None:
             patterns = []
         return any(re.search(p, file_path) for p in patterns)
 
     def get_index_cache_key(self, remote_name: str, path: str) -> str:
-        """Generate cache key for index files"""
         return f"index:{remote_name}:{hashlib.sha256(path.encode()).hexdigest()[:16]}"
 
-    def is_index_valid(self, remote_name: str, path: str, ttl_override: int = None) -> bool:
-        """Check if index file is still valid (not expired)"""
+    def get_mutable_meta_key(self, remote_name: str, path: str) -> str:
+        return f"mutable:meta:{remote_name}:{hashlib.sha256(path.encode()).hexdigest()[:16]}"
+
+    def is_index_valid(self, remote_name: str, path: str) -> bool:
+        """Check if mutable file is still within its TTL window."""
         if not self.available:
             return False
 
@@ -41,7 +43,7 @@ class RedisCache:
             return False
 
     def mark_index_cached(self, remote_name: str, path: str, ttl: int = 300) -> None:
-        """Mark index file as cached with TTL"""
+        """Set or refresh the TTL key for a mutable file."""
         if not self.available:
             return
 
@@ -51,13 +53,45 @@ class RedisCache:
         except Exception:
             pass
 
+    def store_mutable_meta(self, remote_name: str, path: str, etag: str | None, last_modified: str | None) -> None:
+        """Persist ETag and Last-Modified for future conditional requests."""
+        if not self.available:
+            return
+        data = {}
+        if etag:
+            data["etag"] = etag
+        if last_modified:
+            data["last_modified"] = last_modified
+        if not data:
+            return
+        try:
+            self.client.hset(self.get_mutable_meta_key(remote_name, path), mapping=data)
+        except Exception:
+            pass
+
+    def get_mutable_meta(self, remote_name: str, path: str) -> dict:
+        """Return stored ETag/Last-Modified for a mutable file, or {}."""
+        if not self.available:
+            return {}
+        try:
+            return self.client.hgetall(self.get_mutable_meta_key(remote_name, path)) or {}
+        except Exception:
+            return {}
+
+    def delete_mutable_meta(self, remote_name: str, path: str) -> None:
+        if not self.available:
+            return
+        try:
+            self.client.delete(self.get_mutable_meta_key(remote_name, path))
+        except Exception:
+            pass
+
     def cleanup_expired_index(self, storage, remote_name: str, path: str) -> None:
-        """Remove expired index from S3 storage"""
+        """Remove an expired mutable file from S3 and clear its Redis meta."""
         if not self.available:
             return
 
         try:
-            # Construct the URL the same way as in the main flow
             import os
 
             from .config import ConfigManager
@@ -69,9 +103,10 @@ class RedisCache:
                 if remote_config:
                     base_url = remote_config.get("base_url")
                     if base_url:
-                        # Use hierarchical path-based key (same as cache_single_artifact)
                         s3_key = storage.get_object_key(remote_name, path)
                         if storage.exists(s3_key):
                             storage.client.delete_object(Bucket=storage.bucket, Key=s3_key)
         except Exception:
             pass
+
+        self.delete_mutable_meta(remote_name, path)

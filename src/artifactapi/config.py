@@ -3,7 +3,7 @@ import os
 
 import yaml
 
-_PACKAGE_INDEX_PATTERNS: dict[str, list[str]] = {
+_PACKAGE_MUTABLE_PATTERNS: dict[str, list[str]] = {
     "alpine": [
         r"APKINDEX\.tar\.gz$",
     ],
@@ -55,26 +55,21 @@ class ConfigManager:
         self._check_reload()
         return self.config.get("remotes", {}).get(remote_name)
 
-    def get_repository_patterns(self, remote_name: str, repo_path: str) -> list:
+    def get_immutable_patterns(self, remote_name: str, repo_path: str = "") -> list[str]:
         remote_config = self.get_remote_config(remote_name)
         if not remote_config:
             return []
 
         repositories = remote_config.get("repositories", {})
 
-        # Handle both dict (GitHub style) and list (Alpine style) repositories
         if isinstance(repositories, dict):
             repo_config = repositories.get(repo_path)
             if repo_config:
-                patterns = repo_config.get("include_patterns", [])
+                patterns = repo_config.get("immutable_patterns", [])
             else:
-                patterns = remote_config.get("include_patterns", [])
-        elif isinstance(repositories, list):
-            # For Alpine, repositories is just a list of allowed repo names
-            # Pattern matching is handled by the main include_patterns
-            patterns = remote_config.get("include_patterns", [])
+                patterns = remote_config.get("immutable_patterns", [])
         else:
-            patterns = remote_config.get("include_patterns", [])
+            patterns = remote_config.get("immutable_patterns", [])
 
         return patterns
 
@@ -129,18 +124,25 @@ class ConfigManager:
         db_url = f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
         return {"url": db_url}
 
-    def get_index_patterns(self, remote_name: str) -> list[str]:
-        """Return index-file patterns for a remote.
+    def get_user_mutable_patterns(self, remote_name: str) -> list[str]:
+        """Return only user-configured mutable_patterns, excluding package-type defaults."""
+        remote_config = self.get_remote_config(remote_name)
+        if not remote_config:
+            return []
+        return remote_config.get("mutable_patterns", [])
+
+    def get_mutable_patterns(self, remote_name: str) -> list[str]:
+        """Return mutable-file patterns for a remote (TTL is configured per-remote in cache.index_ttl).
 
         Merges the package-level defaults with any extra patterns listed under
-        ``index_patterns`` in the remote's config.
+        ``mutable_patterns`` in the remote's config.
         """
         remote_config = self.get_remote_config(remote_name)
         if not remote_config:
             return []
         package = remote_config.get("package", "generic")
-        defaults = _PACKAGE_INDEX_PATTERNS.get(package, [])
-        extra = remote_config.get("index_patterns", [])
+        defaults = _PACKAGE_MUTABLE_PATTERNS.get(package, [])
+        extra = remote_config.get("mutable_patterns", [])
         return defaults + [p for p in extra if p not in defaults]
 
     def get_cache_config(self, remote_name: str) -> dict:

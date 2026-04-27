@@ -25,7 +25,7 @@ def mock_storage():
 @pytest.fixture
 def mock_cache():
     m = MagicMock()
-    m.is_index_file.return_value = False
+    m.is_mutable_file.return_value = False
     m.is_index_valid.return_value = True
     m.available = False
     m.client = None
@@ -123,7 +123,7 @@ class TestDockerProxy:
         ).encode()
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = manifest
-        deps["cache"].is_index_file.return_value = True
+        deps["cache"].is_mutable_file.return_value = True
         deps["cache"].is_index_valid.return_value = True
 
         response = client.get("/v2/docker-restricted/library/nginx/manifests/latest")
@@ -140,7 +140,7 @@ class TestDockerProxy:
         ).encode()
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = manifest
-        deps["cache"].is_index_file.return_value = True
+        deps["cache"].is_mutable_file.return_value = True
         deps["cache"].is_index_valid.return_value = True
 
         response = client.get("/v2/docker-test/library/nginx/manifests/latest")
@@ -158,7 +158,7 @@ class TestDockerProxy:
         ).encode()
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = manifest
-        deps["cache"].is_index_file.return_value = True
+        deps["cache"].is_mutable_file.return_value = True
         deps["cache"].is_index_valid.return_value = True
 
         response = client.get("/v2/docker-test/library/nginx/manifests/latest")
@@ -170,7 +170,7 @@ class TestDockerProxy:
         manifest = json.dumps({"mediaType": "application/vnd.oci.image.manifest.v1+json", "layers": []}).encode()
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = manifest
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         client.get("/v2/docker-test/library/nginx/manifests/latest")
         deps["metrics"].record_cache_hit.assert_called_once_with("docker-test", ANY)
@@ -185,7 +185,7 @@ class TestDockerProxy:
         ).encode()
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = manifest
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         response = client.head("/v2/docker-test/library/nginx/manifests/latest")
         assert response.status_code == 200
@@ -201,7 +201,7 @@ class TestDockerProxy:
         ).encode()
         deps["storage"].exists.return_value = False
         deps["storage"].download_object.return_value = manifest
-        deps["cache"].is_index_file.return_value = True
+        deps["cache"].is_mutable_file.return_value = True
 
         with patch(
             "artifactapi.main.cache_single_artifact",
@@ -223,7 +223,7 @@ class TestDockerProxy:
         ).encode()
         deps["storage"].exists.return_value = False
         deps["storage"].download_object.return_value = manifest
-        deps["cache"].is_index_file.return_value = True
+        deps["cache"].is_mutable_file.return_value = True
 
         with patch(
             "artifactapi.main.cache_single_artifact",
@@ -244,16 +244,17 @@ class TestDockerProxy:
             }
         ).encode()
         deps["storage"].exists.return_value = True  # cached in S3
-        deps["cache"].is_index_file.return_value = True
+        deps["cache"].is_mutable_file.return_value = True
         deps["cache"].is_index_valid.return_value = False  # but TTL expired
         deps["storage"].download_object.return_value = manifest
 
-        with patch(
-            "artifactapi.main.cache_single_artifact",
-            new_callable=AsyncMock,
-            return_value={"status": "cached"},
-        ) as mock_fetch:
-            response = client.get("/v2/docker-test/library/nginx/manifests/latest")
+        with patch("artifactapi.main._upstream_reachable", new_callable=AsyncMock, return_value=True):
+            with patch(
+                "artifactapi.main.cache_single_artifact",
+                new_callable=AsyncMock,
+                return_value={"status": "cached"},
+            ) as mock_fetch:
+                response = client.get("/v2/docker-test/library/nginx/manifests/latest")
 
         mock_fetch.assert_called_once()
         assert response.status_code == 200
@@ -278,7 +279,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = b"tar content"
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         response = client.get("/api/v1/remote/generic-test/some/path/archive.tar.gz")
         assert response.status_code == 200
@@ -289,7 +290,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = b"content"
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         response = client.get("/api/v1/remote/generic-test/some/path/archive.tar.gz")
         disposition = response.headers["content-disposition"]
@@ -301,7 +302,7 @@ class TestGenericArtifactRoute:
         content = b"some artifact content bytes"
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = content
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         response = client.get("/api/v1/remote/generic-test/some/path/archive.tar.gz")
         assert response.headers["X-Artifact-Size"] == str(len(content))
@@ -310,7 +311,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = b"content"
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         client.get("/api/v1/remote/generic-test/some/path/archive.tar.gz")
         deps["metrics"].record_cache_hit.assert_called_once_with("generic-test", ANY)
@@ -319,7 +320,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = b"content"
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         client.get("/api/v1/remote/generic-test/some/path/archive.tar.gz")
         deps["database"].record_artifact_mapping.assert_called_once()
@@ -328,7 +329,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = b"rpm bytes"
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         response = client.get("/api/v1/remote/rpm-test/almalinux/9/x86_64/bash-5.1.8.x86_64.rpm")
         assert response.status_code == 200
@@ -338,7 +339,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = b"<?xml version='1.0'?>"
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         response = client.get("/api/v1/remote/rpm-test/repo/repodata/primary.xml")
         assert response.status_code == 200
@@ -348,7 +349,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = False
         deps["storage"].download_object.return_value = b"fresh content"
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         with patch(
             "artifactapi.main.cache_single_artifact",
@@ -365,7 +366,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = False
         deps["storage"].download_object.return_value = b"fresh content"
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         with patch(
             "artifactapi.main.cache_single_artifact",
@@ -380,7 +381,7 @@ class TestGenericArtifactRoute:
         deps = patched_deps
         deps["storage"].exists.return_value = False
         deps["storage"].download_object.return_value = b"APKINDEX content"
-        deps["cache"].is_index_file.return_value = True
+        deps["cache"].is_mutable_file.return_value = True
 
         with patch(
             "artifactapi.main.cache_single_artifact",
@@ -395,7 +396,7 @@ class TestGenericArtifactRoute:
     def test_upstream_error_returns_502(self, client, patched_deps):
         deps = patched_deps
         deps["storage"].exists.return_value = False
-        deps["cache"].is_index_file.return_value = False
+        deps["cache"].is_mutable_file.return_value = False
 
         with patch(
             "artifactapi.main.cache_single_artifact",
@@ -406,18 +407,115 @@ class TestGenericArtifactRoute:
 
         assert response.status_code == 502
 
-    def test_index_file_bypasses_include_patterns(self, client, patched_deps):
-        """Index files must be served even when they don't match include_patterns."""
+    def test_mutable_file_bypasses_immutable_patterns(self, client, patched_deps):
+        """Mutable files must be served even when they don't match immutable_patterns."""
         deps = patched_deps
         deps["storage"].exists.return_value = True
         deps["storage"].download_object.return_value = b"APKINDEX content"
-        deps["cache"].is_index_file.return_value = True
+        deps["cache"].is_mutable_file.return_value = True
         deps["cache"].is_index_valid.return_value = True
 
-        # APKINDEX.tar.gz does not match alpine-test's include_patterns (.*.apk$),
-        # but since is_index_file returns True it must be allowed through.
+        # APKINDEX.tar.gz does not match alpine-test's immutable_patterns (.*.apk$),
+        # but since is_mutable_file returns True it must be allowed through.
         response = client.get("/api/v1/remote/alpine-test/alpine/v3.18/x86_64/APKINDEX.tar.gz")
         assert response.status_code == 200
+
+    def test_mutable_unchanged_refreshes_ttl_without_redownload(self, client, patched_deps):
+        """When check_mutable_updates=True and upstream says 304, TTL is refreshed in place."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"metadata content"
+        # File is mutable and its TTL has expired
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+        deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
+
+        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock, return_value=False):
+            response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
+
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_called()
+        # S3 object must NOT have been deleted (no re-download)
+        deps["storage"].client.delete_object.assert_not_called()
+
+    def test_mutable_changed_triggers_redownload(self, client, patched_deps):
+        """When check_mutable_updates=True and upstream says 200, cache is invalidated."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = False
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+        deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
+
+        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock, return_value=True):
+            with patch("artifactapi.main.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
+                mock_cache.return_value = {"status": "error", "error": "upstream gone"}
+                response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
+
+        assert response.status_code == 502
+
+    def test_mutable_changed_redownloads_successfully(self, client, patched_deps):
+        """When check_mutable_updates=True and upstream says 200, fresh copy is fetched and served."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"fresh metadata"
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+        deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
+
+        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock, return_value=True):
+            with patch("artifactapi.main.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
+                mock_cache.return_value = {"status": "cached", "etag": '"def"', "last_modified": None}
+                response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
+
+        assert response.status_code == 200
+        mock_cache.assert_called_once()
+
+    def test_mutable_backend_unreachable_on_check_updates_keeps_stale(self, client, patched_deps):
+        """When check_mutable_updates=True and backend is unreachable, stale copy is kept and TTL refreshed."""
+        from artifactapi.main import UpstreamUnreachable
+
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"stale metadata"
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+        deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
+
+        with patch("artifactapi.main.check_upstream_changed", side_effect=UpstreamUnreachable("connection refused")):
+            response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
+
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_called()
+        deps["storage"].client.delete_object.assert_not_called()
+
+    def test_mutable_backend_unreachable_on_expiry_keeps_stale(self, client, patched_deps):
+        """When a regular mutable file expires and backend is unreachable, stale copy is kept and TTL refreshed."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"stale APKINDEX"
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+
+        with patch("artifactapi.main._upstream_reachable", new_callable=AsyncMock, return_value=False):
+            response = client.get("/api/v1/remote/alpine-test/alpine/v3.18/x86_64/APKINDEX.tar.gz")
+
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_called()
+        deps["storage"].client.delete_object.assert_not_called()
+
+    def test_mutable_flag_off_skips_conditional_check(self, client, patched_deps):
+        """When check_mutable_updates is not set, expired mutable files are always re-fetched."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = False
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+
+        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock) as mock_check:
+            with patch("artifactapi.main.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
+                mock_cache.return_value = {"status": "error", "error": "upstream gone"}
+                client.get("/api/v1/remote/custom-index-test/metadata.json")
+
+        mock_check.assert_not_called()
 
     def test_local_repo_file_not_found_returns_404(self, client, patched_deps):
         deps = patched_deps
@@ -519,8 +617,8 @@ class TestCacheFlushEndpoint:
         deps["cache"].available = True
         redis_mock = MagicMock()
         deps["cache"].client = redis_mock
-        # First pattern (index:*) returns keys; subsequent pattern returns nothing
-        redis_mock.keys.side_effect = [["index:test:abc", "index:test:def"], []]
+        # index:* returns keys; mutable:meta:* and metrics:* return nothing
+        redis_mock.keys.side_effect = [["index:test:abc", "index:test:def"], [], []]
         deps["storage"].client.list_objects_v2.return_value = {}
 
         response = client.put("/cache/flush")

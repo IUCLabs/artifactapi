@@ -6,10 +6,13 @@ A generic FastAPI-based artifact caching system that downloads and stores files 
 
 - **Generic Remote Support**: Works with any HTTP-based file server (GitHub, Gitea, HashiCorp, custom servers)
 - **Configuration-Based**: YAML configuration for remotes, patterns, and access control
-- **Direct URL API**: Access cached files via clean URLs like `/api/github/owner/repo/path/file.tar.gz`
-- **Pattern Filtering**: Regex-based inclusion patterns for security and organization
+- **Direct URL API**: Access cached files via clean URLs like `/api/v1/remote/github/owner/repo/path/file.tar.gz`
+- **Immutable/Mutable Pattern Model**: Per-remote regex patterns distinguish forever-cached artifacts from TTL-expiring metadata
 - **Smart Caching**: Automatic download and cache on first access, serve from cache afterward
+- **Conditional Revalidation**: Optional `check_mutable_updates` flag — sends `If-None-Match`/`If-Modified-Since` on expiry; skips re-download on 304
+- **Stale-on-Upstream-Error**: Expired mutable files are kept and their TTL refreshed when the backend cannot be reached, so cached data remains available during upstream outages
 - **S3 Storage**: MinIO/S3 backend with predictable paths
+- **Docker Registry Proxy**: Full Docker Registry HTTP API v2 for transparent container image caching
 - **Content-Type Detection**: Automatic MIME type detection for downloads
 
 ## Architecture
@@ -71,15 +74,18 @@ The system uses `remotes.yaml` to define remote repositories and access patterns
 remotes:
   remote-name:
     base_url: "https://example.com"       # Base URL for the remote
-    type: "remote"                        # Type: "remote" or "local"
-    package: "generic"                    # Package type: "generic", "alpine", "rpm"
+    type: "remote"                        # "remote" or "local"
+    package: "generic"                    # "generic", "alpine", "rpm", or "docker"
     description: "Human readable description"
-    include_patterns:                     # Regex patterns for allowed files
+    immutable_patterns:                   # Files cached forever (release binaries, versioned tags)
       - "pattern1"
       - "pattern2"
-    cache:                               # Cache configuration (optional)
-      file_ttl: 0                        # File cache TTL (0 = indefinite)
-      index_ttl: 300                     # Index file TTL in seconds
+    mutable_patterns:                     # Files that expire after mutable_ttl (optional)
+      - "pattern3"
+    check_mutable_updates: false          # Enable conditional HEAD before re-fetching (optional)
+    cache:
+      immutable_ttl: 0                    # TTL for immutable files (0 = indefinitely)
+      mutable_ttl: 3600                   # TTL in seconds for mutable files
 ```
 
 ### Remote Types
@@ -94,30 +100,30 @@ remotes:
     type: "remote"
     package: "generic"
     description: "GitHub releases and files"
-    include_patterns:
+    immutable_patterns:
       - "gruntwork-io/terragrunt/.*terragrunt_linux_amd64.*"
       - "lxc/incus/.*\\.tar\\.gz$"
       - "prometheus/node_exporter/.*/node_exporter-.*\\.linux-amd64\\.tar\\.gz$"
     cache:
-      file_ttl: 0      # Cache files indefinitely
-      index_ttl: 0     # No index files for generic remotes
+      immutable_ttl: 0      # Cache files indefinitely
 
-  hashicorp-releases:
-    base_url: "https://releases.hashicorp.com"
+  github-archive:
+    base_url: "https://github.com"
     type: "remote"
     package: "generic"
-    description: "HashiCorp product releases"
-    include_patterns:
-      - "terraform/.*terraform_.*_linux_amd64\\.zip$"
-      - "vault/.*vault_.*_linux_amd64\\.zip$"
-      - "consul/.*/consul_.*_linux_amd64\\.zip$"
+    description: "GitHub repository archive tarballs"
+    immutable_patterns:
+      - ".*/archive/refs/tags/.*\\.tar\\.gz$"   # tag archives never change
+    mutable_patterns:
+      - ".*/archive/refs/heads/main\\.tar\\.gz$"  # branch archives can change
+    check_mutable_updates: true   # send If-None-Match on expiry; skip re-download on 304
     cache:
-      file_ttl: 0
-      index_ttl: 0
+      immutable_ttl: 0
+      mutable_ttl: 86400          # re-check branch archives after 1 day
 ```
 
 #### Package Repository Remotes
-For Linux package repositories with index files:
+For Linux package repositories:
 
 ```yaml
 remotes:
@@ -126,23 +132,25 @@ remotes:
     type: "remote"
     package: "alpine"
     description: "Alpine Linux APK package repository"
-    include_patterns:
-      - ".*/x86_64/.*\\.apk$"           # Only x86_64 packages
+    immutable_patterns:
+      - ".*/x86_64/.*\\.apk$"     # packages are immutable by content-hash
+    # APKINDEX.tar.gz is a package-type default mutable file — no mutable_patterns needed
     cache:
-      file_ttl: 0                       # Cache packages indefinitely
-      index_ttl: 7200                   # Cache APKINDEX.tar.gz for 2 hours
+      immutable_ttl: 0
+      mutable_ttl: 7200            # re-fetch APKINDEX.tar.gz after 2 hours
 
   almalinux:
-    base_url: "http://mirror.aarnet.edu.au/pub/almalinux"
+    base_url: "https://mirror.example.com/almalinux"
     type: "remote"
     package: "rpm"
     description: "AlmaLinux RPM package repository"
-    include_patterns:
+    immutable_patterns:
       - ".*/x86_64/.*\\.rpm$"
       - ".*/noarch/.*\\.rpm$"
+    # repomd.xml and repodata/* are package-type defaults
     cache:
-      file_ttl: 0
-      index_ttl: 7200                   # Cache metadata files for 2 hours
+      immutable_ttl: 0
+      mutable_ttl: 7200
 ```
 
 #### Local Repositories
@@ -155,62 +163,45 @@ remotes:
     package: "generic"
     description: "Local generic file repository"
     cache:
-      file_ttl: 0
-      index_ttl: 0
+      immutable_ttl: 0
+      mutable_ttl: 0
 ```
 
-### Include Patterns
+### Immutable Patterns
 
-Include patterns are regular expressions that control which files can be accessed. Patterns use Python `re.search`, so they match anywhere in the path unless anchored with `^` or `$`. Only files matching at least one pattern are served; all others return HTTP 403.
+`immutable_patterns` are regular expressions that control which files can be accessed. Patterns use Python `re.search`, so they match anywhere in the path unless anchored with `^` or `$`. Only files matching at least one pattern are served; all others return HTTP 403.
+
+Matched files are cached with `immutable_ttl` (default 0 = forever). Use these for versioned release artifacts that never change once published.
 
 ```yaml
-include_patterns:
-  # Exact project + architecture — most restrictive
+immutable_patterns:
   - "^gruntwork-io/terragrunt/releases/download/.*/terragrunt_linux_amd64$"
-
-  # Any release asset for a project, any version
   - "gruntwork-io/terragrunt/.*terragrunt_linux_amd64.*"
-
-  # File extension only — allow all files of a given type from any path
   - ".*\\.tar\\.gz$"
-  - ".*\\.rpm$"
-  - ".*\\.zip$"
-
-  # Architecture subtree — allow everything under x86_64/
-  - ".*/x86_64/.*"
-
-  # Combined: architecture + extension
   - ".*/x86_64/.*\\.rpm$"
   - ".*/noarch/.*\\.rpm$"
-
-  # Docker image names (used with package: docker remotes)
-  - "^library/nginx"           # nginx official images only
-  - "^rancher/"                # all rancher/* images
-  - "^rancher/rke2-runtime"    # specific image
-
-  # Repodata directories — allow all metadata for an RPM repo
   - ".*/repodata/.*$"
 ```
 
-**Security note**: Omitting `include_patterns` entirely allows all files from that remote. Index files (e.g. `APKINDEX.tar.gz`, `repomd.xml`, tag manifests) always bypass pattern enforcement — they are served unconditionally so clients can discover available packages.
+**Security note**: Omitting `immutable_patterns` entirely allows all files from that remote.
 
-### Index Patterns
+### Mutable Patterns
 
-Index patterns identify repository metadata files. Index files get special treatment:
-- **Always served** regardless of `include_patterns`
-- **Cached with `index_ttl`** instead of `file_ttl`
-- **Automatically refreshed** when the TTL expires — the cached copy is evicted and re-fetched on next request
+`mutable_patterns` identify files that change over time (index files, branch archives, metadata). Mutable files:
+- **Always served** regardless of `immutable_patterns`
+- **Cached with `mutable_ttl`** and re-fetched from upstream when the TTL expires
+- **Kept stale** when the upstream backend is unreachable — TTL is refreshed automatically so the cached copy remains available until the backend recovers (see below)
 
-Built-in defaults per package type:
+Built-in defaults per package type (no configuration needed):
 
-| Package type | Built-in index patterns |
+| Package type | Built-in mutable patterns |
 |---|---|
 | `alpine` | `APKINDEX\.tar\.gz$` |
 | `rpm` | `repomd\.xml$`, `repodata/` metadata (xml, sqlite, yaml, asc, txt variants), `Packages\.gz$` |
 | `docker` | Tag manifests (non-digest refs), `/tags/list` |
 | `generic` | *(none)* |
 
-Use `index_patterns` to add extra patterns on top of the defaults. Duplicates are ignored automatically.
+Use `mutable_patterns` to add extra patterns on top of the defaults. Duplicates are ignored automatically.
 
 ```yaml
 remotes:
@@ -218,59 +209,73 @@ remotes:
     base_url: "https://charts.example.com"
     type: "remote"
     package: "generic"
-    include_patterns:
-      - ".*\\.tgz$"            # chart archives
-    index_patterns:
-      - "index\\.yaml$"        # Helm repo index — re-fetched on every TTL expiry
+    immutable_patterns:
+      - ".*\\.tgz$"
+    mutable_patterns:
+      - "index\\.yaml$"        # Helm repo index
     cache:
-      file_ttl: 0
-      index_ttl: 600           # re-check the index every 10 minutes
+      immutable_ttl: 0
+      mutable_ttl: 600         # re-check the index every 10 minutes
 
   apt-mirror:
     base_url: "https://apt.example.com"
     type: "remote"
     package: "generic"
-    include_patterns:
+    immutable_patterns:
       - ".*\\.deb$"
-    index_patterns:
-      - "InRelease$"           # signed APT release file
-      - "Release$"             # unsigned APT release file
-      - "Packages\\.gz$"       # compressed package list
+    mutable_patterns:
+      - "InRelease$"
+      - "Release$"
+      - "Packages\\.gz$"
       - "Packages\\.xz$"
     cache:
-      file_ttl: 0
-      index_ttl: 3600          # hourly index refresh
-
-  almalinux-with-extras:
-    base_url: "https://mirror.example.com/almalinux"
-    type: "remote"
-    package: "rpm"             # inherits repomd.xml + repodata/* defaults
-    include_patterns:
-      - ".*/x86_64/.*\\.rpm$"
-      - ".*/noarch/.*\\.rpm$"
-    index_patterns:
-      - "comps\\.xml$"         # optional group metadata (adds to rpm defaults)
-    cache:
-      file_ttl: 0
-      index_ttl: 7200
+      immutable_ttl: 0
+      mutable_ttl: 3600
 ```
 
-Pattern matching uses `re.search`, so `"index\\.yaml$"` matches `/stable/index.yaml` and `/index.yaml`. Anchor with `^` to restrict to the path root.
+### Conditional Revalidation (`check_mutable_updates`)
+
+By default, when a mutable file's TTL expires the cached copy is evicted and the full file is re-downloaded on the next request. Setting `check_mutable_updates: true` on a remote enables a cheaper conditional check first:
+
+1. On TTL expiry, a `HEAD` request is sent to the upstream with `If-None-Match` / `If-Modified-Since` headers (populated from the original download).
+2. If the upstream replies **304 Not Modified**, the TTL is refreshed in place — no re-download, no S3 traffic.
+3. If the upstream replies **200**, the cached copy is evicted and re-downloaded normally.
+
+This only applies to user-defined `mutable_patterns`. Package-type built-in patterns (APKINDEX, repomd.xml, Docker manifests) are always re-fetched unconditionally.
+
+```yaml
+remotes:
+  github-archive:
+    base_url: "https://github.com"
+    type: "remote"
+    package: "generic"
+    immutable_patterns:
+      - ".*/archive/refs/tags/.*\\.tar\\.gz$"
+    mutable_patterns:
+      - ".*/archive/refs/heads/main\\.tar\\.gz$"
+    check_mutable_updates: true
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 86400
+```
+
+### Stale-on-Upstream-Error
+
+When a mutable file's TTL expires and the upstream backend **cannot be reached** (connection refused, DNS failure, timeout), the cached copy is **kept and its TTL refreshed** rather than evicted. This means:
+
+- RPM repodata, Alpine indexes, branch archives, and other mutable files remain available during upstream outages.
+- Clients continue to receive the last-known-good copy without errors.
+- Once the backend recovers and the refreshed TTL next expires, normal eviction resumes.
+
+This behaviour is automatic and requires no configuration. Only network-level failures trigger it — HTTP error responses (404, 503, etc.) are treated as the backend being reachable and proceed with normal expiry.
 
 ### Cache Configuration
 
-Control how long different file types are cached:
-
 ```yaml
 cache:
-  file_ttl: 0        # Regular files (0 = cache indefinitely)
-  index_ttl: 300     # Index files like APKINDEX.tar.gz (seconds)
+  immutable_ttl: 0       # Immutable files (0 = cache indefinitely, rarely changed)
+  mutable_ttl: 3600      # Mutable files — TTL in seconds before re-fetch is attempted
 ```
-
-**Index Files**: Repository metadata files that change frequently:
-- Alpine: `APKINDEX.tar.gz`
-- RPM: `repomd.xml`, `*-primary.xml.gz`, etc.
-- These are automatically detected and use `index_ttl`
 
 ### Environment Variables
 
@@ -351,26 +356,26 @@ data:
         type: "remote"
         package: "generic"
         description: "GitHub releases and files"
-        include_patterns:
+        immutable_patterns:
           - "gruntwork-io/terragrunt/.*terragrunt_linux_amd64.*"
           - "lxc/incus/.*\\.tar\\.gz$"
           - "prometheus/node_exporter/.*/node_exporter-.*\\.linux-amd64\\.tar\\.gz$"
         cache:
-          file_ttl: 0
-          index_ttl: 0
+          immutable_ttl: 0
+          mutable_ttl: 0
 
       hashicorp-releases:
         base_url: "https://releases.hashicorp.com"
         type: "remote"
         package: "generic"
         description: "HashiCorp product releases"
-        include_patterns:
+        immutable_patterns:
           - "terraform/.*terraform_.*_linux_amd64\\.zip$"
           - "vault/.*vault_.*_linux_amd64\\.zip$"
           - "consul/.*/consul_.*_linux_amd64\\.zip$"
         cache:
-          file_ttl: 0
-          index_ttl: 0
+          immutable_ttl: 0
+          mutable_ttl: 0
 ```
 
 ### 3. Secret for Environment Variables
@@ -778,8 +783,8 @@ remotes:
     username: "your-dockerhub-username"
     password: "your-dockerhub-token"   # PAT with read scope
     cache:
-      file_ttl: 0
-      index_ttl: 300
+      immutable_ttl: 0
+      mutable_ttl: 300
 ```
 
 A pull of `nginx:latest` becomes `/v2/dockerhub/library/nginx/manifests/latest` on the artifact API.
@@ -804,8 +809,8 @@ remotes:
     username: "your-github-username"
     password: "ghp_your_github_pat"   # read:packages scope required
     cache:
-      file_ttl: 0
-      index_ttl: 300
+      immutable_ttl: 0
+      mutable_ttl: 300
 ```
 
 A pull of `ghcr.io/rancher/rke2-runtime:v1.30.0-rke2r1` becomes `/v2/ghcr/rancher/rke2-runtime/manifests/v1.30.0-rke2r1`.
@@ -844,7 +849,7 @@ Each entry needs a matching remote in `remotes.yaml` using the name from the rew
 
 #### Restricting which images are cached
 
-Use `include_patterns` on the remote to allow only specific images through the proxy. Requests for images not matching any pattern return HTTP 403 to the node.
+Use `immutable_patterns` on the remote to allow only specific images through the proxy. Requests for images not matching any pattern return HTTP 403 to the node.
 
 ```yaml
 remotes:
@@ -852,17 +857,17 @@ remotes:
     base_url: "https://registry-1.docker.io"
     type: "remote"
     package: "docker"
-    include_patterns:
+    immutable_patterns:
       - "^library/nginx"           # official nginx only
       - "^library/redis"           # official redis only
       - "^rancher/"                # all rancher images
       - "^grafana/grafana"         # specific image
     cache:
-      file_ttl: 0
-      index_ttl: 300
+      immutable_ttl: 0
+      mutable_ttl: 300
 ```
 
-Omit `include_patterns` to allow all images from that registry.
+Omit `immutable_patterns` to allow all images from that registry.
 
 #### TLS configuration
 

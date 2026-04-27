@@ -6,12 +6,12 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        - VERSION=dev
+        - VERSION=2.2.2.dev0
     ports:
       - "8000:8000"
     volumes:
-      - ./remotes.yaml:/app/remotes.yaml:ro
-      - ./ca-bundle.pem:/app/ca-bundle.pem:ro
+      - ./remotes.yaml:/app/remotes.yaml:ro,z
+      - ./ca-bundle.pem:/app/ca-bundle.pem:ro,z
     environment:
       - CONFIG_PATH=/app/remotes.yaml
       - DBHOST=postgres

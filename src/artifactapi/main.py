@@ -32,6 +32,10 @@ class ArtifactRequest(BaseModel):
     include_pattern: str
 
 
+class UpstreamUnreachable(Exception):
+    """Raised when the upstream backend cannot be contacted (network or timeout error)."""
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -87,8 +91,10 @@ def flush_cache(
             if cache_type in ["all", "index"]:
                 if remote:
                     patterns.append(f"index:{remote}:*")
+                    patterns.append(f"mutable:meta:{remote}:*")
                 else:
                     patterns.append("index:*")
+                    patterns.append("mutable:meta:*")
 
             if cache_type in ["all", "metrics"]:
                 if remote:
@@ -163,13 +169,13 @@ async def construct_remote_url(remote_name: str, path: str) -> str:
 
 
 async def check_artifact_patterns(remote_name: str, repo_path: str, file_path: str, full_path: str) -> bool:
-    # First check if this is an index file - always allow index files
-    index_patterns = config.get_index_patterns(remote_name)
-    if cache.is_index_file(file_path, index_patterns) or cache.is_index_file(full_path, index_patterns):
+    # Mutable files (index files) are always allowed through
+    mutable_patterns = config.get_mutable_patterns(remote_name)
+    if cache.is_mutable_file(file_path, mutable_patterns) or cache.is_mutable_file(full_path, mutable_patterns):
         return True
 
-    # Then check basic include patterns
-    patterns = config.get_repository_patterns(remote_name, repo_path)
+    # Check immutable include patterns
+    patterns = config.get_immutable_patterns(remote_name, repo_path)
     if not patterns:
         return True  # Allow all if no patterns configured
 
@@ -183,7 +189,6 @@ async def check_artifact_patterns(remote_name: str, repo_path: str, file_path: s
     if not pattern_matched:
         return False
 
-    # All remotes now use pattern-based filtering only - no additional checks needed
     return True
 
 
@@ -241,10 +246,78 @@ async def cache_single_artifact(url: str, remote_name: str, path: str) -> dict:
                 "storage_path": storage_path,
                 "size": len(response.content),
                 "status": "cached",
+                "etag": response.headers.get("ETag"),
+                "last_modified": response.headers.get("Last-Modified"),
             }
 
     except Exception as e:
         return {"url": url, "status": "error", "error": str(e)}
+
+
+async def _upstream_reachable(url: str) -> bool:
+    """HEAD with a short timeout. Returns False only on network/timeout errors."""
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            await client.head(url, timeout=10.0)
+        return True
+    except (httpx.NetworkError, httpx.TimeoutException):
+        return False
+    except Exception:
+        return True  # 4xx/5xx means backend is up
+
+
+async def check_upstream_changed(remote_url: str, remote_name: str, path: str) -> bool:
+    """Conditional HEAD against upstream. Returns False only on a definitive 304.
+    Raises UpstreamUnreachable if the backend cannot be contacted."""
+    meta = cache.get_mutable_meta(remote_name, path)
+    if not meta:
+        return True
+
+    headers = {}
+    if meta.get("etag"):
+        headers["If-None-Match"] = meta["etag"]
+    if meta.get("last_modified"):
+        headers["If-Modified-Since"] = meta["last_modified"]
+    if not headers:
+        return True
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.head(remote_url, headers=headers)
+        return response.status_code != 304
+    except (httpx.NetworkError, httpx.TimeoutException) as exc:
+        raise UpstreamUnreachable(str(exc)) from exc
+
+
+async def handle_expired_mutable(remote_name: str, path: str, remote_url: str) -> bool:
+    """Handle an expired mutable file. Returns True if the cached copy is still valid."""
+    mutable_ttl = config.get_cache_config(remote_name).get("mutable_ttl", 3600)
+
+    remote_cfg = config.get_remote_config(remote_name) or {}
+    check_updates = remote_cfg.get("check_mutable_updates", False)
+    user_mutable = check_updates and cache.is_mutable_file(path, config.get_user_mutable_patterns(remote_name))
+
+    if user_mutable:
+        try:
+            changed = await check_upstream_changed(remote_url, remote_name, path)
+        except UpstreamUnreachable:
+            cache.mark_index_cached(remote_name, path, mutable_ttl)
+            logger.warning(f"Mutable STALE (backend unreachable): {remote_name}/{path} - TTL extended ({mutable_ttl}s)")
+            return True
+        if not changed:
+            cache.mark_index_cached(remote_name, path, mutable_ttl)
+            logger.info(f"Mutable file UNCHANGED: {remote_name}/{path} - TTL refreshed ({mutable_ttl}s)")
+            return True
+        logger.info(f"Mutable file CHANGED: {remote_name}/{path} - re-downloading")
+    else:
+        if not await _upstream_reachable(remote_url):
+            cache.mark_index_cached(remote_name, path, mutable_ttl)
+            logger.warning(f"Mutable STALE (backend unreachable): {remote_name}/{path} - TTL extended ({mutable_ttl}s)")
+            return True
+        logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
+
+    cache.cleanup_expired_index(storage, remote_name, path)
+    return False
 
 
 @app.get("/api/v1/remote/{remote_name}/{path:path}")
@@ -297,17 +370,14 @@ async def get_artifact(remote_name: str, path: str):
     if not storage.exists(cached_key):
         cached_key = None
 
-    # For index files, check Redis TTL validity
+    # For mutable files, check Redis TTL validity
     filename = os.path.basename(path)
-    is_index = cache.is_index_file(path, config.get_index_patterns(remote_name))
+    is_mutable = cache.is_mutable_file(path, config.get_mutable_patterns(remote_name))
 
-    if cached_key and is_index:
-        # Index file exists, but check if it's still valid
+    if cached_key and is_mutable:
         if not cache.is_index_valid(remote_name, path):
-            # Index has expired, remove it from S3
-            logger.info(f"Index EXPIRED: {remote_name}/{path} - removing from cache")
-            cache.cleanup_expired_index(storage, remote_name, path)
-            cached_key = None  # Force re-download
+            if not await handle_expired_mutable(remote_name, path, remote_url):
+                cached_key = None
 
     if cached_key:
         # Return cached artifact
@@ -359,13 +429,14 @@ async def get_artifact(remote_name: str, path: str):
         logger.error(f"Cache ADD FAILED: {remote_name}/{path} - {result['error']}")
         raise HTTPException(status_code=502, detail=f"Failed to fetch artifact: {result['error']}")
 
-    # Mark index files as cached in Redis if this was a new download
-    if result["status"] == "cached" and is_index:
-        # Get TTL from remote config
+    # Mark mutable files as cached in Redis with TTL
+    if result["status"] == "cached" and is_mutable:
         cache_config = config.get_cache_config(remote_name)
-        index_ttl = cache_config.get("index_ttl", 300)  # Default 5 minutes
-        cache.mark_index_cached(remote_name, path, index_ttl)
-        logger.info(f"Index file cached with TTL: {remote_name}/{path} (ttl: {index_ttl}s)")
+        mutable_ttl = cache_config.get("mutable_ttl", 3600)
+        cache.mark_index_cached(remote_name, path, mutable_ttl)
+        logger.info(f"Mutable file cached with TTL: {remote_name}/{path} (ttl: {mutable_ttl}s)")
+        if result.get("etag") or result.get("last_modified"):
+            cache.store_mutable_meta(remote_name, path, result.get("etag"), result.get("last_modified"))
 
     # Now return the cached artifact
     try:
@@ -424,8 +495,8 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
     if remote_config.get("package") != "docker":
         raise HTTPException(status_code=400, detail=f"Remote '{remote_name}' is not a docker remote")
 
-    # Check include_patterns against the image name (e.g. "library/nginx")
-    patterns = config.get_repository_patterns(remote_name, "")
+    # Check immutable_patterns against the image name (e.g. "library/nginx")
+    patterns = config.get_immutable_patterns(remote_name, "")
     if patterns:
         path_parts = path.split("/")
         image_name = "/".join(path_parts[:2]) if len(path_parts) >= 2 else path
@@ -439,24 +510,25 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
     if not storage.exists(cached_key):
         cached_key = None
 
-    is_index = cache.is_index_file(path, config.get_index_patterns(remote_name))
+    is_mutable = cache.is_mutable_file(path, config.get_mutable_patterns(remote_name))
 
-    if cached_key and is_index:
+    if cached_key and is_mutable:
         if not cache.is_index_valid(remote_name, path):
-            logger.info(f"Index EXPIRED: {remote_name}/{path} - removing from cache")
-            cache.cleanup_expired_index(storage, remote_name, path)
-            cached_key = None
+            if not await handle_expired_mutable(remote_name, path, remote_url):
+                cached_key = None
 
     if not cached_key:
         logger.info(f"Cache MISS: {remote_name}/{path} - fetching from remote: {remote_url}")
         result = await cache_single_artifact(remote_url, remote_name, path)
         if result["status"] == "error":
             raise HTTPException(status_code=502, detail=f"Failed to fetch: {result['error']}")
-        if result["status"] == "cached" and is_index:
+        if result["status"] == "cached" and is_mutable:
             cache_config = config.get_cache_config(remote_name)
-            index_ttl = cache_config.get("index_ttl", 300)
-            cache.mark_index_cached(remote_name, path, index_ttl)
-            logger.info(f"Index file cached with TTL: {remote_name}/{path} (ttl: {index_ttl}s)")
+            mutable_ttl = cache_config.get("mutable_ttl", 3600)
+            cache.mark_index_cached(remote_name, path, mutable_ttl)
+            logger.info(f"Mutable file cached with TTL: {remote_name}/{path} (ttl: {mutable_ttl}s)")
+            if result.get("etag") or result.get("last_modified"):
+                cache.store_mutable_meta(remote_name, path, result.get("etag"), result.get("last_modified"))
 
     artifact_data = storage.download_object(storage.get_object_key(remote_name, path))
 

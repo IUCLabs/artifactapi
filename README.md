@@ -932,3 +932,103 @@ curl -I https://artifacts.example.com/v2/dockerhub/library/nginx/manifests/lates
 # Check what's stored in the cache
 curl https://artifacts.example.com/ | jq '.remotes'
 ```
+
+## Python Package Proxy with uv
+
+The `pypi` package type turns the artifact API into a caching PyPI proxy. Simple index pages (`/simple/{package}/`) are mutable and expire after `mutable_ttl`; package files (wheels, sdists, metadata) are immutable and cached forever. URLs in the simple index HTML are rewritten on the fly to point back through the proxy, so both the index lookup and the file download are served from cache.
+
+### remotes.yaml
+
+```yaml
+remotes:
+  pypi:
+    base_url: "https://pypi.org"
+    type: "remote"
+    package: "pypi"
+    pypi_files_url: "https://files.pythonhosted.org"  # host to rewrite in index HTML
+    pypi_files_remote: "pypi-files"                    # our proxy remote to replace it with
+    check_mutable_updates: true
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 600   # re-check simple indexes after 10 minutes
+
+  pypi-files:
+    base_url: "https://files.pythonhosted.org"
+    type: "remote"
+    package: "generic"
+    immutable_patterns:
+      - "packages/.*\\.whl$"
+      - "packages/.*\\.whl\\.metadata$"
+      - "packages/.*\\.tar\\.gz$"
+      - "packages/.*\\.zip$"
+      - "packages/.*\\.egg$"
+    cache:
+      immutable_ttl: 0   # package files are content-addressed — cache forever
+
+  # Self-hosted Gitea PyPI registry (index and files share the same base URL)
+  pypi-gitea:
+    base_url: "https://gitea.example.com/api/packages/myorg/pypi"
+    type: "remote"
+    package: "pypi"
+    # username: "your-gitea-username"
+    # password: "your-personal-access-token"  # needs package:read scope
+    pypi_files_url: "https://gitea.example.com/api/packages/myorg/pypi"
+    pypi_files_remote: "pypi-gitea"  # point back to itself — Gitea serves both index and files
+    check_mutable_updates: true
+    immutable_patterns:
+      - "files/.*\\.whl$"
+      - "files/.*\\.whl\\.metadata$"
+      - "files/.*\\.tar\\.gz$"
+      - "files/.*\\.zip$"
+      - "files/.*\\.egg$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 600
+```
+
+### Configuring uv system- or user-wide
+
+uv reads `uv.toml` from two locations outside any project, applied in order from broadest to narrowest scope:
+
+| Scope | Path (Linux/macOS) |
+|---|---|
+| System | `/etc/uv/uv.toml` |
+| User | `~/.config/uv/uv.toml` |
+
+Use these files to route **all** package installs on a machine through the proxy without touching individual projects or their `pyproject.toml`.
+
+**`/etc/uv/uv.toml`** — applies to every user on the host:
+
+```toml
+# Replace the default PyPI index with the caching proxy
+[[index]]
+url = "https://artifacts.example.com/api/v1/remote/pypi/simple"
+default = true
+
+# Optionally add a private index (searched alongside the default)
+[[index]]
+url = "https://artifacts.example.com/api/v1/remote/pypi-gitea/simple"
+name = "gitea"
+```
+
+**`~/.config/uv/uv.toml`** — same syntax, single-user scope:
+
+```toml
+[[index]]
+url = "https://artifacts.example.com/api/v1/remote/pypi/simple"
+default = true
+```
+
+Setting `default = true` replaces uv's built-in PyPI index. The first install of a package fetches it from upstream and populates the cache; every subsequent install — from any machine or fresh environment pointing at the same proxy — is served directly from S3.
+
+### How the rewriting works
+
+When uv requests the simple index for a package, the proxy:
+
+1. Fetches `https://pypi.org/simple/{package}/` (or returns a valid cached copy within `mutable_ttl`)
+2. Rewrites every `https://files.pythonhosted.org/...` href to `https://artifacts.example.com/api/v1/remote/pypi-files/...`
+3. Returns the rewritten HTML to uv
+
+uv then downloads wheels and `.whl.metadata` files via the rewritten URLs, which also pass through the proxy and are cached as immutable artifacts.
+
+For self-hosted registries like Gitea, both the index and file downloads share the same base URL. Setting `pypi_files_url` and `pypi_files_remote` to the same remote causes file links to be rewritten back through the same proxy entry.

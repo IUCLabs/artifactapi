@@ -32,6 +32,10 @@ class ArtifactRequest(BaseModel):
     include_pattern: str
 
 
+class UpstreamUnreachable(Exception):
+    """Raised when the upstream backend cannot be contacted (network or timeout error)."""
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -250,8 +254,21 @@ async def cache_single_artifact(url: str, remote_name: str, path: str) -> dict:
         return {"url": url, "status": "error", "error": str(e)}
 
 
+async def _upstream_reachable(url: str) -> bool:
+    """HEAD with a short timeout. Returns False only on network/timeout errors."""
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            await client.head(url, timeout=10.0)
+        return True
+    except (httpx.NetworkError, httpx.TimeoutException):
+        return False
+    except Exception:
+        return True  # 4xx/5xx means backend is up
+
+
 async def check_upstream_changed(remote_url: str, remote_name: str, path: str) -> bool:
-    """Conditional HEAD against upstream. Returns False only on a definitive 304."""
+    """Conditional HEAD against upstream. Returns False only on a definitive 304.
+    Raises UpstreamUnreachable if the backend cannot be contacted."""
     meta = cache.get_mutable_meta(remote_name, path)
     if not meta:
         return True
@@ -268,25 +285,37 @@ async def check_upstream_changed(remote_url: str, remote_name: str, path: str) -
         async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.head(remote_url, headers=headers)
         return response.status_code != 304
-    except Exception:
-        return True
+    except (httpx.NetworkError, httpx.TimeoutException) as exc:
+        raise UpstreamUnreachable(str(exc)) from exc
 
 
 async def handle_expired_mutable(remote_name: str, path: str, remote_url: str) -> bool:
     """Handle an expired mutable file. Returns True if the cached copy is still valid."""
+    mutable_ttl = config.get_cache_config(remote_name).get("mutable_ttl", 3600)
+
     remote_cfg = config.get_remote_config(remote_name) or {}
     check_updates = remote_cfg.get("check_mutable_updates", False)
     user_mutable = check_updates and cache.is_mutable_file(path, config.get_user_mutable_patterns(remote_name))
+
     if user_mutable:
-        changed = await check_upstream_changed(remote_url, remote_name, path)
+        try:
+            changed = await check_upstream_changed(remote_url, remote_name, path)
+        except UpstreamUnreachable:
+            cache.mark_index_cached(remote_name, path, mutable_ttl)
+            logger.warning(f"Mutable STALE (backend unreachable): {remote_name}/{path} - TTL extended ({mutable_ttl}s)")
+            return True
         if not changed:
-            mutable_ttl = config.get_cache_config(remote_name).get("mutable_ttl", 3600)
             cache.mark_index_cached(remote_name, path, mutable_ttl)
             logger.info(f"Mutable file UNCHANGED: {remote_name}/{path} - TTL refreshed ({mutable_ttl}s)")
             return True
         logger.info(f"Mutable file CHANGED: {remote_name}/{path} - re-downloading")
     else:
+        if not await _upstream_reachable(remote_url):
+            cache.mark_index_cached(remote_name, path, mutable_ttl)
+            logger.warning(f"Mutable STALE (backend unreachable): {remote_name}/{path} - TTL extended ({mutable_ttl}s)")
+            return True
         logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
+
     cache.cleanup_expired_index(storage, remote_name, path)
     return False
 

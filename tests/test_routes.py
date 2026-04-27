@@ -248,12 +248,13 @@ class TestDockerProxy:
         deps["cache"].is_index_valid.return_value = False  # but TTL expired
         deps["storage"].download_object.return_value = manifest
 
-        with patch(
-            "artifactapi.main.cache_single_artifact",
-            new_callable=AsyncMock,
-            return_value={"status": "cached"},
-        ) as mock_fetch:
-            response = client.get("/v2/docker-test/library/nginx/manifests/latest")
+        with patch("artifactapi.main._upstream_reachable", new_callable=AsyncMock, return_value=True):
+            with patch(
+                "artifactapi.main.cache_single_artifact",
+                new_callable=AsyncMock,
+                return_value={"status": "cached"},
+            ) as mock_fetch:
+                response = client.get("/v2/docker-test/library/nginx/manifests/latest")
 
         mock_fetch.assert_called_once()
         assert response.status_code == 200
@@ -468,6 +469,39 @@ class TestGenericArtifactRoute:
 
         assert response.status_code == 200
         mock_cache.assert_called_once()
+
+    def test_mutable_backend_unreachable_on_check_updates_keeps_stale(self, client, patched_deps):
+        """When check_mutable_updates=True and backend is unreachable, stale copy is kept and TTL refreshed."""
+        from artifactapi.main import UpstreamUnreachable
+
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"stale metadata"
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+        deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
+
+        with patch("artifactapi.main.check_upstream_changed", side_effect=UpstreamUnreachable("connection refused")):
+            response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
+
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_called()
+        deps["storage"].client.delete_object.assert_not_called()
+
+    def test_mutable_backend_unreachable_on_expiry_keeps_stale(self, client, patched_deps):
+        """When a regular mutable file expires and backend is unreachable, stale copy is kept and TTL refreshed."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"stale APKINDEX"
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+
+        with patch("artifactapi.main._upstream_reachable", new_callable=AsyncMock, return_value=False):
+            response = client.get("/api/v1/remote/alpine-test/alpine/v3.18/x86_64/APKINDEX.tar.gz")
+
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_called()
+        deps["storage"].client.delete_object.assert_not_called()
 
     def test_mutable_flag_off_skips_conditional_check(self, client, patched_deps):
         """When check_mutable_updates is not set, expired mutable files are always re-fetched."""

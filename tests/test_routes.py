@@ -452,6 +452,23 @@ class TestGenericArtifactRoute:
 
         assert response.status_code == 502
 
+    def test_mutable_changed_redownloads_successfully(self, client, patched_deps):
+        """When check_mutable_updates=True and upstream says 200, fresh copy is fetched and served."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"fresh metadata"
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = False
+        deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
+
+        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock, return_value=True):
+            with patch("artifactapi.main.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
+                mock_cache.return_value = {"status": "cached", "etag": '"def"', "last_modified": None}
+                response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
+
+        assert response.status_code == 200
+        mock_cache.assert_called_once()
+
     def test_mutable_flag_off_skips_conditional_check(self, client, patched_deps):
         """When check_mutable_updates is not set, expired mutable files are always re-fetched."""
         deps = patched_deps

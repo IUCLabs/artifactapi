@@ -272,6 +272,25 @@ async def check_upstream_changed(remote_url: str, remote_name: str, path: str) -
         return True
 
 
+async def handle_expired_mutable(remote_name: str, path: str, remote_url: str) -> bool:
+    """Handle an expired mutable file. Returns True if the cached copy is still valid."""
+    remote_cfg = config.get_remote_config(remote_name) or {}
+    check_updates = remote_cfg.get("check_mutable_updates", False)
+    user_mutable = check_updates and cache.is_mutable_file(path, config.get_user_mutable_patterns(remote_name))
+    if user_mutable:
+        changed = await check_upstream_changed(remote_url, remote_name, path)
+        if not changed:
+            mutable_ttl = config.get_cache_config(remote_name).get("mutable_ttl", 3600)
+            cache.mark_index_cached(remote_name, path, mutable_ttl)
+            logger.info(f"Mutable file UNCHANGED: {remote_name}/{path} - TTL refreshed ({mutable_ttl}s)")
+            return True
+        logger.info(f"Mutable file CHANGED: {remote_name}/{path} - re-downloading")
+    else:
+        logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
+    cache.cleanup_expired_index(storage, remote_name, path)
+    return False
+
+
 @app.get("/api/v1/remote/{remote_name}/{path:path}")
 async def get_artifact(remote_name: str, path: str):
     # Check if remote is configured
@@ -328,22 +347,7 @@ async def get_artifact(remote_name: str, path: str):
 
     if cached_key and is_mutable:
         if not cache.is_index_valid(remote_name, path):
-            remote_cfg = config.get_remote_config(remote_name) or {}
-            check_updates = remote_cfg.get("check_mutable_updates", False)
-            user_mutable = check_updates and cache.is_mutable_file(path, config.get_user_mutable_patterns(remote_name))
-            if user_mutable:
-                changed = await check_upstream_changed(remote_url, remote_name, path)
-                if not changed:
-                    mutable_ttl = config.get_cache_config(remote_name).get("mutable_ttl", 3600)
-                    cache.mark_index_cached(remote_name, path, mutable_ttl)
-                    logger.info(f"Mutable file UNCHANGED: {remote_name}/{path} - TTL refreshed ({mutable_ttl}s)")
-                else:
-                    logger.info(f"Mutable file CHANGED: {remote_name}/{path} - re-downloading")
-                    cache.cleanup_expired_index(storage, remote_name, path)
-                    cached_key = None
-            else:
-                logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
-                cache.cleanup_expired_index(storage, remote_name, path)
+            if not await handle_expired_mutable(remote_name, path, remote_url):
                 cached_key = None
 
     if cached_key:
@@ -481,22 +485,7 @@ async def docker_v2_proxy(request: Request, remote_name: str, path: str):
 
     if cached_key and is_mutable:
         if not cache.is_index_valid(remote_name, path):
-            remote_cfg = config.get_remote_config(remote_name) or {}
-            check_updates = remote_cfg.get("check_mutable_updates", False)
-            user_mutable = check_updates and cache.is_mutable_file(path, config.get_user_mutable_patterns(remote_name))
-            if user_mutable:
-                changed = await check_upstream_changed(remote_url, remote_name, path)
-                if not changed:
-                    mutable_ttl = config.get_cache_config(remote_name).get("mutable_ttl", 3600)
-                    cache.mark_index_cached(remote_name, path, mutable_ttl)
-                    logger.info(f"Mutable file UNCHANGED: {remote_name}/{path} - TTL refreshed ({mutable_ttl}s)")
-                else:
-                    logger.info(f"Mutable file CHANGED: {remote_name}/{path} - re-downloading")
-                    cache.cleanup_expired_index(storage, remote_name, path)
-                    cached_key = None
-            else:
-                logger.info(f"Mutable file EXPIRED: {remote_name}/{path} - removing from cache")
-                cache.cleanup_expired_index(storage, remote_name, path)
+            if not await handle_expired_mutable(remote_name, path, remote_url):
                 cached_key = None
 
     if not cached_key:

@@ -154,6 +154,20 @@ class TestGetMutablePatterns:
         assert any(re.search(p, "express") for p in patterns)
         assert any(re.search(p, "@babel/core") for p in patterns)
 
+    def test_helm_returns_index_yaml_as_mutable(self, make_config):
+        cfg = make_config({"r": {"type": "remote", "package": "helm", "base_url": "https://helm.example.com"}})
+        patterns = cfg.get_mutable_patterns("r")
+        assert r"index\.yaml$" in patterns
+
+    def test_helm_chart_tarballs_not_mutable_by_default(self, make_config):
+        import re
+
+        cfg = make_config({"r": {"type": "remote", "package": "helm", "base_url": "https://helm.example.com"}})
+        patterns = cfg.get_mutable_patterns("r")
+        # Only index.yaml is mutable; .tgz chart tarballs are not
+        assert not any(re.search(p, "vault-0.29.1.tgz") for p in patterns)
+        assert not any(re.search(p, "consul-1.5.0.tgz") for p in patterns)
+
     def test_npm_explicit_mutable_pattern_excludes_tarballs(self, make_config):
         import re
 

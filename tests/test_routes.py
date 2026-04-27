@@ -841,3 +841,86 @@ class TestNpmRemote:
         response = client.get("/api/v1/remote/npm-test/express/-/express-4.18.2.tgz")
         assert response.status_code == 200
         assert "application/gzip" in response.headers["content-type"]
+
+
+# ---------------------------------------------------------------------------
+# Helm remote  /api/v1/remote/helm-test/...
+# ---------------------------------------------------------------------------
+
+
+class TestHelmRemote:
+    def test_index_yaml_is_mutable(self, client, patched_deps):
+        """index.yaml is detected as mutable (package-type default)."""
+        deps = patched_deps
+        index = b"apiVersion: v1\nentries:\n  vault:\n    - urls:\n      - https://helm.releases.hashicorp.com/vault-0.29.1.tgz\n"
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = index
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/helm-test/index.yaml")
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_not_called()
+
+    def test_index_yaml_urls_rewritten_to_proxy(self, client, patched_deps):
+        """base_url chart URLs in a cached index.yaml are rewritten to our proxy."""
+        deps = patched_deps
+        index = b"apiVersion: v1\nentries:\n  vault:\n    - urls:\n      - https://helm.releases.hashicorp.com/vault-0.29.1.tgz\n"
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = index
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/helm-test/index.yaml")
+        assert response.status_code == 200
+        assert b"helm.releases.hashicorp.com" not in response.content
+        assert b"/api/v1/remote/helm-test/vault-0.29.1.tgz" in response.content
+
+    def test_index_yaml_content_type_is_yaml(self, client, patched_deps):
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"apiVersion: v1\nentries: {}\n"
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/helm-test/index.yaml")
+        assert response.status_code == 200
+        assert "text/yaml" in response.headers["content-type"]
+
+    def test_chart_tarball_immutable_returns_gzip_content_type(self, client, patched_deps):
+        """Versioned chart tarballs match immutable_patterns and are served as binary."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"\x1f\x8b chart bytes"
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/helm-test/vault-0.29.1.tgz")
+        assert response.status_code == 200
+        assert "application/gzip" in response.headers["content-type"]
+        assert response.headers["X-Artifact-Source"] == "cache"
+
+    def test_index_yaml_cache_miss_fetches_upstream(self, client, patched_deps):
+        deps = patched_deps
+        index = b"apiVersion: v1\nentries:\n  vault:\n    - urls:\n      - https://helm.releases.hashicorp.com/vault-0.29.1.tgz\n"
+        deps["storage"].exists.return_value = False
+        deps["storage"].download_object.return_value = index
+        deps["cache"].is_mutable_file.return_value = True
+
+        with patch(
+            "artifactapi.main.cache_single_artifact",
+            new_callable=AsyncMock,
+            return_value={"status": "cached"},
+        ) as mock_fetch:
+            response = client.get("/api/v1/remote/helm-test/index.yaml")
+
+        mock_fetch.assert_called_once()
+        assert response.status_code == 200
+        assert b"helm.releases.hashicorp.com" not in response.content
+
+    def test_non_tgz_non_yaml_path_blocked_by_pattern(self, client, patched_deps):
+        """Paths that don't match immutable_patterns and aren't mutable are blocked."""
+        deps = patched_deps
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/helm-test/vault.zip")
+        assert response.status_code == 403

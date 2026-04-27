@@ -133,6 +133,44 @@ class TestGetMutablePatterns:
         assert r"repomd\.xml$" in patterns
         assert r"custom-meta\.xml$" in patterns
 
+    def test_npm_has_no_package_defaults(self, make_config):
+        cfg = make_config({"r": {"type": "remote", "package": "npm", "base_url": "https://x.com"}})
+        assert cfg.get_mutable_patterns("r") == []
+
+    def test_npm_explicit_mutable_pattern_matches_metadata(self, make_config):
+        import re
+
+        cfg = make_config(
+            {
+                "r": {
+                    "type": "remote",
+                    "package": "npm",
+                    "base_url": "https://x.com",
+                    "mutable_patterns": [r"^(?!.*\.tgz$).*"],
+                }
+            }
+        )
+        patterns = cfg.get_mutable_patterns("r")
+        assert any(re.search(p, "express") for p in patterns)
+        assert any(re.search(p, "@babel/core") for p in patterns)
+
+    def test_npm_explicit_mutable_pattern_excludes_tarballs(self, make_config):
+        import re
+
+        cfg = make_config(
+            {
+                "r": {
+                    "type": "remote",
+                    "package": "npm",
+                    "base_url": "https://x.com",
+                    "mutable_patterns": [r"^(?!.*\.tgz$).*"],
+                }
+            }
+        )
+        patterns = cfg.get_mutable_patterns("r")
+        assert not any(re.search(p, "express-4.18.2.tgz") for p in patterns)
+        assert not any(re.search(p, "express/-/express-4.18.2.tgz") for p in patterns)
+
 
 # ---------------------------------------------------------------------------
 # get_immutable_patterns

@@ -91,6 +91,16 @@ TEST_REMOTES = {
             ],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
         },
+        "npm-test": {
+            "base_url": "https://registry.npmjs.org",
+            "type": "remote",
+            "package": "npm",
+            "npm_files_url": "https://registry.npmjs.org",
+            "npm_files_remote": "npm-test",
+            "immutable_patterns": [r"\.tgz$"],
+            "mutable_patterns": [r"^(?!.*\.tgz$).*"],
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
+        },
     }
 }
 

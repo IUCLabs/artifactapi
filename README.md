@@ -13,6 +13,7 @@ A generic FastAPI-based artifact caching system that downloads and stores files 
 - **Stale-on-Upstream-Error**: Expired mutable files are kept and their TTL refreshed when the backend cannot be reached, so cached data remains available during upstream outages
 - **S3 Storage**: MinIO/S3 backend with predictable paths
 - **Docker Registry Proxy**: Full Docker Registry HTTP API v2 for transparent container image caching
+- **npm Package Proxy**: Caching proxy for the npm registry with metadata URL rewriting so tarballs also pass through cache
 - **Content-Type Detection**: Automatic MIME type detection for downloads
 
 ## Architecture
@@ -1032,3 +1033,67 @@ When uv requests the simple index for a package, the proxy:
 uv then downloads wheels and `.whl.metadata` files via the rewritten URLs, which also pass through the proxy and are cached as immutable artifacts.
 
 For self-hosted registries like Gitea, both the index and file downloads share the same base URL. Setting `pypi_files_url` and `pypi_files_remote` to the same remote causes file links to be rewritten back through the same proxy entry.
+
+## npm Package Proxy
+
+The `npm` package type turns the artifact API into a caching npm registry proxy. Since the npm registry serves both metadata and tarballs from the same host, a single remote handles everything. Package metadata (e.g. `GET /express`) is mutable and expires after `mutable_ttl`; tarballs (`.tgz`) are immutable and cached forever. `dist.tarball` URLs in metadata JSON are rewritten on the fly to point back through the same remote, so both the metadata lookup and the tarball download are served from cache.
+
+### remotes.yaml
+
+```yaml
+remotes:
+  npm:
+    base_url: "https://registry.npmjs.org"
+    type: "remote"
+    package: "npm"
+    npm_files_url: "https://registry.npmjs.org"  # URL prefix to rewrite in metadata JSON
+    npm_files_remote: "npm"                        # rewrite back to this same remote
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\.tgz$"       # versioned tarballs are content-addressed — cache forever
+    mutable_patterns:
+      - "^(?!.*\.tgz$).*"  # everything else (package metadata) expires after mutable_ttl
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 600   # re-check package metadata after 10 minutes
+```
+
+### Configuring npm / yarn / pnpm
+
+**npm** — per-project `.npmrc` or `~/.npmrc`:
+
+```ini
+registry=https://artifacts.example.com/api/v1/remote/npm/
+```
+
+**yarn** — `~/.yarnrc.yml`:
+
+```yaml
+npmRegistryServer: "https://artifacts.example.com/api/v1/remote/npm/"
+```
+
+**pnpm** — `.npmrc`:
+
+```ini
+registry=https://artifacts.example.com/api/v1/remote/npm/
+```
+
+### How the rewriting works
+
+When a client requests package metadata, the proxy:
+
+1. Fetches `https://registry.npmjs.org/{package}` (or returns a cached copy within `mutable_ttl`)
+2. Rewrites every `https://registry.npmjs.org/...` tarball URL to `https://artifacts.example.com/api/v1/remote/npm/...`
+3. Returns the rewritten JSON to the client
+
+The client then downloads the tarball via the rewritten URL, which hits the same `npm` remote and is cached as an immutable artifact. Subsequent installs of the same package version are served entirely from S3.
+
+### Mutable vs immutable paths
+
+| Path pattern | Type | Example |
+|---|---|---|
+| `/{package}` | Mutable (TTL) | `/express` |
+| `/@{scope}/{package}` | Mutable (TTL) | `/@babel/core` |
+| `/-/all` | Mutable (TTL) | `/-/all` |
+| `/{package}/-/{package}-{version}.tgz` | Immutable (forever) | `/express/-/express-4.18.2.tgz` |
+| `/@{scope}/{pkg}/-/{pkg}-{ver}.tgz` | Immutable (forever) | `/@babel/core/-/core-7.21.0.tgz` |

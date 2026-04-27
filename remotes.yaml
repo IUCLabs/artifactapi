@@ -261,6 +261,18 @@ remotes:
       immutable_ttl: 0
       mutable_ttl: 600  # Package metadata refreshed after 10 minutes
 
+  hashicorp-helm:
+    base_url: "https://helm.releases.hashicorp.com"
+    type: "remote"
+    package: "helm"
+    description: "HashiCorp Helm chart repository (Vault, Consul, Nomad, etc.)"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0    # Chart tarballs are versioned — cache forever
+      mutable_ttl: 3600   # index.yaml refreshed after 1 hour
+
   local-generic:
     type: "local"
     package: "generic"

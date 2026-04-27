@@ -22,6 +22,9 @@ _PACKAGE_MUTABLE_PATTERNS: dict[str, list[str]] = {
         r"simple/",  # Per-package and top-level simple index pages
     ],
     "npm": [],
+    "helm": [
+        r"index\.yaml$",
+    ],
     "generic": [],
 }
 

@@ -101,6 +101,13 @@ TEST_REMOTES = {
             "mutable_patterns": [r"^(?!.*\.tgz$).*"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
         },
+        "helm-test": {
+            "base_url": "https://helm.releases.hashicorp.com",
+            "type": "remote",
+            "package": "helm",
+            "immutable_patterns": [r"\.tgz$"],
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 3600},
+        },
     }
 }
 

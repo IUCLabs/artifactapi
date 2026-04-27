@@ -349,6 +349,8 @@ def _get_content_type(filename: str) -> str:
         return "application/xml"
     if filename.endswith((".xml.gz", ".xml.bz2", ".xml.xz")):
         return "application/gzip"
+    if filename.endswith((".yaml", ".yml")):
+        return "text/yaml"
     return "application/octet-stream"
 
 
@@ -358,6 +360,7 @@ def _resolve_content(
     filename: str,
     remote_config: dict,
     request: Request,
+    remote_name: str = "",
 ) -> tuple[bytes, str]:
     """Return (possibly-rewritten data, content_type) for a cached artifact."""
     if remote_config.get("package") == "pypi" and "simple/" in path:
@@ -378,6 +381,14 @@ def _resolve_content(
             f"{proxy_base}/api/v1/remote/{files_remote}".encode(),
         )
         return data, "application/json"
+    if remote_config.get("package") == "helm" and filename == "index.yaml":
+        proxy_base = str(request.base_url).rstrip("/")
+        base_url = remote_config.get("base_url", "").rstrip("/")
+        data = data.replace(
+            base_url.encode(),
+            f"{proxy_base}/api/v1/remote/{remote_name}".encode(),
+        )
+        return data, "text/yaml"
     return data, _get_content_type(filename)
 
 
@@ -445,7 +456,7 @@ async def get_artifact(request: Request, remote_name: str, path: str):
         try:
             artifact_data = storage.download_object(cached_key)
             filename = os.path.basename(path)
-            artifact_data, content_type = _resolve_content(artifact_data, path, filename, remote_config, request)
+            artifact_data, content_type = _resolve_content(artifact_data, path, filename, remote_config, request, remote_name)
 
             logger.info(f"Cache HIT: {remote_name}/{path} (size: {len(artifact_data)} bytes, key: {cached_key})")
 
@@ -486,7 +497,7 @@ async def get_artifact(request: Request, remote_name: str, path: str):
         cache_key = storage.get_object_key(remote_name, path)
         artifact_data = storage.download_object(cache_key)
         filename = os.path.basename(path)
-        artifact_data, content_type = _resolve_content(artifact_data, path, filename, remote_config, request)
+        artifact_data, content_type = _resolve_content(artifact_data, path, filename, remote_config, request, remote_name)
 
         metrics.record_cache_miss(remote_name, len(artifact_data))
         cache_key = storage.get_object_key(remote_name, path)

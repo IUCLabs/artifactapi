@@ -14,6 +14,7 @@ A generic FastAPI-based artifact caching system that downloads and stores files 
 - **S3 Storage**: MinIO/S3 backend with predictable paths
 - **Docker Registry Proxy**: Full Docker Registry HTTP API v2 for transparent container image caching
 - **npm Package Proxy**: Caching proxy for the npm registry with metadata URL rewriting so tarballs also pass through cache
+- **Helm Chart Repository Proxy**: Caching proxy for Helm chart repositories with `index.yaml` URL rewriting so chart tarballs also pass through cache
 - **Content-Type Detection**: Automatic MIME type detection for downloads
 
 ## Architecture
@@ -1097,3 +1098,51 @@ The client then downloads the tarball via the rewritten URL, which hits the same
 | `/-/all` | Mutable (TTL) | `/-/all` |
 | `/{package}/-/{package}-{version}.tgz` | Immutable (forever) | `/express/-/express-4.18.2.tgz` |
 | `/@{scope}/{pkg}/-/{pkg}-{ver}.tgz` | Immutable (forever) | `/@babel/core/-/core-7.21.0.tgz` |
+
+## Helm Chart Repository Proxy
+
+The `helm` package type turns the artifact API into a caching Helm chart repository proxy. A single remote handles both the mutable `index.yaml` and the immutable versioned chart tarballs, since they are served from the same upstream host. Chart URLs inside `index.yaml` are rewritten on the fly to point back through the same remote, so both the index lookup and the chart download are served from cache.
+
+### remotes.yaml
+
+```yaml
+remotes:
+  hashicorp-helm:
+    base_url: "https://helm.releases.hashicorp.com"
+    type: "remote"
+    package: "helm"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"   # chart tarballs — cache forever
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600   # index.yaml refreshed after 1 hour
+```
+
+### Configuring Helm
+
+Point Helm at the proxy with `helm repo add`:
+
+```bash
+helm repo add hashicorp https://artifacts.example.com/api/v1/remote/hashicorp-helm
+helm repo update
+helm search repo hashicorp/vault
+helm install vault hashicorp/vault
+```
+
+### How the rewriting works
+
+When a client requests `index.yaml`, the proxy:
+
+1. Fetches `https://helm.releases.hashicorp.com/index.yaml` (or returns a cached copy within `mutable_ttl`)
+2. Rewrites every `https://helm.releases.hashicorp.com/...` chart URL to `https://artifacts.example.com/api/v1/remote/hashicorp-helm/...`
+3. Returns the rewritten YAML to the client
+
+The client then downloads chart tarballs via the rewritten URLs, which hit the same `hashicorp-helm` remote and are cached as immutable artifacts. Subsequent installs of the same chart version are served entirely from S3.
+
+### Mutable vs immutable paths
+
+| Path | Type | Example |
+|---|---|---|
+| `index.yaml` | Mutable (TTL) | `index.yaml` |
+| `{chart}-{version}.tgz` | Immutable (forever) | `vault-0.29.1.tgz` |

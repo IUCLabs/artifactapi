@@ -937,27 +937,20 @@ curl https://artifacts.example.com/ | jq '.remotes'
 
 ## Python Package Proxy with uv
 
-The `pypi` package type turns the artifact API into a caching PyPI proxy. Simple index pages (`/simple/{package}/`) are mutable and expire after `mutable_ttl`; package files (wheels, sdists, metadata) are immutable and cached forever. URLs in the simple index HTML are rewritten on the fly to point back through the proxy, so both the index lookup and the file download are served from cache.
+The `pypi` package type turns the artifact API into a caching PyPI proxy using a single remote. Simple index pages (`/simple/{package}/`) are mutable and expire after `mutable_ttl`; package files (wheels, sdists, metadata) are immutable and cached forever. URLs in the simple index HTML are rewritten on the fly to point back through the same remote, so both the index lookup and the file download are served from cache.
+
+For public PyPI, `base_url` is set to `https://files.pythonhosted.org` (the file host). Simple index requests are transparently fetched from `https://pypi.org` — no extra configuration needed. For self-hosted registries like Gitea where both index and files share the same host, `base_url` points at that host and everything routes through it automatically.
 
 ### remotes.yaml
 
 ```yaml
 remotes:
+  # Public PyPI — simple index fetched from pypi.org, files from files.pythonhosted.org
   pypi:
-    base_url: "https://pypi.org"
-    type: "remote"
-    package: "pypi"
-    pypi_files_url: "https://files.pythonhosted.org"  # host to rewrite in index HTML
-    pypi_files_remote: "pypi-files"                    # our proxy remote to replace it with
-    check_mutable_updates: true
-    cache:
-      immutable_ttl: 0
-      mutable_ttl: 600   # re-check simple indexes after 10 minutes
-
-  pypi-files:
     base_url: "https://files.pythonhosted.org"
     type: "remote"
-    package: "generic"
+    package: "pypi"
+    check_mutable_updates: true
     immutable_patterns:
       - "packages/.*\\.whl$"
       - "packages/.*\\.whl\\.metadata$"
@@ -965,17 +958,16 @@ remotes:
       - "packages/.*\\.zip$"
       - "packages/.*\\.egg$"
     cache:
-      immutable_ttl: 0   # package files are content-addressed — cache forever
+      immutable_ttl: 0
+      mutable_ttl: 600   # re-check simple indexes after 10 minutes
 
-  # Self-hosted Gitea PyPI registry (index and files share the same base URL)
+  # Self-hosted Gitea PyPI registry — index and files at the same base URL
   pypi-gitea:
     base_url: "https://gitea.example.com/api/packages/myorg/pypi"
     type: "remote"
     package: "pypi"
     # username: "your-gitea-username"
     # password: "your-personal-access-token"  # needs package:read scope
-    pypi_files_url: "https://gitea.example.com/api/packages/myorg/pypi"
-    pypi_files_remote: "pypi-gitea"  # point back to itself — Gitea serves both index and files
     check_mutable_updates: true
     immutable_patterns:
       - "files/.*\\.whl$"
@@ -1028,12 +1020,10 @@ Setting `default = true` replaces uv's built-in PyPI index. The first install of
 When uv requests the simple index for a package, the proxy:
 
 1. Fetches `https://pypi.org/simple/{package}/` (or returns a valid cached copy within `mutable_ttl`)
-2. Rewrites every `https://files.pythonhosted.org/...` href to `https://artifacts.example.com/api/v1/remote/pypi-files/...`
+2. Rewrites every `https://files.pythonhosted.org/...` href to `https://artifacts.example.com/api/v1/remote/pypi/...`
 3. Returns the rewritten HTML to uv
 
-uv then downloads wheels and `.whl.metadata` files via the rewritten URLs, which also pass through the proxy and are cached as immutable artifacts.
-
-For self-hosted registries like Gitea, both the index and file downloads share the same base URL. Setting `pypi_files_url` and `pypi_files_remote` to the same remote causes file links to be rewritten back through the same proxy entry.
+uv then downloads wheels and `.whl.metadata` files via the rewritten URLs, which also pass through the same proxy remote and are cached as immutable artifacts. For Gitea and other self-hosted registries, the same mechanism applies — `base_url` is the file host, and index page hrefs pointing at that host are rewritten to the proxy.
 
 ## npm Package Proxy
 
@@ -1047,8 +1037,6 @@ remotes:
     base_url: "https://registry.npmjs.org"
     type: "remote"
     package: "npm"
-    npm_files_url: "https://registry.npmjs.org"  # URL prefix to rewrite in metadata JSON
-    npm_files_remote: "npm"                        # rewrite back to this same remote
     check_mutable_updates: true
     immutable_patterns:
       - "\.tgz$"       # versioned tarballs are content-addressed — cache forever

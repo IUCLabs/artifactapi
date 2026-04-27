@@ -160,11 +160,12 @@ async def construct_remote_url(remote_name: str, path: str) -> str:
     if not base_url:
         raise HTTPException(status_code=500, detail=f"No base_url configured for remote '{remote_name}'")
 
-    # Handle Docker registry URLs
     if remote_config.get("package") == "docker":
-        # Convert Docker paths to v2 API format
-        # e.g., library/nginx/manifests/latest -> v2/library/nginx/manifests/latest
         return f"{base_url}/v2/{path}"
+
+    # PyPI splits index and files across two hosts; redirect simple/ requests to pypi.org
+    if remote_config.get("package") == "pypi" and base_url.rstrip("/") == "https://files.pythonhosted.org" and "simple/" in path:
+        return f"https://pypi.org/{path}"
 
     return f"{base_url}/{path}"
 
@@ -363,24 +364,26 @@ def _resolve_content(
     remote_name: str = "",
 ) -> tuple[bytes, str]:
     """Return (possibly-rewritten data, content_type) for a cached artifact."""
-    if remote_config.get("package") == "pypi" and "simple/" in path:
-        files_url = remote_config.get("pypi_files_url", "https://files.pythonhosted.org")
-        files_remote = remote_config.get("pypi_files_remote", "pypi-files")
-        proxy_base = str(request.base_url).rstrip("/")
-        data = data.replace(
-            files_url.rstrip("/").encode(),
-            f"{proxy_base}/api/v1/remote/{files_remote}".encode(),
-        )
-        return data, "text/html; charset=utf-8"
-    if remote_config.get("package") == "npm" and not path.endswith(".tgz"):
-        files_url = remote_config.get("npm_files_url", "https://registry.npmjs.org")
-        files_remote = remote_config.get("npm_files_remote", "npm-files")
-        proxy_base = str(request.base_url).rstrip("/")
-        data = data.replace(
-            files_url.rstrip("/").encode(),
-            f"{proxy_base}/api/v1/remote/{files_remote}".encode(),
-        )
-        return data, "application/json"
+    if remote_config.get("package") == "pypi":
+        immutable = remote_config.get("immutable_patterns", [])
+        if not any(re.search(p, path) for p in immutable):
+            proxy_base = str(request.base_url).rstrip("/")
+            base_url = remote_config.get("base_url", "").rstrip("/")
+            data = data.replace(
+                base_url.encode(),
+                f"{proxy_base}/api/v1/remote/{remote_name}".encode(),
+            )
+            return data, "text/html; charset=utf-8"
+    if remote_config.get("package") == "npm":
+        immutable = remote_config.get("immutable_patterns", [])
+        if not any(re.search(p, path) for p in immutable):
+            proxy_base = str(request.base_url).rstrip("/")
+            base_url = remote_config.get("base_url", "").rstrip("/")
+            data = data.replace(
+                base_url.encode(),
+                f"{proxy_base}/api/v1/remote/{remote_name}".encode(),
+            )
+            return data, "application/json"
     if remote_config.get("package") == "helm" and filename == "index.yaml":
         proxy_base = str(request.base_url).rstrip("/")
         base_url = remote_config.get("base_url", "").rstrip("/")

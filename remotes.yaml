@@ -195,15 +195,19 @@ remotes:
       mutable_ttl: 300
 
   pypi:
-    base_url: "https://pypi.org"
+    base_url: "https://files.pythonhosted.org"
     type: "remote"
     package: "pypi"
-    description: "Python Package Index — simple repository API"
-    # pypi_files_url: the upstream host used in simple-index hrefs (default: files.pythonhosted.org)
-    # pypi_files_remote: our proxy remote that will serve those files (default: pypi-files)
-    pypi_files_url: "https://files.pythonhosted.org"
-    pypi_files_remote: "pypi-files"
+    description: "Python Package Index — simple index and package files via a single remote"
+    # simple/ requests are transparently fetched from pypi.org; package files come from
+    # files.pythonhosted.org (base_url). URLs in the simple index are rewritten to this remote.
     check_mutable_updates: true
+    immutable_patterns:
+      - "packages/.*\\.whl$"
+      - "packages/.*\\.whl\\.metadata$"
+      - "packages/.*\\.tar\\.gz$"
+      - "packages/.*\\.zip$"
+      - "packages/.*\\.egg$"
     cache:
       immutable_ttl: 0
       mutable_ttl: 600  # Simple index pages refreshed after 10 minutes
@@ -212,12 +216,9 @@ remotes:
     base_url: "https://gitea.example.com/api/packages/myorg/pypi"
     type: "remote"
     package: "pypi"
-    description: "Private Gitea PyPI registry"
+    description: "Private Gitea PyPI registry — simple index and files at the same host"
     # username: "your-gitea-username"
     # password: "your-personal-access-token"  # needs package:read scope
-    # Files are served from the same Gitea instance — rewrite back to this same remote
-    pypi_files_url: "https://gitea.example.com/api/packages/myorg/pypi"
-    pypi_files_remote: "pypi-gitea"
     check_mutable_updates: true
     immutable_patterns:
       - "files/.*\\.whl$"
@@ -229,29 +230,11 @@ remotes:
       immutable_ttl: 0
       mutable_ttl: 600
 
-  pypi-files:
-    base_url: "https://files.pythonhosted.org"
-    type: "remote"
-    package: "generic"
-    description: "Python Package Index — file storage (wheels, sdists)"
-    immutable_patterns:
-      - "packages/.*\\.whl$"
-      - "packages/.*\\.whl\\.metadata$"
-      - "packages/.*\\.tar\\.gz$"
-      - "packages/.*\\.zip$"
-      - "packages/.*\\.egg$"
-    cache:
-      immutable_ttl: 0  # Package files are content-addressed — cache forever
-
   npm:
     base_url: "https://registry.npmjs.org"
     type: "remote"
     package: "npm"
     description: "npm registry — package metadata with tarball URL rewriting"
-    # npm_files_url: the upstream host used in metadata tarball hrefs (default: https://registry.npmjs.org)
-    # npm_files_remote: our proxy remote that will serve those tarballs (default: npm-files)
-    npm_files_url: "https://registry.npmjs.org"
-    npm_files_remote: "npm"
     check_mutable_updates: true
     immutable_patterns:
       - \.tgz$

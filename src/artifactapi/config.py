@@ -18,6 +18,9 @@ _PACKAGE_MUTABLE_PATTERNS: dict[str, list[str]] = {
         r"/manifests/(?!sha256:)[^/]+$",
         r"/tags/list$",
     ],
+    "pypi": [
+        r"simple/",  # Per-package and top-level simple index pages
+    ],
     "generic": [],
 }
 

@@ -652,3 +652,92 @@ class TestConfigEndpoint:
         data = response.json()
         assert "remotes" in data
         assert "alpine-test" in data["remotes"]
+
+
+# ---------------------------------------------------------------------------
+# PyPI remote  /api/v1/remote/pypi-test/...
+# ---------------------------------------------------------------------------
+
+
+class TestPyPIRemote:
+    def test_simple_index_is_mutable(self, client, patched_deps):
+        """simple/ paths are detected as mutable (package-type default)."""
+        deps = patched_deps
+        html = b"<html><body><a href='https://files.pythonhosted.org/packages/requests-2.31.0.tar.gz'>...</a></body></html>"
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = html
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/pypi-test/simple/requests/")
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_not_called()
+
+    def test_simple_index_urls_rewritten_to_proxy(self, client, patched_deps):
+        """files.pythonhosted.org URLs in a cached simple index are rewritten to our proxy."""
+        deps = patched_deps
+        html = b"<html><body><a href='https://files.pythonhosted.org/packages/requests-2.31.0.tar.gz'>...</a></body></html>"
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = html
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/pypi-test/simple/requests/")
+        assert response.status_code == 200
+        assert b"files.pythonhosted.org" not in response.content
+        assert b"/api/v1/remote/pypi-files-test/packages/requests-2.31.0.tar.gz" in response.content
+
+    def test_simple_index_content_type_is_html(self, client, patched_deps):
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"<html></html>"
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/pypi-test/simple/requests/")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+
+    def test_simple_index_cache_miss_fetches_upstream(self, client, patched_deps):
+        deps = patched_deps
+        html = b"<html><body><a href='https://files.pythonhosted.org/packages/p-1.0.whl'>...</a></body></html>"
+        deps["storage"].exists.return_value = False
+        deps["storage"].download_object.return_value = html
+        deps["cache"].is_mutable_file.return_value = True
+
+        with patch(
+            "artifactapi.main.cache_single_artifact",
+            new_callable=AsyncMock,
+            return_value={"status": "cached"},
+        ) as mock_fetch:
+            response = client.get("/api/v1/remote/pypi-test/simple/requests/")
+
+        mock_fetch.assert_called_once()
+        assert response.status_code == 200
+        assert b"files.pythonhosted.org" not in response.content
+
+    def test_wheel_file_immutable_returns_correct_content_type(self, client, patched_deps):
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"PK wheel bytes"
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/pypi-files-test/packages/requests-2.31.0-py3-none-any.whl")
+        assert response.status_code == 200
+        assert "application/zip" in response.headers["content-type"]
+        assert response.headers["X-Artifact-Source"] == "cache"
+
+    def test_sdist_immutable_returns_correct_content_type(self, client, patched_deps):
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"tar bytes"
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/pypi-files-test/packages/requests-2.31.0.tar.gz")
+        assert response.status_code == 200
+        assert "application/gzip" in response.headers["content-type"]
+
+    def test_blocked_path_on_files_remote_returns_403(self, client, patched_deps):
+        """Paths that don't match immutable_patterns on pypi-files-test are blocked."""
+        response = client.get("/api/v1/remote/pypi-files-test/packages/requests.unknown")
+        assert response.status_code == 403

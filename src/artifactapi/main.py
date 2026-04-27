@@ -337,7 +337,7 @@ async def handle_expired_mutable(remote_name: str, path: str, remote_url: str) -
 
 
 def _get_content_type(filename: str) -> str:
-    if filename.endswith(".tar.gz"):
+    if filename.endswith((".tar.gz", ".tgz")):
         return "application/gzip"
     if filename.endswith(".zip") or filename.endswith(".whl"):
         return "application/zip"
@@ -369,6 +369,15 @@ def _resolve_content(
             f"{proxy_base}/api/v1/remote/{files_remote}".encode(),
         )
         return data, "text/html; charset=utf-8"
+    if remote_config.get("package") == "npm" and not path.endswith(".tgz"):
+        files_url = remote_config.get("npm_files_url", "https://registry.npmjs.org")
+        files_remote = remote_config.get("npm_files_remote", "npm-files")
+        proxy_base = str(request.base_url).rstrip("/")
+        data = data.replace(
+            files_url.rstrip("/").encode(),
+            f"{proxy_base}/api/v1/remote/{files_remote}".encode(),
+        )
+        return data, "application/json"
     return data, _get_content_type(filename)
 
 

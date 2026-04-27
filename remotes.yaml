@@ -243,6 +243,24 @@ remotes:
     cache:
       immutable_ttl: 0  # Package files are content-addressed — cache forever
 
+  npm:
+    base_url: "https://registry.npmjs.org"
+    type: "remote"
+    package: "npm"
+    description: "npm registry — package metadata with tarball URL rewriting"
+    # npm_files_url: the upstream host used in metadata tarball hrefs (default: https://registry.npmjs.org)
+    # npm_files_remote: our proxy remote that will serve those tarballs (default: npm-files)
+    npm_files_url: "https://registry.npmjs.org"
+    npm_files_remote: "npm"
+    check_mutable_updates: true
+    immutable_patterns:
+      - \.tgz$
+    mutable_patterns:
+      - ^(?!.*\.tgz$).*
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 600  # Package metadata refreshed after 10 minutes
+
   local-generic:
     type: "local"
     package: "generic"

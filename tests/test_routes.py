@@ -741,3 +741,103 @@ class TestPyPIRemote:
         """Paths that don't match immutable_patterns on pypi-files-test are blocked."""
         response = client.get("/api/v1/remote/pypi-files-test/packages/requests.unknown")
         assert response.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# npm remote  /api/v1/remote/npm-test/...
+# ---------------------------------------------------------------------------
+
+
+class TestNpmRemote:
+    def test_package_metadata_is_mutable(self, client, patched_deps):
+        """Top-level package metadata paths are detected as mutable."""
+        deps = patched_deps
+        meta = b'{"name":"express","versions":{}}'
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = meta
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/npm-test/express")
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_not_called()
+
+    def test_metadata_tarball_urls_rewritten_to_proxy(self, client, patched_deps):
+        """registry.npmjs.org tarball URLs in metadata JSON are rewritten to our proxy."""
+        deps = patched_deps
+        meta = b'{"dist":{"tarball":"https://registry.npmjs.org/express/-/express-4.18.2.tgz"}}'
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = meta
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/npm-test/express")
+        assert response.status_code == 200
+        assert b"registry.npmjs.org" not in response.content
+        assert b"/api/v1/remote/npm-test/express/-/express-4.18.2.tgz" in response.content
+
+    def test_metadata_content_type_is_json(self, client, patched_deps):
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b'{"name":"express"}'
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/npm-test/express")
+        assert response.status_code == 200
+        assert "application/json" in response.headers["content-type"]
+
+    def test_scoped_package_metadata_rewritten(self, client, patched_deps):
+        """@scope/package metadata URLs are also rewritten back to the same npm-test remote."""
+        deps = patched_deps
+        meta = b'{"dist":{"tarball":"https://registry.npmjs.org/@babel/core/-/core-7.21.0.tgz"}}'
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = meta
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/npm-test/@babel/core")
+        assert response.status_code == 200
+        assert b"registry.npmjs.org" not in response.content
+        assert b"/api/v1/remote/npm-test/@babel/core/-/core-7.21.0.tgz" in response.content
+
+    def test_tarball_not_rewritten(self, client, patched_deps):
+        """Tarball requests (.tgz) bypass URL rewriting and return binary."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"\x1f\x8b tgz bytes"
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/npm-test/express/-/express-4.18.2.tgz")
+        assert response.status_code == 200
+        assert "application/gzip" in response.headers["content-type"]
+        assert response.headers["X-Artifact-Source"] == "cache"
+
+    def test_metadata_cache_miss_fetches_upstream(self, client, patched_deps):
+        deps = patched_deps
+        meta = b'{"dist":{"tarball":"https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"}}'
+        deps["storage"].exists.return_value = False
+        deps["storage"].download_object.return_value = meta
+        deps["cache"].is_mutable_file.return_value = True
+
+        with patch(
+            "artifactapi.main.cache_single_artifact",
+            new_callable=AsyncMock,
+            return_value={"status": "cached"},
+        ) as mock_fetch:
+            response = client.get("/api/v1/remote/npm-test/lodash")
+
+        mock_fetch.assert_called_once()
+        assert response.status_code == 200
+        assert b"registry.npmjs.org" not in response.content
+
+    def test_tarball_immutable_allowed_on_npm_remote(self, client, patched_deps):
+        """Tarballs (.tgz) match immutable_patterns and are served without rewriting."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"tgz bytes"
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/npm-test/express/-/express-4.18.2.tgz")
+        assert response.status_code == 200
+        assert "application/gzip" in response.headers["content-type"]

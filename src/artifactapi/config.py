@@ -21,6 +21,7 @@ _PACKAGE_MUTABLE_PATTERNS: dict[str, list[str]] = {
     "pypi": [
         r"simple/",  # Per-package and top-level simple index pages
     ],
+    "npm": [],
     "generic": [],
 }
 

@@ -283,3 +283,47 @@ class TestMutableMeta:
 
     def test_delete_no_op_when_unavailable(self, unavailable_cache):
         unavailable_cache.delete_mutable_meta("remote", "path")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# artifact published date (quarantine support)
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactPublished:
+    def test_key_format_is_deterministic(self, bare_cache):
+        path = "some/path/package-1.0.tar.gz"
+        expected_hash = hashlib.sha256(path.encode()).hexdigest()[:16]
+        assert bare_cache.get_artifact_published_key("myremote", path) == f"pkg:published:myremote:{expected_hash}"
+
+    def test_key_hash_is_16_chars(self, bare_cache):
+        key = bare_cache.get_artifact_published_key("remote", "path/to/file.whl")
+        assert len(key.split(":")[-1]) == 16
+
+    def test_different_paths_produce_different_keys(self, bare_cache):
+        k1 = bare_cache.get_artifact_published_key("remote", "pkg-1.0.tar.gz")
+        k2 = bare_cache.get_artifact_published_key("remote", "pkg-2.0.tar.gz")
+        assert k1 != k2
+
+    def test_store_calls_set_with_correct_value(self, cache_with_redis, mock_redis_client):
+        lm = "Mon, 01 Jan 2024 00:00:00 GMT"
+        cache_with_redis.store_artifact_published("remote", "path/pkg.tar.gz", lm)
+        expected_key = cache_with_redis.get_artifact_published_key("remote", "path/pkg.tar.gz")
+        mock_redis_client.set.assert_called_once_with(expected_key, lm)
+
+    def test_get_returns_stored_value(self, cache_with_redis, mock_redis_client):
+        lm = "Tue, 15 Mar 2022 12:00:00 GMT"
+        mock_redis_client.get.return_value = lm
+        result = cache_with_redis.get_artifact_published("remote", "path/pkg.tar.gz")
+        assert result == lm
+
+    def test_get_returns_none_when_not_stored(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.get.return_value = None
+        result = cache_with_redis.get_artifact_published("remote", "path/pkg.tar.gz")
+        assert result is None
+
+    def test_store_no_op_when_unavailable(self, unavailable_cache):
+        unavailable_cache.store_artifact_published("remote", "path", "Mon, 01 Jan 2024 00:00:00 GMT")
+
+    def test_get_returns_none_when_unavailable(self, unavailable_cache):
+        assert unavailable_cache.get_artifact_published("remote", "path") is None

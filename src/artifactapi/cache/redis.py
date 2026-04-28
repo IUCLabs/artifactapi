@@ -78,6 +78,27 @@ class RedisCache:
         except Exception:
             pass
 
+    def get_artifact_published_key(self, remote_name: str, path: str) -> str:
+        return f"pkg:published:{remote_name}:{hashlib.sha256(path.encode()).hexdigest()[:16]}"
+
+    def store_artifact_published(self, remote_name: str, path: str, last_modified: str) -> None:
+        """Persist the upstream Last-Modified header for a (typically immutable) artifact."""
+        if not self.available:
+            return
+        try:
+            self.client.set(self.get_artifact_published_key(remote_name, path), last_modified)
+        except Exception:
+            pass
+
+    def get_artifact_published(self, remote_name: str, path: str) -> str | None:
+        """Return the stored Last-Modified string for an artifact, or None."""
+        if not self.available:
+            return None
+        try:
+            return self.client.get(self.get_artifact_published_key(remote_name, path))
+        except Exception:
+            return None
+
     def cleanup_expired_index(self, storage, remote_name: str, path: str) -> None:
         if not self.available:
             return

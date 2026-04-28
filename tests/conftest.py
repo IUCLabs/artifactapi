@@ -98,6 +98,24 @@ TEST_REMOTES = {
             "immutable_patterns": [r"\.tgz$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 3600},
         },
+        "quarantine-test": {
+            "base_url": "https://releases.example.com",
+            "type": "remote",
+            "package": "generic",
+            "immutable_patterns": [r".*\.tar\.gz$"],
+            "quarantine_new": True,
+            "quarantine_days": 3,
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
+        },
+        "quarantine-disabled": {
+            "base_url": "https://releases.example.com",
+            "type": "remote",
+            "package": "generic",
+            "immutable_patterns": [r".*\.tar\.gz$"],
+            "quarantine_new": False,
+            "quarantine_days": 3,
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
+        },
     }
 }
 

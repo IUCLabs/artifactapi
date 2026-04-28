@@ -351,3 +351,70 @@ class TestConfigReload:
         cfg._check_reload()
 
         assert "repo-a" in cfg.config["remotes"]
+
+
+# ---------------------------------------------------------------------------
+# get_quarantine_config
+# ---------------------------------------------------------------------------
+
+
+class TestGetQuarantineConfig:
+    def test_returns_false_zero_when_not_configured(self, make_config):
+        cfg = make_config({"r": {"type": "remote", "package": "generic", "base_url": "https://x.com"}})
+        enabled, days = cfg.get_quarantine_config("r")
+        assert enabled is False
+        assert days == 0
+
+    def test_returns_false_zero_for_missing_remote(self, make_config):
+        cfg = make_config({})
+        enabled, days = cfg.get_quarantine_config("nonexistent")
+        assert enabled is False
+        assert days == 0
+
+    def test_enabled_true_and_days_returned(self, make_config):
+        cfg = make_config(
+            {
+                "r": {
+                    "type": "remote",
+                    "package": "generic",
+                    "base_url": "https://x.com",
+                    "quarantine_new": True,
+                    "quarantine_days": 7,
+                }
+            }
+        )
+        enabled, days = cfg.get_quarantine_config("r")
+        assert enabled is True
+        assert days == 7
+
+    def test_quarantine_new_false_returns_disabled(self, make_config):
+        cfg = make_config(
+            {
+                "r": {
+                    "type": "remote",
+                    "package": "generic",
+                    "base_url": "https://x.com",
+                    "quarantine_new": False,
+                    "quarantine_days": 7,
+                }
+            }
+        )
+        enabled, days = cfg.get_quarantine_config("r")
+        assert enabled is False
+        assert days == 7
+
+    def test_enabled_with_zero_days_returns_zero(self, make_config):
+        cfg = make_config(
+            {
+                "r": {
+                    "type": "remote",
+                    "package": "generic",
+                    "base_url": "https://x.com",
+                    "quarantine_new": True,
+                    "quarantine_days": 0,
+                }
+            }
+        )
+        enabled, days = cfg.get_quarantine_config("r")
+        assert enabled is True
+        assert days == 0

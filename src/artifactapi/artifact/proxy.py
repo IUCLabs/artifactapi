@@ -2,6 +2,8 @@ import base64
 import logging
 import os
 import re
+from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 
 import httpx
 from fastapi import HTTPException, Request, Response
@@ -17,6 +19,42 @@ logger = logging.getLogger(__name__)
 
 class UpstreamUnreachable(Exception):
     """Raised when the upstream backend cannot be contacted (network or timeout error)."""
+
+
+def _check_quarantine(remote_name: str, last_modified_str: str | None, config) -> None:
+    """Raise HTTP 404 if the artifact is within the per-remote quarantine window.
+
+    Fails open (allows the request) when the publish date cannot be determined.
+    """
+    enabled, days = config.get_quarantine_config(remote_name)
+    if not enabled or not days:
+        return
+    if not last_modified_str:
+        return  # cannot determine age → allow
+    try:
+        publish_date = parsedate_to_datetime(last_modified_str)
+    except Exception:
+        return  # unparseable → allow
+    cutoff = datetime.now(UTC) - timedelta(days=days)
+    if publish_date > cutoff:
+        available_on = (publish_date + timedelta(days=days)).date()
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Package quarantined: published {publish_date.date()}, available after {available_on} ({days}-day new-release quarantine)"
+            ),
+        )
+
+
+async def _fetch_last_modified(remote_url: str, remote_cfg: dict) -> str | None:
+    """HEAD the upstream URL and return the Last-Modified header, or None on any failure."""
+    auth = _basic_auth_header(remote_cfg)
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.head(remote_url, headers=auth, timeout=10.0)
+        return response.headers.get("Last-Modified")
+    except Exception:
+        return None
 
 
 def _basic_auth_header(remote_cfg: dict) -> dict[str, str]:
@@ -225,6 +263,14 @@ async def handle(request: Request, remote_name: str, path: str, storage, cache, 
                 cached_key = None
 
     if cached_key:
+        if not is_mutable:
+            published = cache.get_artifact_published(remote_name, path)
+            if not published:
+                published = await _fetch_last_modified(remote_url, remote_config)
+                if published:
+                    cache.store_artifact_published(remote_name, path, published)
+            _check_quarantine(remote_name, published, config)
+
         try:
             artifact_data = storage.download_object(cached_key)
             artifact_data, content_type = _resolve_content(artifact_data, path, filename, remote_config, request, remote_name)
@@ -240,6 +286,8 @@ async def handle(request: Request, remote_name: str, path: str, storage, cache, 
                     "X-Artifact-Size": str(len(artifact_data)),
                 },
             )
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error retrieving cached artifact: {str(e)}")
 
@@ -257,6 +305,12 @@ async def handle(request: Request, remote_name: str, path: str, storage, cache, 
         logger.info(f"Mutable file cached with TTL: {remote_name}/{path} (ttl: {mutable_ttl}s)")
         if result.get("etag") or result.get("last_modified"):
             cache.store_mutable_meta(remote_name, path, result.get("etag"), result.get("last_modified"))
+
+    if not is_mutable:
+        published = result.get("last_modified")
+        if published:
+            cache.store_artifact_published(remote_name, path, published)
+        _check_quarantine(remote_name, published, config)
 
     try:
         cache_key = storage.get_object_key(remote_name, path)

@@ -418,3 +418,123 @@ class TestGetQuarantineConfig:
         enabled, days = cfg.get_quarantine_config("r")
         assert enabled is True
         assert days == 0
+
+
+# ---------------------------------------------------------------------------
+# Directory mode (CONFIG_PATH points to a directory)
+# ---------------------------------------------------------------------------
+
+
+def _remote(base_url: str = "https://x.com") -> dict:
+    return {"type": "remote", "package": "generic", "base_url": base_url}
+
+
+class TestConfigDirMode:
+    def test_loads_all_yaml_files(self, tmp_path):
+        (tmp_path / "a.yaml").write_text(yaml.dump({"remotes": {"repo-a": _remote()}}))
+        (tmp_path / "b.yaml").write_text(yaml.dump({"remotes": {"repo-b": _remote("https://y.com")}}))
+        cfg = ConfigManager(str(tmp_path))
+        assert "repo-a" in cfg.config["remotes"]
+        assert "repo-b" in cfg.config["remotes"]
+
+    def test_later_file_overrides_earlier_on_same_key(self, tmp_path):
+        (tmp_path / "a.yaml").write_text(yaml.dump({"remotes": {"r": _remote("https://first.com")}}))
+        (tmp_path / "b.yaml").write_text(yaml.dump({"remotes": {"r": _remote("https://second.com")}}))
+        cfg = ConfigManager(str(tmp_path))
+        assert cfg.config["remotes"]["r"]["base_url"] == "https://second.com"
+
+    def test_empty_directory_returns_empty_remotes(self, tmp_path):
+        cfg = ConfigManager(str(tmp_path))
+        assert cfg.config == {"remotes": {}}
+
+    def test_ignores_non_yaml_files(self, tmp_path):
+        (tmp_path / "notes.txt").write_text("not yaml")
+        (tmp_path / "a.yaml").write_text(yaml.dump({"remotes": {"repo-a": _remote()}}))
+        cfg = ConfigManager(str(tmp_path))
+        assert list(cfg.config["remotes"].keys()) == ["repo-a"]
+
+    def test_reload_picks_up_new_file(self, tmp_path):
+        (tmp_path / "a.yaml").write_text(yaml.dump({"remotes": {"repo-a": _remote()}}))
+        cfg = ConfigManager(str(tmp_path))
+        assert "repo-a" in cfg.config["remotes"]
+        assert "repo-b" not in cfg.config["remotes"]
+
+        new_file = tmp_path / "b.yaml"
+        new_file.write_text(yaml.dump({"remotes": {"repo-b": _remote("https://y.com")}}))
+        future_mtime = cfg._last_modified + 1
+        os.utime(str(new_file), (future_mtime, future_mtime))
+
+        cfg._check_reload()
+
+        assert "repo-a" in cfg.config["remotes"]
+        assert "repo-b" in cfg.config["remotes"]
+
+
+# ---------------------------------------------------------------------------
+# config_dir key (main file contains a config_dir pointer)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigDirKey:
+    def test_merges_remotes_from_config_dir(self, tmp_path):
+        conf_d = tmp_path / "conf.d"
+        conf_d.mkdir()
+        (conf_d / "remotes.yaml").write_text(yaml.dump({"remotes": {"repo-extra": _remote("https://extra.com")}}))
+        main = tmp_path / "config.yaml"
+        main.write_text(yaml.dump({"config_dir": str(conf_d), "remotes": {"repo-main": _remote()}}))
+        cfg = ConfigManager(str(main))
+        assert "repo-main" in cfg.config["remotes"]
+        assert "repo-extra" in cfg.config["remotes"]
+
+    def test_relative_config_dir_resolved_from_main_file(self, tmp_path):
+        conf_d = tmp_path / "conf.d"
+        conf_d.mkdir()
+        (conf_d / "r.yaml").write_text(yaml.dump({"remotes": {"repo-a": _remote()}}))
+        main = tmp_path / "config.yaml"
+        main.write_text(yaml.dump({"config_dir": "conf.d", "remotes": {}}))
+        cfg = ConfigManager(str(main))
+        assert "repo-a" in cfg.config["remotes"]
+
+    def test_config_dir_key_not_present_in_loaded_config(self, tmp_path):
+        conf_d = tmp_path / "conf.d"
+        conf_d.mkdir()
+        main = tmp_path / "config.yaml"
+        main.write_text(yaml.dump({"config_dir": str(conf_d), "remotes": {}}))
+        cfg = ConfigManager(str(main))
+        assert "config_dir" not in cfg.config
+
+    def test_dir_remote_overrides_main_file_remote(self, tmp_path):
+        conf_d = tmp_path / "conf.d"
+        conf_d.mkdir()
+        (conf_d / "override.yaml").write_text(yaml.dump({"remotes": {"r": _remote("https://new.com")}}))
+        main = tmp_path / "config.yaml"
+        main.write_text(yaml.dump({"config_dir": str(conf_d), "remotes": {"r": _remote("https://old.com")}}))
+        cfg = ConfigManager(str(main))
+        assert cfg.config["remotes"]["r"]["base_url"] == "https://new.com"
+
+    def test_empty_config_dir_uses_main_file_only(self, tmp_path):
+        conf_d = tmp_path / "conf.d"
+        conf_d.mkdir()
+        main = tmp_path / "config.yaml"
+        main.write_text(yaml.dump({"config_dir": str(conf_d), "remotes": {"repo-main": _remote()}}))
+        cfg = ConfigManager(str(main))
+        assert list(cfg.config["remotes"].keys()) == ["repo-main"]
+
+    def test_reload_picks_up_changed_dir_file(self, tmp_path):
+        conf_d = tmp_path / "conf.d"
+        conf_d.mkdir()
+        dir_file = conf_d / "r.yaml"
+        dir_file.write_text(yaml.dump({"remotes": {"repo-v1": _remote()}}))
+        main = tmp_path / "config.yaml"
+        main.write_text(yaml.dump({"config_dir": str(conf_d), "remotes": {}}))
+        cfg = ConfigManager(str(main))
+        assert "repo-v1" in cfg.config["remotes"]
+
+        dir_file.write_text(yaml.dump({"remotes": {"repo-v2": _remote("https://v2.com")}}))
+        future_mtime = cfg._last_modified + 1
+        os.utime(str(dir_file), (future_mtime, future_mtime))
+
+        cfg._check_reload()
+
+        assert "repo-v2" in cfg.config["remotes"]
+        assert "repo-v1" not in cfg.config["remotes"]

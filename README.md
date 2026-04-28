@@ -79,12 +79,13 @@ src/artifactapi/
 
 ## Configuration
 
-Runtime settings come from environment variables; remote definitions live in `remotes.yaml`.
+Runtime settings come from environment variables; remote definitions live in one or more YAML files pointed to by `CONFIG_PATH`.
 
 ### Environment Variables
 
 | Variable | Description |
 |---|---|
+| `CONFIG_PATH` | Path to a config YAML file **or** a directory of YAML files |
 | `DBHOST`, `DBPORT`, `DBUSER`, `DBPASS`, `DBNAME` | PostgreSQL connection |
 | `REDIS_URL` | Redis URL (e.g. `redis://localhost:6379`) |
 | `MINIO_ENDPOINT` | MinIO/S3 endpoint |
@@ -92,6 +93,29 @@ Runtime settings come from environment variables; remote definitions live in `re
 | `MINIO_SECRET_KEY` | S3 secret key |
 | `MINIO_BUCKET` | S3 bucket name |
 | `MINIO_SECURE` | Use HTTPS (`true`/`false`) |
+
+### Split configuration
+
+`CONFIG_PATH` accepts three forms:
+
+**Single file** (original behaviour):
+```
+CONFIG_PATH=/etc/artifactapi/remotes.yaml
+```
+
+**Directory** — all `*.yaml` / `*.yml` files in the directory are loaded and merged alphabetically. `remotes` keys are merged across files; later files win on conflict:
+```
+CONFIG_PATH=/etc/artifactapi/conf.d/
+```
+
+**Main file + `config_dir`** — the main file holds global settings and a `config_dir` pointer; each file in that directory contributes its own `remotes`. Relative `config_dir` paths are resolved relative to the main file:
+```yaml
+# /etc/artifactapi/config.yaml
+config_dir: conf.d   # or an absolute path
+
+# s3/redis/database settings go here (or in env vars)
+remotes: {}          # optional base remotes
+```
 
 ### remotes.yaml Structure
 

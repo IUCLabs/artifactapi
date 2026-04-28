@@ -20,10 +20,10 @@ except ImportError:
     # Fallback for development when package isn't installed
     __version__ = "dev"
 
+from .auth import get_docker_token_for_response
 from .cache import RedisCache
 from .config import ConfigManager
 from .database import DatabaseManager
-from .docker_auth import get_docker_token_for_response
 from .metrics import MetricsManager
 from .remote import helm as _helm
 from .remote import npm as _npm

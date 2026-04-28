@@ -41,7 +41,6 @@ class S3Storage:
 
         self.client = boto3.client("s3", **client_kwargs)
 
-        # Try to ensure bucket exists, but don't fail if MinIO isn't ready yet
         try:
             self._ensure_bucket_exists()
         except Exception as e:
@@ -55,25 +54,21 @@ class S3Storage:
             self.client.create_bucket(Bucket=self.bucket)
 
     def get_object_key(self, remote_name: str, path: str) -> str:
-        # Extract directory path and filename
         clean_path = path.lstrip("/")
         filename = os.path.basename(clean_path)
         directory_path = os.path.dirname(clean_path)
 
-        # Special handling for Docker registry blobs (use digest as key for deduplication)
+        # Docker blobs are keyed by digest for deduplication across images
         if "/blobs/sha256:" in clean_path:
-            # Extract the SHA256 digest for Docker blobs
             parts = clean_path.split("/blobs/sha256:")
             if len(parts) == 2:
                 digest = parts[1]
                 return f"{remote_name}/blobs/sha256/{digest}"
 
-        # Hash the directory path to keep keys manageable while preserving remote structure
         if directory_path:
             path_hash = hashlib.sha256(directory_path.encode()).hexdigest()[:16]
             return f"{remote_name}/{path_hash}/{filename}"
         else:
-            # If no directory, just use remote and filename
             return f"{remote_name}/{filename}"
 
     def exists(self, key: str) -> bool:

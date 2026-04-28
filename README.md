@@ -33,15 +33,20 @@ Docker Registry traffic uses the `/v2/{remote}/{path}` endpoint implementing the
 src/artifactapi/
 ├── main.py               — FastAPI app, route handlers
 ├── config.py             — ConfigManager (loads remotes.yaml)
-├── storage.py            — S3Storage (MinIO/S3 abstraction)
-├── docker_auth.py        — Docker Bearer token fetching
 ├── metrics.py            — Prometheus + Redis metrics
+├── docker_auth.py        — backwards-compat shim → auth/docker.py
+├── auth/
+│   ├── __init__.py       — re-exports Docker auth helpers
+│   └── docker.py         — Bearer token fetching + in-memory cache
 ├── cache/
 │   ├── __init__.py       — re-exports RedisCache
 │   └── redis.py          — RedisCache (TTL keys, ETag metadata)
 ├── database/
 │   ├── __init__.py       — re-exports DatabaseManager
 │   └── postgres.py       — DatabaseManager (artifact + local-file tables)
+├── storage/
+│   ├── __init__.py       — re-exports S3Storage
+│   └── s3.py             — S3Storage (MinIO/S3 abstraction)
 └── remote/
     ├── __init__.py
     ├── base.py           — content-type detection

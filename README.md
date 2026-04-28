@@ -27,6 +27,31 @@ client → /api/v1/remote/{remote}/{path}
 
 Docker Registry traffic uses the `/v2/{remote}/{path}` endpoint implementing the Docker Registry HTTP API v2.
 
+### Code layout
+
+```
+src/artifactapi/
+├── main.py               — FastAPI app, route handlers
+├── config.py             — ConfigManager (loads remotes.yaml)
+├── storage.py            — S3Storage (MinIO/S3 abstraction)
+├── docker_auth.py        — Docker Bearer token fetching
+├── metrics.py            — Prometheus + Redis metrics
+├── cache/
+│   ├── __init__.py       — re-exports RedisCache
+│   └── redis.py          — RedisCache (TTL keys, ETag metadata)
+├── database/
+│   ├── __init__.py       — re-exports DatabaseManager
+│   └── postgres.py       — DatabaseManager (artifact + local-file tables)
+└── remote/
+    ├── __init__.py
+    ├── base.py           — content-type detection
+    ├── generic.py        — generic HTTP remotes
+    ├── helm.py           — Helm index.yaml URL rewriting
+    ├── npm.py            — npm metadata URL rewriting
+    ├── python.py         — PyPI URL construction + HTML rewriting
+    └── rpm.py            — RPM remotes
+```
+
 ## API Endpoints
 
 | Method | Path | Description |

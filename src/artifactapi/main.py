@@ -25,6 +25,10 @@ from .config import ConfigManager
 from .database import DatabaseManager
 from .docker_auth import get_docker_token_for_response
 from .metrics import MetricsManager
+from .remote import helm as _helm
+from .remote import npm as _npm
+from .remote import python as _pypi
+from .remote.base import get_content_type as _get_content_type
 from .storage import S3Storage
 
 
@@ -163,9 +167,8 @@ async def construct_remote_url(remote_name: str, path: str) -> str:
     if remote_config.get("package") == "docker":
         return f"{base_url}/v2/{path}"
 
-    # PyPI splits index and files across two hosts; redirect simple/ requests to pypi.org
-    if remote_config.get("package") == "pypi" and base_url.rstrip("/") == "https://files.pythonhosted.org" and "simple/" in path:
-        return f"https://pypi.org/{path}"
+    if remote_config.get("package") == "pypi":
+        return _pypi.construct_url(base_url, path)
 
     return f"{base_url}/{path}"
 
@@ -337,24 +340,6 @@ async def handle_expired_mutable(remote_name: str, path: str, remote_url: str) -
     return False
 
 
-def _get_content_type(filename: str) -> str:
-    if filename.endswith((".tar.gz", ".tgz")):
-        return "application/gzip"
-    if filename.endswith(".zip") or filename.endswith(".whl"):
-        return "application/zip"
-    if filename.endswith(".exe"):
-        return "application/x-msdownload"
-    if filename.endswith(".rpm"):
-        return "application/x-rpm"
-    if filename.endswith(".xml"):
-        return "application/xml"
-    if filename.endswith((".xml.gz", ".xml.bz2", ".xml.xz")):
-        return "application/gzip"
-    if filename.endswith((".yaml", ".yml")):
-        return "text/yaml"
-    return "application/octet-stream"
-
-
 def _resolve_content(
     data: bytes,
     path: str,
@@ -364,34 +349,16 @@ def _resolve_content(
     remote_name: str = "",
 ) -> tuple[bytes, str]:
     """Return (possibly-rewritten data, content_type) for a cached artifact."""
-    if remote_config.get("package") == "pypi":
-        immutable = remote_config.get("immutable_patterns", [])
-        if not any(re.search(p, path) for p in immutable):
-            proxy_base = str(request.base_url).rstrip("/")
-            base_url = remote_config.get("base_url", "").rstrip("/")
-            data = data.replace(
-                base_url.encode(),
-                f"{proxy_base}/api/v1/remote/{remote_name}".encode(),
-            )
-            return data, "text/html; charset=utf-8"
-    if remote_config.get("package") == "npm":
-        immutable = remote_config.get("immutable_patterns", [])
-        if not any(re.search(p, path) for p in immutable):
-            proxy_base = str(request.base_url).rstrip("/")
-            base_url = remote_config.get("base_url", "").rstrip("/")
-            data = data.replace(
-                base_url.encode(),
-                f"{proxy_base}/api/v1/remote/{remote_name}".encode(),
-            )
-            return data, "application/json"
-    if remote_config.get("package") == "helm" and filename == "index.yaml":
-        proxy_base = str(request.base_url).rstrip("/")
-        base_url = remote_config.get("base_url", "").rstrip("/")
-        data = data.replace(
-            base_url.encode(),
-            f"{proxy_base}/api/v1/remote/{remote_name}".encode(),
-        )
-        return data, "text/yaml"
+    package = remote_config.get("package")
+    proxy_base = str(request.base_url).rstrip("/")
+    base_url = remote_config.get("base_url", "").rstrip("/")
+
+    if package == "pypi":
+        return _pypi.resolve_content(data, path, filename, remote_config.get("immutable_patterns", []), base_url, proxy_base, remote_name)
+    if package == "npm":
+        return _npm.resolve_content(data, path, filename, remote_config.get("immutable_patterns", []), base_url, proxy_base, remote_name)
+    if package == "helm":
+        return _helm.resolve_content(data, path, filename, base_url, proxy_base, remote_name)
     return data, _get_content_type(filename)
 
 

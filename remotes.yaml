@@ -9,6 +9,13 @@
 #   immutable_ttl: TTL for immutable files (0 = forever, rarely needed to change).
 #   mutable_ttl:   TTL in seconds for mutable files. Omit to use the default (3600).
 #
+# quarantine_new:  Set to true to block immutable artifacts published within the last
+#                  quarantine_days days. Requests return 404 until the quarantine period
+#                  expires. Fails open when the publish date cannot be determined.
+# quarantine_days: Number of days to quarantine newly published artifacts (requires
+#                  quarantine_new: true). The upstream Last-Modified header is used as
+#                  the publish date.
+#
 # WARNING: this file may contain credentials — do not commit real values.
 #
 # Global configuration
@@ -202,6 +209,11 @@ remotes:
     # simple/ requests are transparently fetched from pypi.org; package files come from
     # files.pythonhosted.org (base_url). URLs in the simple index are rewritten to this remote.
     check_mutable_updates: true
+    # Block packages published within the last 3 days (supply-chain attack mitigation).
+    # Immutable artifacts (wheel/sdist) newer than quarantine_days return 404 until
+    # the window passes. Disable by setting quarantine_new: false or removing both keys.
+    quarantine_new: true
+    quarantine_days: 3
     immutable_patterns:
       - "packages/.*\\.whl$"
       - "packages/.*\\.whl\\.metadata$"

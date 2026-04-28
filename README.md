@@ -352,3 +352,25 @@ Set `check_mutable_updates: true` to send `HEAD` with `If-None-Match` / `If-Modi
 ### Stale-on-upstream-error
 
 When a mutable file expires and the upstream is unreachable (connection refused, DNS failure, timeout), the cached copy is kept and its TTL refreshed. HTTP error responses (4xx, 5xx) are not treated as network failures and proceed with normal expiry.
+
+### Quarantine (supply-chain protection)
+
+Set `quarantine_new: true` and `quarantine_days: N` on a remote to block immutable artifacts published within the last N days. Requests return `404` until the quarantine period expires, giving time to detect malicious packages before they are consumed.
+
+```yaml
+remotes:
+  pypi:
+    base_url: "https://files.pythonhosted.org"
+    type: "remote"
+    package: "pypi"
+    quarantine_new: true
+    quarantine_days: 3        # block packages published in the last 3 days
+    immutable_patterns:
+      - "packages/.*\\.whl$"
+      - "packages/.*\\.tar\\.gz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 600
+```
+
+The upstream `Last-Modified` response header is used as the publish date proxy. Artifacts that have no `Last-Modified` header are allowed through (fail-open). Mutable files (index pages, tag manifests) are never quarantined.

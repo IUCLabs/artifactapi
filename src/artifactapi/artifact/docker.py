@@ -59,6 +59,18 @@ async def proxy(request: Request, remote_name: str, path: str, storage, cache, c
             logger.info(f"Mutable file cached with TTL: {remote_name}/{path} (ttl: {mutable_ttl}s)")
             if result.get("etag") or result.get("last_modified"):
                 cache.store_mutable_meta(remote_name, path, result.get("etag"), result.get("last_modified"))
+        if not is_mutable:
+            published = result.get("last_modified")
+            if published:
+                cache.store_artifact_published(remote_name, path, published)
+            _proxy._check_quarantine(remote_name, published, config)
+    elif not is_mutable:
+        published = cache.get_artifact_published(remote_name, path)
+        if not published:
+            published = await _proxy._fetch_last_modified(remote_url, remote_config)
+            if published:
+                cache.store_artifact_published(remote_name, path, published)
+        _proxy._check_quarantine(remote_name, published, config)
 
     artifact_data = storage.download_object(storage.get_object_key(remote_name, path))
 

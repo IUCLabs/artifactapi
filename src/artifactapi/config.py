@@ -159,3 +159,16 @@ class ConfigManager:
             return {}
 
         return remote_config.get("cache", {})
+
+    def get_quarantine_config(self, remote_name: str) -> tuple[bool, int]:
+        """Return (enabled, quarantine_days) for a remote.
+
+        When enabled=True and quarantine_days>0, immutable artifacts published
+        within the last quarantine_days days are blocked with a 404.
+        """
+        remote_config = self.get_remote_config(remote_name)
+        if not remote_config:
+            return False, 0
+        enabled = bool(remote_config.get("quarantine_new", False))
+        days = int(remote_config.get("quarantine_days", 0))
+        return enabled, days

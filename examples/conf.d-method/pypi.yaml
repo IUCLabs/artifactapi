@@ -1,0 +1,17 @@
+remotes:
+  pypi:
+    base_url: "https://files.pythonhosted.org"
+    type: "remote"
+    package: "pypi"
+    description: "Python Package Index"
+    check_mutable_updates: true
+    quarantine_new: true
+    quarantine_days: 3
+    immutable_patterns:
+      - "packages/.*\\.whl$"
+      - "packages/.*\\.whl\\.metadata$"
+      - "packages/.*\\.tar\\.gz$"
+      - "packages/.*\\.zip$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 600

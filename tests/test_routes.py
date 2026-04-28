@@ -204,7 +204,7 @@ class TestDockerProxy:
         deps["cache"].is_mutable_file.return_value = True
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "cached"},
         ) as mock_fetch:
@@ -226,7 +226,7 @@ class TestDockerProxy:
         deps["cache"].is_mutable_file.return_value = True
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "cached"},
         ):
@@ -248,9 +248,9 @@ class TestDockerProxy:
         deps["cache"].is_index_valid.return_value = False  # but TTL expired
         deps["storage"].download_object.return_value = manifest
 
-        with patch("artifactapi.main._upstream_reachable", new_callable=AsyncMock, return_value=True):
+        with patch("artifactapi.artifact.proxy._upstream_reachable", new_callable=AsyncMock, return_value=True):
             with patch(
-                "artifactapi.main.cache_single_artifact",
+                "artifactapi.artifact.proxy.cache_single_artifact",
                 new_callable=AsyncMock,
                 return_value={"status": "cached"},
             ) as mock_fetch:
@@ -352,7 +352,7 @@ class TestGenericArtifactRoute:
         deps["cache"].is_mutable_file.return_value = False
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "cached"},
         ) as mock_fetch:
@@ -369,7 +369,7 @@ class TestGenericArtifactRoute:
         deps["cache"].is_mutable_file.return_value = False
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "cached"},
         ):
@@ -384,7 +384,7 @@ class TestGenericArtifactRoute:
         deps["cache"].is_mutable_file.return_value = True
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "cached"},
         ):
@@ -399,7 +399,7 @@ class TestGenericArtifactRoute:
         deps["cache"].is_mutable_file.return_value = False
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "error", "error": "upstream unreachable"},
         ):
@@ -430,7 +430,7 @@ class TestGenericArtifactRoute:
         deps["cache"].is_index_valid.return_value = False
         deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
 
-        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock, return_value=False):
+        with patch("artifactapi.artifact.proxy.check_upstream_changed", new_callable=AsyncMock, return_value=False):
             response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
 
         assert response.status_code == 200
@@ -446,8 +446,8 @@ class TestGenericArtifactRoute:
         deps["cache"].is_index_valid.return_value = False
         deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
 
-        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock, return_value=True):
-            with patch("artifactapi.main.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
+        with patch("artifactapi.artifact.proxy.check_upstream_changed", new_callable=AsyncMock, return_value=True):
+            with patch("artifactapi.artifact.proxy.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
                 mock_cache.return_value = {"status": "error", "error": "upstream gone"}
                 response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
 
@@ -462,8 +462,8 @@ class TestGenericArtifactRoute:
         deps["cache"].is_index_valid.return_value = False
         deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
 
-        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock, return_value=True):
-            with patch("artifactapi.main.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
+        with patch("artifactapi.artifact.proxy.check_upstream_changed", new_callable=AsyncMock, return_value=True):
+            with patch("artifactapi.artifact.proxy.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
                 mock_cache.return_value = {"status": "cached", "etag": '"def"', "last_modified": None}
                 response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
 
@@ -472,7 +472,7 @@ class TestGenericArtifactRoute:
 
     def test_mutable_backend_unreachable_on_check_updates_keeps_stale(self, client, patched_deps):
         """When check_mutable_updates=True and backend is unreachable, stale copy is kept and TTL refreshed."""
-        from artifactapi.main import UpstreamUnreachable
+        from artifactapi.artifact.proxy import UpstreamUnreachable
 
         deps = patched_deps
         deps["storage"].exists.return_value = True
@@ -481,7 +481,7 @@ class TestGenericArtifactRoute:
         deps["cache"].is_index_valid.return_value = False
         deps["cache"].get_mutable_meta.return_value = {"etag": '"abc"'}
 
-        with patch("artifactapi.main.check_upstream_changed", side_effect=UpstreamUnreachable("connection refused")):
+        with patch("artifactapi.artifact.proxy.check_upstream_changed", side_effect=UpstreamUnreachable("connection refused")):
             response = client.get("/api/v1/remote/check-mutable-test/metadata.json")
 
         assert response.status_code == 200
@@ -496,7 +496,7 @@ class TestGenericArtifactRoute:
         deps["cache"].is_mutable_file.return_value = True
         deps["cache"].is_index_valid.return_value = False
 
-        with patch("artifactapi.main._upstream_reachable", new_callable=AsyncMock, return_value=False):
+        with patch("artifactapi.artifact.proxy._upstream_reachable", new_callable=AsyncMock, return_value=False):
             response = client.get("/api/v1/remote/alpine-test/alpine/v3.18/x86_64/APKINDEX.tar.gz")
 
         assert response.status_code == 200
@@ -510,8 +510,8 @@ class TestGenericArtifactRoute:
         deps["cache"].is_mutable_file.return_value = True
         deps["cache"].is_index_valid.return_value = False
 
-        with patch("artifactapi.main.check_upstream_changed", new_callable=AsyncMock) as mock_check:
-            with patch("artifactapi.main.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
+        with patch("artifactapi.artifact.proxy.check_upstream_changed", new_callable=AsyncMock) as mock_check:
+            with patch("artifactapi.artifact.proxy.cache_single_artifact", new_callable=AsyncMock) as mock_cache:
                 mock_cache.return_value = {"status": "error", "error": "upstream gone"}
                 client.get("/api/v1/remote/custom-index-test/metadata.json")
 
@@ -706,7 +706,7 @@ class TestPyPIRemote:
         deps["cache"].is_mutable_file.return_value = True
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "cached"},
         ) as mock_fetch:
@@ -821,7 +821,7 @@ class TestNpmRemote:
         deps["cache"].is_mutable_file.return_value = True
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "cached"},
         ) as mock_fetch:
@@ -907,7 +907,7 @@ class TestHelmRemote:
         deps["cache"].is_mutable_file.return_value = True
 
         with patch(
-            "artifactapi.main.cache_single_artifact",
+            "artifactapi.artifact.proxy.cache_single_artifact",
             new_callable=AsyncMock,
             return_value={"status": "cached"},
         ) as mock_fetch:

@@ -31,10 +31,16 @@ Docker Registry traffic uses the `/v2/{remote}/{path}` endpoint implementing the
 
 ```
 src/artifactapi/
-├── main.py               — FastAPI app, route handlers
+├── main.py               — FastAPI app + thin route declarations only
 ├── config.py             — ConfigManager (loads remotes.yaml)
 ├── metrics.py            — Prometheus + Redis metrics
 ├── docker_auth.py        — backwards-compat shim → auth/docker.py
+├── artifact/             — route handler implementations
+│   ├── proxy.py          — GET /api/v1/remote (remote proxy, cache, revalidation)
+│   ├── local.py          — PUT/HEAD/DELETE /api/v1/remote (local repos)
+│   ├── docker.py         — /v2/ Docker Registry v2 proxy
+│   ├── discovery.py      — /api/v1/artifacts discovery + bulk cache
+│   └── flush.py          — PUT /cache/flush
 ├── auth/
 │   ├── __init__.py       — re-exports Docker auth helpers
 │   └── docker.py         — Bearer token fetching + in-memory cache

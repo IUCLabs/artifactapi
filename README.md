@@ -27,6 +27,42 @@ client → /api/v1/remote/{remote}/{path}
 
 Docker Registry traffic uses the `/v2/{remote}/{path}` endpoint implementing the Docker Registry HTTP API v2.
 
+### Code layout
+
+```
+src/artifactapi/
+├── main.py               — FastAPI app + thin route declarations only
+├── config.py             — ConfigManager (loads remotes.yaml)
+├── metrics.py            — Prometheus + Redis metrics
+├── docker_auth.py        — backwards-compat shim → auth/docker.py
+├── artifact/             — route handler implementations
+│   ├── proxy.py          — GET /api/v1/remote (remote proxy, cache, revalidation)
+│   ├── local.py          — PUT/HEAD/DELETE /api/v1/remote (local repos)
+│   ├── docker.py         — /v2/ Docker Registry v2 proxy
+│   ├── discovery.py      — /api/v1/artifacts discovery + bulk cache
+│   └── flush.py          — PUT /cache/flush
+├── auth/
+│   ├── __init__.py       — re-exports Docker auth helpers
+│   └── docker.py         — Bearer token fetching + in-memory cache
+├── cache/
+│   ├── __init__.py       — re-exports RedisCache
+│   └── redis.py          — RedisCache (TTL keys, ETag metadata)
+├── database/
+│   ├── __init__.py       — re-exports DatabaseManager
+│   └── postgres.py       — DatabaseManager (artifact + local-file tables)
+├── storage/
+│   ├── __init__.py       — re-exports S3Storage
+│   └── s3.py             — S3Storage (MinIO/S3 abstraction)
+└── remote/
+    ├── __init__.py
+    ├── base.py           — content-type detection
+    ├── generic.py        — generic HTTP remotes
+    ├── helm.py           — Helm index.yaml URL rewriting
+    ├── npm.py            — npm metadata URL rewriting
+    ├── python.py         — PyPI URL construction + HTML rewriting
+    └── rpm.py            — RPM remotes
+```
+
 ## API Endpoints
 
 | Method | Path | Description |

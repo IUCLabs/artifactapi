@@ -11,7 +11,6 @@ class RedisCache:
 
         try:
             self.client = redis.from_url(self.redis_url, decode_responses=True)
-            # Test connection
             self.client.ping()
             self.available = True
         except Exception as e:
@@ -20,7 +19,6 @@ class RedisCache:
             self.available = False
 
     def is_mutable_file(self, file_path: str, patterns: list[str] | None = None) -> bool:
-        """Return True if file_path matches any of the mutable patterns."""
         if patterns is None:
             patterns = []
         return any(re.search(p, file_path) for p in patterns)
@@ -32,10 +30,8 @@ class RedisCache:
         return f"mutable:meta:{remote_name}:{hashlib.sha256(path.encode()).hexdigest()[:16]}"
 
     def is_index_valid(self, remote_name: str, path: str) -> bool:
-        """Check if mutable file is still within its TTL window."""
         if not self.available:
             return False
-
         try:
             key = self.get_index_cache_key(remote_name, path)
             return self.client.exists(key) > 0
@@ -43,10 +39,8 @@ class RedisCache:
             return False
 
     def mark_index_cached(self, remote_name: str, path: str, ttl: int = 300) -> None:
-        """Set or refresh the TTL key for a mutable file."""
         if not self.available:
             return
-
         try:
             key = self.get_index_cache_key(remote_name, path)
             self.client.setex(key, ttl, str(int(time.time())))
@@ -54,7 +48,6 @@ class RedisCache:
             pass
 
     def store_mutable_meta(self, remote_name: str, path: str, etag: str | None, last_modified: str | None) -> None:
-        """Persist ETag and Last-Modified for future conditional requests."""
         if not self.available:
             return
         data = {}
@@ -70,7 +63,6 @@ class RedisCache:
             pass
 
     def get_mutable_meta(self, remote_name: str, path: str) -> dict:
-        """Return stored ETag/Last-Modified for a mutable file, or {}."""
         if not self.available:
             return {}
         try:
@@ -87,14 +79,13 @@ class RedisCache:
             pass
 
     def cleanup_expired_index(self, storage, remote_name: str, path: str) -> None:
-        """Remove an expired mutable file from S3 and clear its Redis meta."""
         if not self.available:
             return
 
         try:
             import os
 
-            from .config import ConfigManager
+            from ..config import ConfigManager
 
             config_path = os.environ.get("CONFIG_PATH")
             if config_path:

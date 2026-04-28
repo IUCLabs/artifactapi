@@ -9,7 +9,6 @@ class DatabaseManager:
         self._init_database()
 
     def _init_database(self):
-        """Initialize database connection and create schema if needed"""
         try:
             self.connection = psycopg2.connect(self.db_url)
             self.connection.autocommit = True
@@ -21,10 +20,8 @@ class DatabaseManager:
             self.available = False
 
     def _create_schema(self):
-        """Create tables if they don't exist"""
         try:
             with self.connection.cursor() as cursor:
-                # Create table to map S3 keys to remote names
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS artifact_mappings (
                         id SERIAL PRIMARY KEY,
@@ -51,7 +48,6 @@ class DatabaseManager:
                     )
                 """)
 
-                # Create indexes separately
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_s3_key ON artifact_mappings (s3_key)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_remote_name ON artifact_mappings (remote_name)")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_local_repo_path ON local_files (repository_name, file_path)")
@@ -61,7 +57,6 @@ class DatabaseManager:
             print(f"Error creating schema: {e}")
 
     def record_artifact_mapping(self, s3_key: str, remote_name: str, file_path: str, size_bytes: int):
-        """Record mapping between S3 key and remote"""
         if not self.available:
             return
 
@@ -83,7 +78,6 @@ class DatabaseManager:
             print(f"Error recording artifact mapping: {e}")
 
     def get_storage_by_remote(self) -> dict[str, int]:
-        """Get storage size breakdown by remote from database"""
         if not self.available:
             return {}
 
@@ -101,7 +95,6 @@ class DatabaseManager:
             return {}
 
     def get_remote_for_s3_key(self, s3_key: str) -> str | None:
-        """Get remote name for given S3 key"""
         if not self.available:
             return None
 
@@ -126,7 +119,6 @@ class DatabaseManager:
         sha256_sum: str,
         content_type: str = None,
     ):
-        """Add a file to local repository"""
         if not self.available:
             return False
 
@@ -153,7 +145,6 @@ class DatabaseManager:
             return False
 
     def get_local_file_metadata(self, repository_name: str, file_path: str):
-        """Get metadata for a local file"""
         if not self.available:
             return None
 
@@ -185,7 +176,6 @@ class DatabaseManager:
             return None
 
     def list_local_files(self, repository_name: str, prefix: str = ""):
-        """List files in local repository with optional path prefix"""
         if not self.available:
             return []
 
@@ -229,7 +219,6 @@ class DatabaseManager:
             return []
 
     def delete_local_file(self, repository_name: str, file_path: str):
-        """Delete a file from local repository"""
         if not self.available:
             return False
 
@@ -251,7 +240,6 @@ class DatabaseManager:
             return None
 
     def file_exists(self, repository_name: str, file_path: str):
-        """Check if file exists in local repository"""
         if not self.available:
             return False
 

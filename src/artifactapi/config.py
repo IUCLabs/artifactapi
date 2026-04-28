@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 
@@ -30,31 +31,87 @@ _PACKAGE_MUTABLE_PATTERNS: dict[str, list[str]] = {
 
 
 class ConfigManager:
-    def __init__(self, config_file: str = "remotes.yaml"):
-        self.config_file = config_file
-        self._last_modified = 0
+    def __init__(self, config_path: str = "remotes.yaml"):
+        self.config_path = config_path
+        self._config_dir: str | None = None
+        self._last_modified: float = 0.0
         self.config = self._load_config()
 
-    def _load_config(self) -> dict:
+    def _load_single_file(self, path: str) -> dict:
         try:
-            with open(self.config_file) as f:
-                if self.config_file.endswith(".yaml") or self.config_file.endswith(".yml"):
-                    return yaml.safe_load(f)
-                else:
-                    return json.load(f)
+            with open(path) as f:
+                if path.endswith((".yaml", ".yml")):
+                    return yaml.safe_load(f) or {}
+                return json.load(f)
         except FileNotFoundError:
+            return {}
+
+    @staticmethod
+    def _merge(base: dict, overlay: dict) -> dict:
+        result = {**base}
+        for key, value in overlay.items():
+            if key == "remotes" and isinstance(base.get("remotes"), dict) and isinstance(value, dict):
+                result["remotes"] = {**base.get("remotes", {}), **value}
+            else:
+                result[key] = value
+        return result
+
+    def _load_from_dir(self, dir_path: str) -> dict:
+        merged: dict = {}
+        files = sorted(glob.glob(os.path.join(dir_path, "*.yaml")) + glob.glob(os.path.join(dir_path, "*.yml")))
+        for path in files:
+            merged = self._merge(merged, self._load_single_file(path))
+        return merged
+
+    def _load_config(self) -> dict:
+        self._config_dir = None
+
+        if os.path.isdir(self.config_path):
+            return self._load_from_dir(self.config_path) or {"remotes": {}}
+
+        config = self._load_single_file(self.config_path)
+        if not config:
             return {"remotes": {}}
 
-    def _check_reload(self) -> None:
-        """Check if config file has been modified and reload if needed"""
-        try:
-            import os
+        config_dir = config.pop("config_dir", None)
+        if config_dir:
+            if not os.path.isabs(config_dir):
+                config_dir = os.path.join(os.path.dirname(os.path.abspath(self.config_path)), config_dir)
+            self._config_dir = config_dir
+            config = self._merge(config, self._load_from_dir(config_dir))
 
-            current_modified = os.path.getmtime(self.config_file)
+        return config
+
+    def _file_mtimes(self) -> list[float]:
+        mtimes: list[float] = []
+        if os.path.isdir(self.config_path):
+            for f in glob.glob(os.path.join(self.config_path, "*.yaml")) + glob.glob(os.path.join(self.config_path, "*.yml")):
+                try:
+                    mtimes.append(os.path.getmtime(f))
+                except OSError:
+                    pass
+        else:
+            try:
+                mtimes.append(os.path.getmtime(self.config_path))
+            except OSError:
+                pass
+
+        if self._config_dir and os.path.isdir(self._config_dir):
+            for f in glob.glob(os.path.join(self._config_dir, "*.yaml")) + glob.glob(os.path.join(self._config_dir, "*.yml")):
+                try:
+                    mtimes.append(os.path.getmtime(f))
+                except OSError:
+                    pass
+
+        return mtimes
+
+    def _check_reload(self) -> None:
+        try:
+            current_modified = max(self._file_mtimes(), default=0.0)
             if current_modified > self._last_modified:
                 self._last_modified = current_modified
                 self.config = self._load_config()
-                print(f"Config reloaded from {self.config_file}")
+                print(f"Config reloaded from {self.config_path}")
         except OSError:
             pass
 

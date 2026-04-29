@@ -268,6 +268,247 @@ remotes:
       immutable_ttl: 0    # Chart tarballs are versioned — cache forever
       mutable_ttl: 3600   # index.yaml refreshed after 1 hour
 
+  metallb:
+    base_url: "https://metallb.github.io/metallb"
+    type: "remote"
+    package: "helm"
+    description: "MetalLB load balancer Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  jetstack:
+    base_url: "https://charts.jetstack.io"
+    type: "remote"
+    package: "helm"
+    description: "Jetstack Helm charts (cert-manager)"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  rancher-stable:
+    base_url: "https://releases.rancher.com/server-charts/stable"
+    type: "remote"
+    package: "helm"
+    description: "Rancher stable Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  purelb:
+    base_url: "https://gitlab.com/api/v4/projects/20400619/packages/helm/stable"
+    type: "remote"
+    package: "helm"
+    description: "PureLB load balancer Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  istio:
+    base_url: "https://istio-release.storage.googleapis.com/charts"
+    type: "remote"
+    package: "helm"
+    description: "Istio service mesh Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  cnpg:
+    base_url: "https://cloudnative-pg.github.io/charts"
+    type: "remote"
+    package: "helm"
+    description: "CloudNativePG operator Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  ceph-csi:
+    base_url: "https://ceph.github.io/csi-charts"
+    type: "remote"
+    package: "helm"
+    description: "Ceph CSI driver Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  external-dns:
+    base_url: "https://kubernetes-sigs.github.io/external-dns/"
+    type: "remote"
+    package: "helm"
+    description: "ExternalDNS Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  intel-helm:
+    base_url: "https://intel.github.io/helm-charts/"
+    type: "remote"
+    package: "helm"
+    description: "Intel Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  elastic:
+    base_url: "https://helm.elastic.co"
+    type: "remote"
+    package: "helm"
+    description: "Elastic stack Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  k8up-io:
+    base_url: "https://k8up-io.github.io/k8up"
+    type: "remote"
+    package: "helm"
+    description: "K8up backup operator Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  victoriametrics:
+    base_url: "https://victoriametrics.github.io/helm-charts/"
+    type: "remote"
+    package: "helm"
+    description: "VictoriaMetrics observability Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  grafana:
+    base_url: "https://grafana.github.io/helm-charts"
+    type: "remote"
+    package: "helm"
+    description: "Grafana observability Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  helm-openldap:
+    base_url: "https://jp-gouin.github.io/helm-openldap/"
+    type: "remote"
+    package: "helm"
+    description: "OpenLDAP Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  woodpecker:
+    base_url: "https://woodpecker-ci.org/"
+    type: "remote"
+    package: "helm"
+    description: "Woodpecker CI Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  stakater:
+    base_url: "https://stakater.github.io/stakater-charts"
+    type: "remote"
+    package: "helm"
+    description: "Stakater Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  jfrog:
+    base_url: "https://charts.jfrog.io/"
+    type: "remote"
+    package: "helm"
+    description: "JFrog Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  openvox:
+    base_url: "https://openvoxproject.github.io/openvox-helm-chart"
+    type: "remote"
+    package: "helm"
+    description: "OpenVox Helm charts"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  helm-all:
+    type: "virtual"
+    package: "helm"
+    description: "Virtual repository merging all helm remotes — member order is priority order for duplicate chart+version"
+    members:
+      - hashicorp-helm
+      - metallb
+      - jetstack
+      - rancher-stable
+      - purelb
+      - istio
+      - cnpg
+      - ceph-csi
+      - external-dns
+      - intel-helm
+      - elastic
+      - k8up-io
+      - victoriametrics
+      - grafana
+      - helm-openldap
+      - woodpecker
+      - stakater
+      - jfrog
+      - openvox
+
   local-generic:
     type: "local"
     package: "generic"

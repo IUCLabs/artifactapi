@@ -116,6 +116,28 @@ TEST_REMOTES = {
             "quarantine_days": 3,
             "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
         },
+        "helm-member-2": {
+            "base_url": "https://charts.example.com",
+            "type": "remote",
+            "package": "helm",
+            "immutable_patterns": [r"\.tgz$"],
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 1800},
+        },
+        "helm-virtual-test": {
+            "type": "virtual",
+            "package": "helm",
+            "members": ["helm-test", "helm-member-2"],
+        },
+        "unsupported-virtual-test": {
+            "type": "virtual",
+            "package": "rpm",
+            "members": ["rpm-test"],
+        },
+        "empty-virtual-test": {
+            "type": "virtual",
+            "package": "helm",
+            "members": [],
+        },
     }
 }
 

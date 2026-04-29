@@ -13,7 +13,7 @@ try:
 except ImportError:
     __version__ = "dev"
 
-from .artifact import discovery, flush, local, proxy
+from .artifact import discovery, flush, local, proxy, virtual
 from .artifact import docker as docker_handler
 from .cache import RedisCache
 from .config import ConfigManager
@@ -87,6 +87,11 @@ async def docker_v2_ping():
 @app.api_route("/v2/{remote_name}/{path:path}", methods=["GET", "HEAD"])
 async def docker_v2_proxy(request: Request, remote_name: str, path: str):
     return await docker_handler.proxy(request, remote_name, path, storage, cache, config, metrics)
+
+
+@app.get("/api/v1/virtual/{virtual_name}/{path:path}")
+async def get_virtual_artifact(request: Request, virtual_name: str, path: str):
+    return await virtual.handle(request, virtual_name, path, storage, cache, config)
 
 
 @app.get("/api/v1/remote/{remote_name}/{path:path}")

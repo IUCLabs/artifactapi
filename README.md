@@ -5,6 +5,7 @@ FastAPI caching proxy that downloads and stores files from remote sources in S3-
 ## Features
 
 - Remote definitions via `remotes.yaml` — generic HTTP, Alpine APK, RPM, Docker, PyPI, npm, Helm
+- Virtual repositories — merge multiple remotes of the same package type into a single unified index
 - Immutable/mutable caching model with per-remote TTLs
 - Conditional revalidation (`If-None-Match` / `If-Modified-Since`) on TTL expiry
 - Stale-on-upstream-error: refreshes TTL when backend is unreachable rather than evicting
@@ -37,6 +38,7 @@ src/artifactapi/
 ├── docker_auth.py        — backwards-compat shim → auth/docker.py
 ├── artifact/             — route handler implementations
 │   ├── proxy.py          — GET /api/v1/remote (remote proxy, cache, revalidation)
+│   ├── virtual.py        — GET /api/v1/virtual (virtual repo index merging)
 │   ├── local.py          — PUT/HEAD/DELETE /api/v1/remote (local repos)
 │   ├── docker.py         — /v2/ Docker Registry v2 proxy
 │   ├── discovery.py      — /api/v1/artifacts discovery + bulk cache
@@ -71,6 +73,7 @@ src/artifactapi/
 | `PUT` | `/api/v1/remote/{remote}/{path}` | Upload to local remote |
 | `HEAD` | `/api/v1/remote/{remote}/{path}` | Check existence (local remotes) |
 | `DELETE` | `/api/v1/remote/{remote}/{path}` | Delete from local remote |
+| `GET` | `/api/v1/virtual/{virtual}/{path}` | Fetch from virtual (merged) repository |
 | `GET` | `/v2/{remote}/{path}` | Docker Registry v2 proxy |
 | `PUT` | `/cache/flush` | Flush cache entries |
 | `GET` | `/health` | Health check |
@@ -123,7 +126,7 @@ remotes: {}          # optional base remotes
 remotes:
   remote-name:
     base_url: "https://example.com"
-    type: "remote"            # "remote" or "local"
+    type: "remote"            # "remote", "local", or "virtual"
     package: "generic"        # generic, alpine, rpm, docker, pypi, npm, helm
     description: "..."
     immutable_patterns:       # regex — cached forever
@@ -329,6 +332,69 @@ Configure Helm:
 helm repo add hashicorp https://artifacts.example.com/api/v1/remote/hashicorp-helm
 helm repo update
 ```
+
+### virtual
+
+A virtual repository presents a single unified index built from multiple member remotes of the same package type. Clients configure one endpoint and get access to all member remotes transparently.
+
+All members must share the same `package` type as the virtual repo. Currently supported package types: `helm`.
+
+```yaml
+remotes:
+  helm-hashicorp:
+    base_url: "https://helm.releases.hashicorp.com"
+    type: "remote"
+    package: "helm"
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  helm-bitnami:
+    base_url: "https://charts.bitnami.com/bitnami"
+    type: "remote"
+    package: "helm"
+    immutable_patterns:
+      - "\\.tgz$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 3600
+
+  helm-all:
+    type: "virtual"
+    package: "helm"
+    members:
+      - helm-hashicorp   # listed first = highest priority
+      - helm-bitnami
+```
+
+**How it works:**
+
+1. A request for the package index triggers a parallel fetch of each member's index from S3 cache, falling back to upstream if not yet cached.
+2. Member indexes are merged into a single index with URL rewriting so artifact download URLs continue to resolve through the individual member remote.
+3. The merged index is cached in Redis with a TTL equal to the minimum `mutable_ttl` across all members.
+
+**Priority / conflict resolution:**
+
+When the same artifact name and version appears in more than one member, the member listed **first** in `members` wins. Subsequent members contribute only artifacts not already present.
+
+**Partial failures:**
+
+If a member is unreachable and has no cached index, it is skipped and a warning is logged. The merged index is still served from available members. If *no* members can be reached, the request returns `502`.
+
+**Caching:**
+
+The merged index is cached using `min(mutable_ttl)` across all members. Each member's raw index is cached in S3 under its own remote key by the normal proxy rules; the virtual handler reuses those copies when available.
+
+**Helm example:**
+
+```bash
+helm repo add all https://artifacts.example.com/api/v1/virtual/helm-all
+helm repo update
+```
+
+Chart tarball URLs in the merged `index.yaml` are rewritten to point at the individual member remote (e.g. `…/api/v1/remote/helm-hashicorp/vault-0.27.0.tgz`), so downloads bypass the virtual endpoint entirely.
 
 ### local
 

@@ -218,19 +218,6 @@ async def handle(request: Request, remote_name: str, path: str, storage, cache, 
     if not remote_config:
         raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
 
-    if remote_config.get("type") == "local":
-        metadata = database.get_local_file_metadata(remote_name, path)
-        if not metadata:
-            raise HTTPException(status_code=404, detail="File not found")
-        content = storage.download_object(metadata["s3_key"])
-        if content is None:
-            raise HTTPException(status_code=500, detail="File not accessible")
-        return Response(
-            content=content,
-            media_type=metadata.get("content_type", "application/octet-stream"),
-            headers={"Content-Disposition": f"attachment; filename={os.path.basename(path)}"},
-        )
-
     path_parts = path.split("/")
     if len(path_parts) >= 2:
         repo_path = f"{path_parts[0]}/{path_parts[1]}"

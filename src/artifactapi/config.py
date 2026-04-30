@@ -50,8 +50,8 @@ class ConfigManager:
     def _merge(base: dict, overlay: dict) -> dict:
         result = {**base}
         for key, value in overlay.items():
-            if key == "remotes" and isinstance(base.get("remotes"), dict) and isinstance(value, dict):
-                result["remotes"] = {**base.get("remotes", {}), **value}
+            if key in ("remotes", "virtuals", "locals") and isinstance(base.get(key), dict) and isinstance(value, dict):
+                result[key] = {**base.get(key, {}), **value}
             else:
                 result[key] = value
         return result
@@ -67,11 +67,11 @@ class ConfigManager:
         self._config_dir = None
 
         if os.path.isdir(self.config_path):
-            return self._load_from_dir(self.config_path) or {"remotes": {}}
+            return self._load_from_dir(self.config_path) or {"remotes": {}, "virtuals": {}, "locals": {}}
 
         config = self._load_single_file(self.config_path)
         if not config:
-            return {"remotes": {}}
+            return {"remotes": {}, "virtuals": {}, "locals": {}}
 
         config_dir = config.pop("config_dir", None)
         if config_dir:
@@ -118,6 +118,14 @@ class ConfigManager:
     def get_remote_config(self, remote_name: str) -> dict | None:
         self._check_reload()
         return self.config.get("remotes", {}).get(remote_name)
+
+    def get_virtual_config(self, virtual_name: str) -> dict | None:
+        self._check_reload()
+        return self.config.get("virtuals", {}).get(virtual_name)
+
+    def get_local_config(self, local_name: str) -> dict | None:
+        self._check_reload()
+        return self.config.get("locals", {}).get(local_name)
 
     def get_immutable_patterns(self, remote_name: str, repo_path: str = "") -> list[str]:
         remote_config = self.get_remote_config(remote_name)

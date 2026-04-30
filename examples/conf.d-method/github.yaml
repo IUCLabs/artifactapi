@@ -1,7 +1,6 @@
 remotes:
   github:
     base_url: "https://github.com"
-    type: "remote"
     package: "generic"
     description: "GitHub releases and files"
     immutable_patterns:

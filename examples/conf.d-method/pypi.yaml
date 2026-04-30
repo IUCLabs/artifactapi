@@ -1,7 +1,6 @@
 remotes:
   pypi:
     base_url: "https://files.pythonhosted.org"
-    type: "remote"
     package: "pypi"
     description: "Python Package Index"
     check_mutable_updates: true

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 
 from fastapi import HTTPException, Response, UploadFile
 from fastapi.responses import JSONResponse
@@ -7,12 +8,23 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 
 
+def download(remote_name: str, path: str, storage, database, config) -> Response:
+    if not config.get_local_config(remote_name):
+        raise HTTPException(status_code=404, detail=f"Local repository '{remote_name}' not configured")
+    metadata = database.get_local_file_metadata(remote_name, path)
+    if not metadata:
+        raise HTTPException(status_code=404, detail="File not found")
+    content = storage.download_object(metadata["s3_key"])
+    return Response(
+        content=content,
+        media_type=metadata.get("content_type", "application/octet-stream"),
+        headers={"Content-Disposition": f"attachment; filename={os.path.basename(path)}"},
+    )
+
+
 async def upload(remote_name: str, path: str, file: UploadFile, storage, database, config) -> JSONResponse:
-    remote_config = config.get_remote_config(remote_name)
-    if not remote_config:
-        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
-    if remote_config.get("type") != "local":
-        raise HTTPException(status_code=400, detail="Upload only supported for local repositories")
+    if not config.get_local_config(remote_name):
+        raise HTTPException(status_code=404, detail=f"Local repository '{remote_name}' not configured")
 
     try:
         content = await file.read()
@@ -59,12 +71,8 @@ async def upload(remote_name: str, path: str, file: UploadFile, storage, databas
 
 
 def check_exists(remote_name: str, path: str, database, config) -> Response:
-    remote_config = config.get_remote_config(remote_name)
-    if not remote_config:
-        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
-
-    if remote_config.get("type") != "local":
-        raise HTTPException(status_code=405, detail="HEAD method only supported for local repositories")
+    if not config.get_local_config(remote_name):
+        raise HTTPException(status_code=404, detail=f"Local repository '{remote_name}' not configured")
 
     try:
         metadata = database.get_local_file_metadata(remote_name, path)
@@ -87,11 +95,8 @@ def check_exists(remote_name: str, path: str, database, config) -> Response:
 
 
 def delete(remote_name: str, path: str, storage, database, config) -> JSONResponse:
-    remote_config = config.get_remote_config(remote_name)
-    if not remote_config:
-        raise HTTPException(status_code=404, detail=f"Remote '{remote_name}' not configured")
-    if remote_config.get("type") != "local":
-        raise HTTPException(status_code=400, detail="Delete only supported for local repositories")
+    if not config.get_local_config(remote_name):
+        raise HTTPException(status_code=404, detail=f"Local repository '{remote_name}' not configured")
 
     try:
         s3_key = database.delete_local_file(remote_name, path)

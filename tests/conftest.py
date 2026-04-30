@@ -20,61 +20,48 @@ TEST_REMOTES = {
     "remotes": {
         "alpine-test": {
             "base_url": "https://dl-cdn.alpinelinux.org",
-            "type": "remote",
             "package": "alpine",
             "immutable_patterns": [".*/x86_64/.*\\.apk$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 3600},
         },
         "rpm-test": {
             "base_url": "https://example.com/rpm",
-            "type": "remote",
             "package": "rpm",
             "immutable_patterns": [".*/x86_64/.*\\.rpm$", ".*/repodata/.*$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 3600},
         },
         "docker-test": {
             "base_url": "https://registry.example.com",
-            "type": "remote",
             "package": "docker",
             "cache": {"immutable_ttl": 0, "mutable_ttl": 300},
         },
         "docker-restricted": {
             "base_url": "https://registry.example.com",
-            "type": "remote",
             "package": "docker",
             "immutable_patterns": ["^library/nginx"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 300},
         },
         "generic-test": {
             "base_url": "https://releases.example.com",
-            "type": "remote",
             "package": "generic",
             "immutable_patterns": [".*\\.tar\\.gz$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
         },
         "custom-index-test": {
             "base_url": "https://example.com",
-            "type": "remote",
             "package": "generic",
             "mutable_patterns": ["metadata\\.json$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
         },
         "check-mutable-test": {
             "base_url": "https://example.com",
-            "type": "remote",
             "package": "generic",
             "mutable_patterns": ["metadata\\.json$"],
             "check_mutable_updates": True,
             "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
         },
-        "local-test": {
-            "type": "local",
-            "package": "generic",
-            "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
-        },
         "pypi-test": {
             "base_url": "https://files.pythonhosted.org",
-            "type": "remote",
             "package": "pypi",
             "immutable_patterns": [
                 r"packages/.*\.whl$",
@@ -85,7 +72,6 @@ TEST_REMOTES = {
         },
         "npm-test": {
             "base_url": "https://registry.npmjs.org",
-            "type": "remote",
             "package": "npm",
             "immutable_patterns": [r"\.tgz$"],
             "mutable_patterns": [r"^(?!.*\.tgz$).*"],
@@ -93,14 +79,12 @@ TEST_REMOTES = {
         },
         "helm-test": {
             "base_url": "https://helm.releases.hashicorp.com",
-            "type": "remote",
             "package": "helm",
             "immutable_patterns": [r"\.tgz$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 3600},
         },
         "quarantine-test": {
             "base_url": "https://releases.example.com",
-            "type": "remote",
             "package": "generic",
             "immutable_patterns": [r".*\.tar\.gz$"],
             "quarantine_new": True,
@@ -109,7 +93,6 @@ TEST_REMOTES = {
         },
         "quarantine-disabled": {
             "base_url": "https://releases.example.com",
-            "type": "remote",
             "package": "generic",
             "immutable_patterns": [r".*\.tar\.gz$"],
             "quarantine_new": False,
@@ -118,27 +101,31 @@ TEST_REMOTES = {
         },
         "helm-member-2": {
             "base_url": "https://charts.example.com",
-            "type": "remote",
             "package": "helm",
             "immutable_patterns": [r"\.tgz$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 1800},
         },
+    },
+    "locals": {
+        "local-test": {
+            "package": "generic",
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
+        },
+    },
+    "virtuals": {
         "helm-virtual-test": {
-            "type": "virtual",
             "package": "helm",
             "members": ["helm-test", "helm-member-2"],
         },
         "unsupported-virtual-test": {
-            "type": "virtual",
             "package": "rpm",
             "members": ["rpm-test"],
         },
         "empty-virtual-test": {
-            "type": "virtual",
             "package": "helm",
             "members": [],
         },
-    }
+    },
 }
 
 # ---------------------------------------------------------------------------

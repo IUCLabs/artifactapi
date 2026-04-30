@@ -27,24 +27,24 @@ def make_config(tmp_path):
 
 class TestGetMutablePatterns:
     def test_alpine_returns_package_defaults(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "alpine", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "alpine", "base_url": "https://x.com"}})
         patterns = cfg.get_mutable_patterns("r")
         assert r"APKINDEX\.tar\.gz$" in patterns
 
     def test_rpm_returns_package_defaults(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "rpm", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "rpm", "base_url": "https://x.com"}})
         patterns = cfg.get_mutable_patterns("r")
         assert r"repomd\.xml$" in patterns
         assert any("repodata" in p for p in patterns)
 
     def test_docker_returns_package_defaults(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "docker", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "docker", "base_url": "https://x.com"}})
         patterns = cfg.get_mutable_patterns("r")
         assert any("manifests" in p for p in patterns)
         assert any("tags/list" in p for p in patterns)
 
     def test_generic_returns_empty_list(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "generic", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "generic", "base_url": "https://x.com"}})
         assert cfg.get_mutable_patterns("r") == []
 
     def test_unknown_remote_returns_empty_list(self, make_config):
@@ -52,12 +52,12 @@ class TestGetMutablePatterns:
         assert cfg.get_mutable_patterns("nonexistent") == []
 
     def test_missing_package_field_defaults_to_generic(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"base_url": "https://x.com"}})
         assert cfg.get_mutable_patterns("r") == []
 
     def test_unknown_package_type_returns_empty_list(self, make_config):
         # A mis-spelled package type silently returns [] — this is a known footgun
-        cfg = make_config({"r": {"type": "remote", "package": "deb", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "deb", "base_url": "https://x.com"}})
         assert cfg.get_mutable_patterns("r") == []
 
     def test_extra_patterns_appended_after_defaults(self, make_config):
@@ -134,7 +134,7 @@ class TestGetMutablePatterns:
         assert r"custom-meta\.xml$" in patterns
 
     def test_npm_has_no_package_defaults(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "npm", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "npm", "base_url": "https://x.com"}})
         assert cfg.get_mutable_patterns("r") == []
 
     def test_npm_explicit_mutable_pattern_matches_metadata(self, make_config):
@@ -155,14 +155,14 @@ class TestGetMutablePatterns:
         assert any(re.search(p, "@babel/core") for p in patterns)
 
     def test_helm_returns_index_yaml_as_mutable(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "helm", "base_url": "https://helm.example.com"}})
+        cfg = make_config({"r": {"package": "helm", "base_url": "https://helm.example.com"}})
         patterns = cfg.get_mutable_patterns("r")
         assert r"index\.yaml$" in patterns
 
     def test_helm_chart_tarballs_not_mutable_by_default(self, make_config):
         import re
 
-        cfg = make_config({"r": {"type": "remote", "package": "helm", "base_url": "https://helm.example.com"}})
+        cfg = make_config({"r": {"package": "helm", "base_url": "https://helm.example.com"}})
         patterns = cfg.get_mutable_patterns("r")
         # Only index.yaml is mutable; .tgz chart tarballs are not
         assert not any(re.search(p, "vault-0.29.1.tgz") for p in patterns)
@@ -210,7 +210,7 @@ class TestGetImmutablePatterns:
         assert cfg.get_immutable_patterns("nonexistent") == []
 
     def test_returns_empty_when_no_patterns_configured(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "generic", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "generic", "base_url": "https://x.com"}})
         assert cfg.get_immutable_patterns("r") == []
 
     def test_multiple_patterns_returned(self, make_config):
@@ -281,7 +281,7 @@ class TestGetUserMutablePatterns:
 
     def test_excludes_package_defaults(self, make_config):
         # Package defaults (APKINDEX etc.) must NOT appear here
-        cfg = make_config({"r": {"type": "remote", "package": "alpine", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "alpine", "base_url": "https://x.com"}})
         assert cfg.get_user_mutable_patterns("r") == []
 
     def test_returns_empty_for_missing_remote(self, make_config):
@@ -289,7 +289,7 @@ class TestGetUserMutablePatterns:
         assert cfg.get_user_mutable_patterns("nonexistent") == []
 
     def test_returns_empty_when_key_absent(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "generic", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "generic", "base_url": "https://x.com"}})
         assert cfg.get_user_mutable_patterns("r") == []
 
 
@@ -317,7 +317,7 @@ class TestGetCacheConfig:
         assert cfg.get_cache_config("nonexistent") == {}
 
     def test_returns_empty_dict_when_no_cache_key(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "generic", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "generic", "base_url": "https://x.com"}})
         assert cfg.get_cache_config("r") == {}
 
 
@@ -329,11 +329,11 @@ class TestGetCacheConfig:
 class TestConfigReload:
     def test_reloads_when_file_mtime_advances(self, tmp_path):
         cfg_file = tmp_path / "remotes.yaml"
-        cfg_file.write_text(yaml.dump({"remotes": {"repo-a": {"type": "remote", "package": "generic", "base_url": "https://x.com"}}}))
+        cfg_file.write_text(yaml.dump({"remotes": {"repo-a": {"package": "generic", "base_url": "https://x.com"}}}))
         cfg = ConfigManager(str(cfg_file))
         assert "repo-a" in cfg.config["remotes"]
 
-        cfg_file.write_text(yaml.dump({"remotes": {"repo-b": {"type": "remote", "package": "generic", "base_url": "https://y.com"}}}))
+        cfg_file.write_text(yaml.dump({"remotes": {"repo-b": {"package": "generic", "base_url": "https://y.com"}}}))
         future_mtime = cfg._last_modified + 1
         os.utime(str(cfg_file), (future_mtime, future_mtime))
 
@@ -344,7 +344,7 @@ class TestConfigReload:
 
     def test_no_reload_when_file_unchanged(self, tmp_path):
         cfg_file = tmp_path / "remotes.yaml"
-        cfg_file.write_text(yaml.dump({"remotes": {"repo-a": {"type": "remote", "package": "generic", "base_url": "https://x.com"}}}))
+        cfg_file.write_text(yaml.dump({"remotes": {"repo-a": {"package": "generic", "base_url": "https://x.com"}}}))
         cfg = ConfigManager(str(cfg_file))
 
         # Call check_reload without touching the file — should not reload
@@ -360,7 +360,7 @@ class TestConfigReload:
 
 class TestGetQuarantineConfig:
     def test_returns_false_zero_when_not_configured(self, make_config):
-        cfg = make_config({"r": {"type": "remote", "package": "generic", "base_url": "https://x.com"}})
+        cfg = make_config({"r": {"package": "generic", "base_url": "https://x.com"}})
         enabled, days = cfg.get_quarantine_config("r")
         assert enabled is False
         assert days == 0
@@ -426,7 +426,7 @@ class TestGetQuarantineConfig:
 
 
 def _remote(base_url: str = "https://x.com") -> dict:
-    return {"type": "remote", "package": "generic", "base_url": base_url}
+    return {"package": "generic", "base_url": base_url}
 
 
 class TestConfigDirMode:
@@ -445,7 +445,7 @@ class TestConfigDirMode:
 
     def test_empty_directory_returns_empty_remotes(self, tmp_path):
         cfg = ConfigManager(str(tmp_path))
-        assert cfg.config == {"remotes": {}}
+        assert cfg.config == {"remotes": {}, "virtuals": {}, "locals": {}}
 
     def test_ignores_non_yaml_files(self, tmp_path):
         (tmp_path / "notes.txt").write_text("not yaml")

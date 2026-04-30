@@ -87,9 +87,10 @@ class MetricsManager:
             # Get from database if available
             db_sizes = self.database_manager.get_storage_by_remote()
             if db_sizes:
-                # Initialize all configured remotes to 0
+                # Initialize all configured remotes and locals to 0
                 remote_sizes = {}
-                for remote in config_manager.config.get("remotes", {}).keys():
+                all_names = list(config_manager.config.get("remotes", {}).keys()) + list(config_manager.config.get("locals", {}).keys())
+                for remote in all_names:
                     remote_sizes[remote] = db_sizes.get(remote, 0)
 
                 # Update Prometheus gauges
@@ -101,10 +102,10 @@ class MetricsManager:
         # Fallback to S3 scanning if database not available
         try:
             remote_sizes = {}
-            remotes = config_manager.config.get("remotes", {}).keys()
+            all_names = list(config_manager.config.get("remotes", {}).keys()) + list(config_manager.config.get("locals", {}).keys())
 
-            # Initialize all remotes to 0
-            for remote in remotes:
+            # Initialize all remotes and locals to 0
+            for remote in all_names:
                 remote_sizes[remote] = 0
 
             paginator = storage.client.get_paginator("list_objects_v2")
@@ -174,8 +175,13 @@ class MetricsManager:
                 metrics["requests"]["cache_hit_ratio"] = cache_hits / total_requests if total_requests > 0 else 0.0
                 metrics["bandwidth"]["saved_bytes"] = bandwidth_saved
 
-                # Get per-remote metrics
-                for remote in config_manager.config.get("remotes", {}).keys():
+                # Get per-repo metrics
+                all_repos = {
+                    **config_manager.config.get("remotes", {}),
+                    **config_manager.config.get("virtuals", {}),
+                    **config_manager.config.get("locals", {}),
+                }
+                for remote in all_repos.keys():
                     remote_cache_hits = int(self.redis_client.client.get(f"metrics:cache_hits:{remote}") or 0)
                     remote_cache_misses = int(self.redis_client.client.get(f"metrics:cache_misses:{remote}") or 0)
                     remote_total = remote_cache_hits + remote_cache_misses

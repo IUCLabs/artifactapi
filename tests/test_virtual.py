@@ -430,10 +430,10 @@ class TestVirtualRoute:
         response = client.get("/api/v1/virtual/no-such-virtual/index.yaml")
         assert response.status_code == 404
 
-    def test_non_virtual_type_returns_400(self, client, patched_virtual_deps):
-        # helm-test is type "remote", not "virtual"
+    def test_non_virtual_name_returns_404(self, client, patched_virtual_deps):
+        # helm-test is in remotes, not virtuals
         response = client.get("/api/v1/virtual/helm-test/index.yaml")
-        assert response.status_code == 400
+        assert response.status_code == 404
 
     def test_unsupported_package_returns_400(self, client, patched_virtual_deps):
         # unsupported-virtual-test has package "rpm"

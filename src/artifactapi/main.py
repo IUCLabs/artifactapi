@@ -49,7 +49,13 @@ class ArtifactRequest(BaseModel):
 @app.get("/")
 def read_root():
     config._check_reload()
-    return {"message": "Artifact Storage API", "version": app.version, "remotes": list(config.config.get("remotes", {}).keys())}
+    return {
+        "message": "Artifact Storage API",
+        "version": app.version,
+        "remotes": list(config.config.get("remotes", {}).keys()),
+        "virtuals": list(config.config.get("virtuals", {}).keys()),
+        "locals": list(config.config.get("locals", {}).keys()),
+    }
 
 
 @app.get("/health")
@@ -99,19 +105,24 @@ async def get_artifact(request: Request, remote_name: str, path: str):
     return await proxy.handle(request, remote_name, path, storage, cache, config, database, metrics)
 
 
-@app.put("/api/v1/remote/{remote_name}/{path:path}")
-async def upload_file(remote_name: str, path: str, file: UploadFile = File(...)):
-    return await local.upload(remote_name, path, file, storage, database, config)
+@app.get("/api/v1/local/{local_name}/{path:path}")
+def get_local_artifact(local_name: str, path: str):
+    return local.download(local_name, path, storage, database, config)
 
 
-@app.head("/api/v1/remote/{remote_name}/{path:path}")
-def check_file_exists(remote_name: str, path: str):
-    return local.check_exists(remote_name, path, database, config)
+@app.put("/api/v1/local/{local_name}/{path:path}")
+async def upload_local_file(local_name: str, path: str, file: UploadFile = File(...)):
+    return await local.upload(local_name, path, file, storage, database, config)
 
 
-@app.delete("/api/v1/remote/{remote_name}/{path:path}")
-def delete_file(remote_name: str, path: str):
-    return local.delete(remote_name, path, storage, database, config)
+@app.head("/api/v1/local/{local_name}/{path:path}")
+def check_local_file_exists(local_name: str, path: str):
+    return local.check_exists(local_name, path, database, config)
+
+
+@app.delete("/api/v1/local/{local_name}/{path:path}")
+def delete_local_file(local_name: str, path: str):
+    return local.delete(local_name, path, storage, database, config)
 
 
 @app.post("/api/v1/artifacts/cache")

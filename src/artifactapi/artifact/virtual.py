@@ -147,11 +147,9 @@ _HANDLERS: dict[str, _VirtualHandler] = {
 
 
 async def handle(request: Request, virtual_name: str, path: str, storage, cache, config) -> Response:
-    virtual_cfg = config.get_remote_config(virtual_name)
+    virtual_cfg = config.get_virtual_config(virtual_name)
     if not virtual_cfg:
         raise HTTPException(status_code=404, detail=f"Virtual repository '{virtual_name}' not configured")
-    if virtual_cfg.get("type") != "virtual":
-        raise HTTPException(status_code=400, detail=f"'{virtual_name}' is not a virtual repository")
 
     package = virtual_cfg.get("package")
     handler = _HANDLERS.get(package)

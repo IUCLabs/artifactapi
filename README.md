@@ -70,10 +70,11 @@ src/artifactapi/
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/v1/remote/{remote}/{path}` | Fetch artifact (auto-cache on miss) |
-| `PUT` | `/api/v1/remote/{remote}/{path}` | Upload to local remote |
-| `HEAD` | `/api/v1/remote/{remote}/{path}` | Check existence (local remotes) |
-| `DELETE` | `/api/v1/remote/{remote}/{path}` | Delete from local remote |
 | `GET` | `/api/v1/virtual/{virtual}/{path}` | Fetch from virtual (merged) repository |
+| `GET` | `/api/v1/local/{local}/{path}` | Download from local repository |
+| `PUT` | `/api/v1/local/{local}/{path}` | Upload to local repository |
+| `HEAD` | `/api/v1/local/{local}/{path}` | Check existence (local) |
+| `DELETE` | `/api/v1/local/{local}/{path}` | Delete from local repository |
 | `GET` | `/v2/{remote}/{path}` | Docker Registry v2 proxy |
 | `PUT` | `/cache/flush` | Flush cache entries |
 | `GET` | `/health` | Health check |
@@ -120,13 +121,14 @@ config_dir: conf.d   # or an absolute path
 remotes: {}          # optional base remotes
 ```
 
-### remotes.yaml Structure
+### Configuration structure
+
+Repositories are declared under three top-level keys matching their type:
 
 ```yaml
-remotes:
+remotes:            # proxy (caching) remotes
   remote-name:
     base_url: "https://example.com"
-    type: "remote"            # "remote", "local", or "virtual"
     package: "generic"        # generic, alpine, rpm, docker, pypi, npm, helm
     description: "..."
     immutable_patterns:       # regex — cached forever
@@ -137,6 +139,20 @@ remotes:
     cache:
       immutable_ttl: 0        # 0 = indefinitely
       mutable_ttl: 3600
+
+virtuals:           # virtual (merged-index) repositories
+  virtual-name:
+    package: "helm"
+    members:
+      - remote-a
+      - remote-b
+
+locals:             # local upload repositories (no base_url)
+  local-name:
+    package: "generic"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 0
 ```
 
 ## Remote Types
@@ -149,7 +165,6 @@ Arbitrary HTTP file servers — GitHub releases, HashiCorp, custom servers.
 remotes:
   github:
     base_url: "https://github.com"
-    type: "remote"
     package: "generic"
     immutable_patterns:
       - "gruntwork-io/terragrunt/.*terragrunt_linux_amd64.*"
@@ -158,7 +173,6 @@ remotes:
 
   github-archive:
     base_url: "https://github.com"
-    type: "remote"
     package: "generic"
     immutable_patterns:
       - ".*/archive/refs/tags/.*\\.tar\\.gz$"   # tag archives never change
@@ -178,7 +192,6 @@ Access: `GET /api/v1/remote/github/owner/repo/releases/download/v1.0/binary.tar.
 remotes:
   alpine:
     base_url: "https://dl-cdn.alpinelinux.org"
-    type: "remote"
     package: "alpine"
     immutable_patterns:
       - ".*/x86_64/.*\\.apk$"
@@ -195,7 +208,6 @@ remotes:
 remotes:
   almalinux:
     base_url: "https://mirror.example.com/almalinux"
-    type: "remote"
     package: "rpm"
     immutable_patterns:
       - ".*/x86_64/.*\\.rpm$"
@@ -213,7 +225,6 @@ remotes:
 remotes:
   dockerhub:
     base_url: "https://registry-1.docker.io"
-    type: "remote"
     package: "docker"
     # username / password optional for public images
     cache:
@@ -222,7 +233,6 @@ remotes:
 
   ghcr:
     base_url: "https://ghcr.io"
-    type: "remote"
     package: "docker"
     username: "your-github-username"
     password: "ghp_your_pat"   # read:packages scope
@@ -255,7 +265,6 @@ mirrors:
 remotes:
   pypi:
     base_url: "https://files.pythonhosted.org"
-    type: "remote"
     package: "pypi"
     check_mutable_updates: true
     immutable_patterns:
@@ -287,7 +296,6 @@ default = true
 remotes:
   npm:
     base_url: "https://registry.npmjs.org"
-    type: "remote"
     package: "npm"
     check_mutable_updates: true
     immutable_patterns:
@@ -314,7 +322,6 @@ registry=https://artifacts.example.com/api/v1/remote/npm/
 remotes:
   hashicorp-helm:
     base_url: "https://helm.releases.hashicorp.com"
-    type: "remote"
     package: "helm"
     check_mutable_updates: true
     immutable_patterns:
@@ -343,7 +350,6 @@ All members must share the same `package` type as the virtual repo. Currently su
 remotes:
   helm-hashicorp:
     base_url: "https://helm.releases.hashicorp.com"
-    type: "remote"
     package: "helm"
     immutable_patterns:
       - "\\.tgz$"
@@ -353,7 +359,6 @@ remotes:
 
   helm-bitnami:
     base_url: "https://charts.bitnami.com/bitnami"
-    type: "remote"
     package: "helm"
     immutable_patterns:
       - "\\.tgz$"
@@ -361,8 +366,8 @@ remotes:
       immutable_ttl: 0
       mutable_ttl: 3600
 
+virtuals:
   helm-all:
-    type: "virtual"
     package: "helm"
     members:
       - helm-hashicorp   # listed first = highest priority
@@ -399,9 +404,8 @@ Chart tarball URLs in the merged `index.yaml` are rewritten to point at the indi
 ### local
 
 ```yaml
-remotes:
+locals:
   local-generic:
-    type: "local"
     package: "generic"
     description: "Local file repository"
     cache:
@@ -409,7 +413,7 @@ remotes:
       mutable_ttl: 0
 ```
 
-No `base_url`. Files are uploaded via `PUT` and served via `GET`.
+No `base_url`. Files are uploaded via `PUT /api/v1/local/{name}/{path}` and downloaded via `GET /api/v1/local/{name}/{path}`.
 
 ## Caching Model
 
@@ -451,7 +455,6 @@ Set `quarantine_new: true` and `quarantine_days: N` on a remote to block immutab
 remotes:
   pypi:
     base_url: "https://files.pythonhosted.org"
-    type: "remote"
     package: "pypi"
     quarantine_new: true
     quarantine_days: 3        # block packages published in the last 3 days

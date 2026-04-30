@@ -1,7 +1,6 @@
 remotes:
   alpine:
     base_url: "https://dl-cdn.alpinelinux.org"
-    type: "remote"
     package: "alpine"
     description: "Alpine Linux APK package repository"
     immutable_patterns:

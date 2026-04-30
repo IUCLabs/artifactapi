@@ -523,67 +523,52 @@ class TestGenericArtifactRoute:
         deps["database"].get_local_file_metadata.return_value = None
         deps["database"].available = True
 
-        response = client.get("/api/v1/remote/local-test/path/to/nonexistent.bin")
+        response = client.get("/api/v1/local/local-test/path/to/nonexistent.bin")
         assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# Upload route  PUT /api/v1/remote/{remote}/{path}
+# Upload route  PUT /api/v1/local/{local}/{path}
 # ---------------------------------------------------------------------------
 
 
 class TestUploadRoute:
-    def test_unknown_remote_returns_404(self, client, patched_deps):
+    def test_unknown_local_returns_404(self, client, patched_deps):
         response = client.put(
-            "/api/v1/remote/nonexistent/path/to/file.tar.gz",
+            "/api/v1/local/nonexistent/path/to/file.tar.gz",
             files={"file": ("file.tar.gz", b"content", "application/octet-stream")},
         )
         assert response.status_code == 404
 
-    def test_non_local_remote_returns_400(self, client, patched_deps):
-        response = client.put(
-            "/api/v1/remote/generic-test/path/to/file.tar.gz",
-            files={"file": ("file.tar.gz", b"content", "application/octet-stream")},
-        )
-        assert response.status_code == 400
-
 
 # ---------------------------------------------------------------------------
-# HEAD route  HEAD /api/v1/remote/{remote}/{path}
+# HEAD route  HEAD /api/v1/local/{local}/{path}
 # ---------------------------------------------------------------------------
 
 
 class TestHeadRoute:
-    def test_non_local_remote_returns_405(self, client, patched_deps):
-        response = client.head("/api/v1/remote/generic-test/path/to/file.tar.gz")
-        assert response.status_code == 405
-
     def test_local_repo_file_not_found_returns_404(self, client, patched_deps):
         deps = patched_deps
         deps["database"].get_local_file_metadata.return_value = None
         deps["database"].available = True
 
-        response = client.head("/api/v1/remote/local-test/path/to/nonexistent.bin")
+        response = client.head("/api/v1/local/local-test/path/to/nonexistent.bin")
         assert response.status_code == 404
 
-    def test_unknown_remote_returns_404(self, client, patched_deps):
-        response = client.head("/api/v1/remote/nonexistent/path/to/file.bin")
+    def test_unknown_local_returns_404(self, client, patched_deps):
+        response = client.head("/api/v1/local/nonexistent/path/to/file.bin")
         assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# DELETE route  DELETE /api/v1/remote/{remote}/{path}
+# DELETE route  DELETE /api/v1/local/{local}/{path}
 # ---------------------------------------------------------------------------
 
 
 class TestDeleteRoute:
-    def test_unknown_remote_returns_404(self, client, patched_deps):
-        response = client.delete("/api/v1/remote/nonexistent/path/to/file.tar.gz")
+    def test_unknown_local_returns_404(self, client, patched_deps):
+        response = client.delete("/api/v1/local/nonexistent/path/to/file.tar.gz")
         assert response.status_code == 404
-
-    def test_non_local_remote_returns_400(self, client, patched_deps):
-        response = client.delete("/api/v1/remote/generic-test/path/to/file.tar.gz")
-        assert response.status_code == 400
 
 
 # ---------------------------------------------------------------------------

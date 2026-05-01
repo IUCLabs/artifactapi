@@ -224,7 +224,7 @@ async def handle(request: Request, virtual_name: str, path: str, storage, cache,
         min_ttl = 3600
 
     t_merge = time.perf_counter()
-    merged = handler.merge(raw_indexes, used_members, used_configs, proxy_base)
+    merged = await asyncio.to_thread(handler.merge, raw_indexes, used_members, used_configs, proxy_base)
     merge_ms = int((time.perf_counter() - t_merge) * 1000)
 
     try:

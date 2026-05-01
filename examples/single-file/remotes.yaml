@@ -34,7 +34,8 @@
 #
 remotes:
   github:
-    base_url: "https://github.com"    package: "generic"
+    base_url: "https://github.com"
+    package: "generic"
     description: "GitHub releases and files"
     immutable_patterns:
       - "gruntwork-io/terragrunt/.*terragrunt_linux_amd64.*"
@@ -64,7 +65,8 @@ remotes:
       mutable_ttl: 0
 
   github-archive:
-    base_url: "https://github.com"    package: "generic"
+    base_url: "https://github.com"
+    package: "generic"
     description: "GitHub repository archive tarballs"
     immutable_patterns:
       # Tag archives are immutable — a tag never changes
@@ -82,7 +84,8 @@ remotes:
       mutable_ttl: 86400     # Branch archives refreshed after 1 day
 
   gitea-dl:
-    base_url: "https://dl.gitea.com"    package: "generic"
+    base_url: "https://dl.gitea.com"
+    package: "generic"
     description: "Gitea download site"
     immutable_patterns:
       - "act_runner/.*/act_runner-.*-linux-amd64$"
@@ -91,7 +94,8 @@ remotes:
       mutable_ttl: 0
 
   hashicorp-releases:
-    base_url: "https://releases.hashicorp.com"    package: "generic"
+    base_url: "https://releases.hashicorp.com"
+    package: "generic"
     description: "HashiCorp product releases"
     immutable_patterns:
       - "terraform/.*terraform_.*_linux_amd64\\.zip$"
@@ -110,7 +114,8 @@ remotes:
       mutable_ttl: 0
 
   alpine:
-    base_url: "https://dl-cdn.alpinelinux.org"    package: "alpine"
+    base_url: "https://dl-cdn.alpinelinux.org"
+    package: "alpine"
     description: "Alpine Linux APK package repository"
     immutable_patterns:
       - ".*/x86_64/.*\\.apk$"
@@ -122,7 +127,8 @@ remotes:
       mutable_ttl: 7200  # Index files (APKINDEX.tar.gz) cached for 2 hours
 
   almalinux:
-    base_url: "https://gsl-syd.mm.fcix.net/almalinux"    package: "rpm"
+    base_url: "https://gsl-syd.mm.fcix.net/almalinux"
+    package: "rpm"
     description: "AlmaLinux RPM package repository"
     immutable_patterns:
       - ".*/x86_64/.*\\.rpm$"
@@ -137,7 +143,8 @@ remotes:
       mutable_ttl: 7200  # Metadata files cached for 2 hours
 
   epel:
-    base_url: "http://mirror.aarnet.edu.au/pub/epel"    package: "rpm"
+    base_url: "http://mirror.aarnet.edu.au/pub/epel"
+    package: "rpm"
     description: "EPEL (Extra Packages for Enterprise Linux)"
     immutable_patterns:
       - "8/Everything/x86_64/.*\\.rpm$"
@@ -150,7 +157,8 @@ remotes:
       mutable_ttl: 7200  # Metadata files cached for 2 hours
 
   fedora:
-    base_url: "https://gsl-syd.mm.fcix.net/fedora/linux"    package: "rpm"
+    base_url: "https://gsl-syd.mm.fcix.net/fedora/linux"
+    package: "rpm"
     description: "Fedora Linux RPM package repository"
     immutable_patterns:
       - "releases/.*/Everything/x86_64/.*\\.rpm$"
@@ -163,7 +171,8 @@ remotes:
       mutable_ttl: 300  # Metadata files cached for 5 minutes
 
   ghcr:
-    base_url: "https://ghcr.io"    package: "docker"
+    base_url: "https://ghcr.io"
+    package: "docker"
     description: "GitHub Container Registry"
     # username: "your-github-username"
     # password: "your-github-pat"  # needs read:packages scope
@@ -175,14 +184,16 @@ remotes:
       mutable_ttl: 300
 
   dockerhub:
-    base_url: "https://registry-1.docker.io"    package: "docker"
+    base_url: "https://registry-1.docker.io"
+    package: "docker"
     description: "Docker Hub registry"
     cache:
       immutable_ttl: 0
       mutable_ttl: 300
 
   pypi:
-    base_url: "https://files.pythonhosted.org"    package: "pypi"
+    base_url: "https://files.pythonhosted.org"
+    package: "pypi"
     description: "Python Package Index — simple index and package files via a single remote"
     # simple/ requests are transparently fetched from pypi.org; package files come from
     # files.pythonhosted.org (base_url). URLs in the simple index are rewritten to this remote.
@@ -203,7 +214,8 @@ remotes:
       mutable_ttl: 600  # Simple index pages refreshed after 10 minutes
 
   pypi-gitea:
-    base_url: "https://gitea.example.com/api/packages/myorg/pypi"    package: "pypi"
+    base_url: "https://gitea.example.com/api/packages/myorg/pypi"
+    package: "pypi"
     description: "Private Gitea PyPI registry — simple index and files at the same host"
     # username: "your-gitea-username"
     # password: "your-personal-access-token"  # needs package:read scope
@@ -219,7 +231,8 @@ remotes:
       mutable_ttl: 600
 
   npm:
-    base_url: "https://registry.npmjs.org"    package: "npm"
+    base_url: "https://registry.npmjs.org"
+    package: "npm"
     description: "npm registry — package metadata with tarball URL rewriting"
     check_mutable_updates: true
     immutable_patterns:
@@ -231,7 +244,8 @@ remotes:
       mutable_ttl: 600  # Package metadata refreshed after 10 minutes
 
   hashicorp-helm:
-    base_url: "https://helm.releases.hashicorp.com"    package: "helm"
+    base_url: "https://helm.releases.hashicorp.com"
+    package: "helm"
     description: "HashiCorp Helm chart repository (Vault, Consul, Nomad, etc.)"
     check_mutable_updates: true
     immutable_patterns:
@@ -241,7 +255,8 @@ remotes:
       mutable_ttl: 3600   # index.yaml refreshed after 1 hour
 
   metallb:
-    base_url: "https://metallb.github.io/metallb"    package: "helm"
+    base_url: "https://metallb.github.io/metallb"
+    package: "helm"
     description: "MetalLB load balancer Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -251,7 +266,8 @@ remotes:
       mutable_ttl: 3600
 
   jetstack:
-    base_url: "https://charts.jetstack.io"    package: "helm"
+    base_url: "https://charts.jetstack.io"
+    package: "helm"
     description: "Jetstack Helm charts (cert-manager)"
     check_mutable_updates: true
     immutable_patterns:
@@ -261,7 +277,8 @@ remotes:
       mutable_ttl: 3600
 
   rancher-stable:
-    base_url: "https://releases.rancher.com/server-charts/stable"    package: "helm"
+    base_url: "https://releases.rancher.com/server-charts/stable"
+    package: "helm"
     description: "Rancher stable Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -271,7 +288,8 @@ remotes:
       mutable_ttl: 3600
 
   purelb:
-    base_url: "https://gitlab.com/api/v4/projects/20400619/packages/helm/stable"    package: "helm"
+    base_url: "https://gitlab.com/api/v4/projects/20400619/packages/helm/stable"
+    package: "helm"
     description: "PureLB load balancer Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -281,7 +299,8 @@ remotes:
       mutable_ttl: 3600
 
   istio:
-    base_url: "https://istio-release.storage.googleapis.com/charts"    package: "helm"
+    base_url: "https://istio-release.storage.googleapis.com/charts"
+    package: "helm"
     description: "Istio service mesh Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -291,7 +310,8 @@ remotes:
       mutable_ttl: 3600
 
   cnpg:
-    base_url: "https://cloudnative-pg.github.io/charts"    package: "helm"
+    base_url: "https://cloudnative-pg.github.io/charts"
+    package: "helm"
     description: "CloudNativePG operator Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -301,7 +321,8 @@ remotes:
       mutable_ttl: 3600
 
   ceph-csi:
-    base_url: "https://ceph.github.io/csi-charts"    package: "helm"
+    base_url: "https://ceph.github.io/csi-charts"
+    package: "helm"
     description: "Ceph CSI driver Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -311,7 +332,8 @@ remotes:
       mutable_ttl: 3600
 
   external-dns:
-    base_url: "https://kubernetes-sigs.github.io/external-dns/"    package: "helm"
+    base_url: "https://kubernetes-sigs.github.io/external-dns/"
+    package: "helm"
     description: "ExternalDNS Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -321,7 +343,8 @@ remotes:
       mutable_ttl: 3600
 
   intel-helm:
-    base_url: "https://intel.github.io/helm-charts/"    package: "helm"
+    base_url: "https://intel.github.io/helm-charts/"
+    package: "helm"
     description: "Intel Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -331,7 +354,8 @@ remotes:
       mutable_ttl: 3600
 
   elastic:
-    base_url: "https://helm.elastic.co"    package: "helm"
+    base_url: "https://helm.elastic.co"
+    package: "helm"
     description: "Elastic stack Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -341,7 +365,8 @@ remotes:
       mutable_ttl: 3600
 
   k8up-io:
-    base_url: "https://k8up-io.github.io/k8up"    package: "helm"
+    base_url: "https://k8up-io.github.io/k8up"
+    package: "helm"
     description: "K8up backup operator Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -351,7 +376,8 @@ remotes:
       mutable_ttl: 3600
 
   victoriametrics:
-    base_url: "https://victoriametrics.github.io/helm-charts/"    package: "helm"
+    base_url: "https://victoriametrics.github.io/helm-charts/"
+    package: "helm"
     description: "VictoriaMetrics observability Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -361,7 +387,8 @@ remotes:
       mutable_ttl: 3600
 
   grafana:
-    base_url: "https://grafana.github.io/helm-charts"    package: "helm"
+    base_url: "https://grafana.github.io/helm-charts"
+    package: "helm"
     description: "Grafana observability Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -371,7 +398,8 @@ remotes:
       mutable_ttl: 3600
 
   helm-openldap:
-    base_url: "https://jp-gouin.github.io/helm-openldap/"    package: "helm"
+    base_url: "https://jp-gouin.github.io/helm-openldap/"
+    package: "helm"
     description: "OpenLDAP Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -381,7 +409,8 @@ remotes:
       mutable_ttl: 3600
 
   woodpecker:
-    base_url: "https://woodpecker-ci.org/"    package: "helm"
+    base_url: "https://woodpecker-ci.org/"
+    package: "helm"
     description: "Woodpecker CI Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -391,7 +420,8 @@ remotes:
       mutable_ttl: 3600
 
   stakater:
-    base_url: "https://stakater.github.io/stakater-charts"    package: "helm"
+    base_url: "https://stakater.github.io/stakater-charts"
+    package: "helm"
     description: "Stakater Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -401,7 +431,8 @@ remotes:
       mutable_ttl: 3600
 
   jfrog:
-    base_url: "https://charts.jfrog.io/"    package: "helm"
+    base_url: "https://charts.jfrog.io/"
+    package: "helm"
     description: "JFrog Helm charts"
     check_mutable_updates: true
     immutable_patterns:
@@ -411,7 +442,8 @@ remotes:
       mutable_ttl: 3600
 
   openvox:
-    base_url: "https://openvoxproject.github.io/openvox-helm-chart"    package: "helm"
+    base_url: "https://openvoxproject.github.io/openvox-helm-chart"
+    package: "helm"
     description: "OpenVox Helm charts"
     check_mutable_updates: true
     immutable_patterns:

@@ -9,8 +9,6 @@ import httpx
 import yaml
 from fastapi import HTTPException, Request, Response
 
-from ..remote import helm as _helm
-
 logger = logging.getLogger(__name__)
 
 
@@ -86,6 +84,19 @@ async def _get_member_index(
     return member_name, member_cfg, member_ttl, raw_data
 
 
+def _rewrite_urls(urls: list, base_url: str, proxy_base: str, member_name: str) -> list:
+    proxy_remote = f"{proxy_base}/api/v1/remote/{member_name}"
+    rewritten = []
+    for url in urls:
+        if url.startswith(("http://", "https://")):
+            if base_url and url.startswith(base_url):
+                url = proxy_remote + url[len(base_url) :]
+        else:
+            url = f"{proxy_remote}/{url.lstrip('/')}"
+        rewritten.append(url)
+    return rewritten
+
+
 def _merge_helm_indexes(raw_indexes: list[bytes], member_names: list[str], member_configs: list[dict], proxy_base: str) -> bytes:
     """Merge helm index.yaml files with per-member URL rewriting.
 
@@ -96,15 +107,21 @@ def _merge_helm_indexes(raw_indexes: list[bytes], member_names: list[str], membe
 
     for raw_data, member_name, member_cfg in zip(raw_indexes, member_names, member_configs):
         base_url = member_cfg.get("base_url", "").rstrip("/")
-        rewritten, _ = _helm.resolve_content(raw_data, "index.yaml", "index.yaml", base_url, proxy_base, member_name)
 
         try:
-            index = yaml.safe_load(rewritten)
+            index = yaml.safe_load(raw_data)
         except Exception as e:
             logger.warning(f"Virtual: failed to parse index.yaml from member '{member_name}': {e}")
             continue
 
         for chart_name, versions in (index.get("entries") or {}).items():
+            for version_entry in versions:
+                version_entry["urls"] = _rewrite_urls(
+                    version_entry.get("urls") or [],
+                    base_url,
+                    proxy_base,
+                    member_name,
+                )
             if chart_name not in merged_entries:
                 merged_entries[chart_name] = list(versions)
             else:

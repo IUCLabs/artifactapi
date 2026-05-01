@@ -12,6 +12,7 @@ from artifactapi.artifact.virtual import (
     _HelmDumper,
     _HelmHandler,
     _merge_helm_indexes,
+    _rewrite_urls,
     _VirtualHandler,
 )
 
@@ -66,12 +67,19 @@ entries:
 generated: "2023-01-01T00:00:00.000Z"
 """
 
+_INDEX_RELATIVE = b"""\
+apiVersion: v1
+entries:
+  rancher:
+    - name: rancher
+      version: "2.13.1"
+      urls:
+        - rancher-2.13.1.tgz
+generated: "2023-01-01T00:00:00.000Z"
+"""
+
 _CFG_A = {"base_url": "https://helm.releases.hashicorp.com", "cache": {"mutable_ttl": 3600}}
 _CFG_B = {"base_url": "https://charts.example.com", "cache": {"mutable_ttl": 1800}}
-
-
-def _identity_resolve(data, *args, **kwargs):
-    return data, None
 
 
 # ---------------------------------------------------------------------------
@@ -135,8 +143,7 @@ class TestHelmHandler:
         assert isinstance(msg, str) and len(msg) > 0
 
     def test_merge_returns_bytes(self):
-        with patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve):
-            result = self.handler.merge([_INDEX_A], ["member-a"], [_CFG_A], "http://proxy.example.com")
+        result = self.handler.merge([_INDEX_A], ["member-a"], [_CFG_A], "http://proxy.example.com")
         assert isinstance(result, bytes)
 
     def test_merge_delegates_to_merge_helm_indexes(self):
@@ -161,14 +168,48 @@ class TestHandlersRegistry:
 
 
 # ---------------------------------------------------------------------------
+# _rewrite_urls
+# ---------------------------------------------------------------------------
+
+
+class TestRewriteUrls:
+    def _rewrite(self, urls, base_url="https://upstream.example.com", proxy_base="http://proxy.example.com", member_name="my-remote"):
+        return _rewrite_urls(urls, base_url, proxy_base, member_name)
+
+    def test_absolute_url_matching_base_is_rewritten(self):
+        result = self._rewrite(["https://upstream.example.com/chart-1.0.0.tgz"])
+        assert result == ["http://proxy.example.com/api/v1/remote/my-remote/chart-1.0.0.tgz"]
+
+    def test_relative_url_is_prepended_with_proxy_remote(self):
+        result = self._rewrite(["chart-1.0.0.tgz"])
+        assert result == ["http://proxy.example.com/api/v1/remote/my-remote/chart-1.0.0.tgz"]
+
+    def test_relative_url_with_leading_slash(self):
+        result = self._rewrite(["/chart-1.0.0.tgz"])
+        assert result == ["http://proxy.example.com/api/v1/remote/my-remote/chart-1.0.0.tgz"]
+
+    def test_absolute_url_not_matching_base_is_unchanged(self):
+        result = self._rewrite(["https://other.example.com/chart-1.0.0.tgz"])
+        assert result == ["https://other.example.com/chart-1.0.0.tgz"]
+
+    def test_empty_url_list_returns_empty(self):
+        assert self._rewrite([]) == []
+
+    def test_multiple_urls_all_rewritten(self):
+        urls = ["https://upstream.example.com/a-1.0.0.tgz", "b-2.0.0.tgz"]
+        result = self._rewrite(urls)
+        assert result[0] == "http://proxy.example.com/api/v1/remote/my-remote/a-1.0.0.tgz"
+        assert result[1] == "http://proxy.example.com/api/v1/remote/my-remote/b-2.0.0.tgz"
+
+
+# ---------------------------------------------------------------------------
 # _merge_helm_indexes
 # ---------------------------------------------------------------------------
 
 
 class TestMergeHelmIndexes:
     def _merge(self, raw_indexes, member_names, member_configs, proxy_base="http://proxy.example.com"):
-        with patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve):
-            return _merge_helm_indexes(raw_indexes, member_names, member_configs, proxy_base)
+        return _merge_helm_indexes(raw_indexes, member_names, member_configs, proxy_base)
 
     def _parse(self, raw):
         return yaml.safe_load(raw)
@@ -187,7 +228,18 @@ class TestMergeHelmIndexes:
     def test_first_member_wins_on_duplicate_name_and_version(self):
         index = self._parse(self._merge([_INDEX_A, _INDEX_B], ["member-a", "member-b"], [_CFG_A, _CFG_B]))
         v027 = next(e for e in index["entries"]["vault"] if e["version"] == "0.27.0")
-        assert "helm.releases.hashicorp.com" in v027["urls"][0]
+        assert "member-a" in v027["urls"][0]
+
+    def test_absolute_urls_rewritten_to_proxy(self):
+        index = self._parse(self._merge([_INDEX_A], ["member-a"], [_CFG_A]))
+        url = index["entries"]["vault"][0]["urls"][0]
+        assert url == "http://proxy.example.com/api/v1/remote/member-a/vault-0.27.0.tgz"
+
+    def test_relative_urls_rewritten_to_proxy(self):
+        cfg = {"base_url": "https://releases.rancher.com/server-charts/stable", "cache": {"mutable_ttl": 3600}}
+        index = self._parse(self._merge([_INDEX_RELATIVE], ["rancher-stable"], [cfg]))
+        url = index["entries"]["rancher"][0]["urls"][0]
+        assert url == "http://proxy.example.com/api/v1/remote/rancher-stable/rancher-2.13.1.tgz"
 
     def test_different_versions_of_same_chart_both_included(self):
         index = self._parse(self._merge([_INDEX_A, _INDEX_B], ["member-a", "member-b"], [_CFG_A, _CFG_B]))
@@ -484,10 +536,7 @@ class TestVirtualRoute:
         mock_get.assert_not_called()
 
     def test_cache_miss_returns_200_with_yaml_content_type(self, client, patched_virtual_deps):
-        with (
-            patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get,
-            patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve),
-        ):
+        with patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = ("helm-test", _CFG_A, 3600, _INDEX_SIMPLE)
             response = client.get("/api/v1/virtual/helm-virtual-test/index.yaml")
 
@@ -495,10 +544,7 @@ class TestVirtualRoute:
         assert "text/yaml" in response.headers["content-type"]
 
     def test_cache_miss_response_contains_merged_entries(self, client, patched_virtual_deps):
-        with (
-            patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get,
-            patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve),
-        ):
+        with patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = ("helm-test", _CFG_A, 3600, _INDEX_SIMPLE)
             response = client.get("/api/v1/virtual/helm-virtual-test/index.yaml")
 
@@ -507,10 +553,7 @@ class TestVirtualRoute:
 
     def test_cache_miss_stores_result_in_s3(self, client, patched_virtual_deps):
         deps = patched_virtual_deps
-        with (
-            patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get,
-            patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve),
-        ):
+        with patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = ("helm-test", _CFG_A, 3600, _INDEX_SIMPLE)
             client.get("/api/v1/virtual/helm-virtual-test/index.yaml")
 
@@ -518,10 +561,7 @@ class TestVirtualRoute:
 
     def test_cache_miss_marks_index_cached(self, client, patched_virtual_deps):
         deps = patched_virtual_deps
-        with (
-            patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get,
-            patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve),
-        ):
+        with patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = ("helm-test", _CFG_A, 3600, _INDEX_SIMPLE)
             client.get("/api/v1/virtual/helm-virtual-test/index.yaml")
 
@@ -529,10 +569,7 @@ class TestVirtualRoute:
 
     def test_cache_miss_uses_min_ttl_across_members(self, client, patched_virtual_deps):
         deps = patched_virtual_deps
-        with (
-            patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get,
-            patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve),
-        ):
+        with patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get:
             mock_get.side_effect = [
                 ("helm-test", _CFG_A, 3600, _INDEX_SIMPLE),
                 ("helm-member-2", _CFG_B, 1800, _INDEX_SIMPLE),
@@ -550,10 +587,7 @@ class TestVirtualRoute:
         assert response.status_code == 502
 
     def test_one_member_unreachable_still_returns_200(self, client, patched_virtual_deps):
-        with (
-            patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get,
-            patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve),
-        ):
+        with patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get:
             mock_get.side_effect = [
                 ("helm-test", _CFG_A, 3600, _INDEX_SIMPLE),
                 ("helm-member-2", _CFG_B, 1800, None),
@@ -572,7 +606,6 @@ class TestVirtualRoute:
 
         with (
             patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get,
-            patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve),
             patch.object(main_mod.config, "get_remote_config", side_effect=patched_get),
         ):
             mock_get.return_value = ("helm-test", _CFG_A, 3600, _INDEX_SIMPLE)
@@ -586,10 +619,7 @@ class TestVirtualRoute:
         deps = patched_virtual_deps
         deps["storage"].upload.side_effect = Exception("S3 write error")
 
-        with (
-            patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get,
-            patch("artifactapi.artifact.virtual._helm.resolve_content", side_effect=_identity_resolve),
-        ):
+        with patch("artifactapi.artifact.virtual._get_member_index", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = ("helm-test", _CFG_A, 3600, _INDEX_SIMPLE)
             response = client.get("/api/v1/virtual/helm-virtual-test/index.yaml")
 

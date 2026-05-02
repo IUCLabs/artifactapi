@@ -14,6 +14,8 @@ from artifactapi.artifact.virtual import (
     _merge_helm_indexes,
     _rewrite_urls,
     _VirtualHandler,
+    _YamlDumperBase,
+    _YamlLoader,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,6 +82,34 @@ generated: "2023-01-01T00:00:00.000Z"
 
 _CFG_A = {"base_url": "https://helm.releases.hashicorp.com", "cache": {"mutable_ttl": 3600}}
 _CFG_B = {"base_url": "https://charts.example.com", "cache": {"mutable_ttl": 1800}}
+
+
+# ---------------------------------------------------------------------------
+# _YamlLoader / _YamlDumperBase — C extension selection
+# ---------------------------------------------------------------------------
+
+
+class TestYamlExtensionSelection:
+    def test_loader_is_a_class(self):
+        assert isinstance(_YamlLoader, type)
+
+    def test_dumper_base_is_a_class(self):
+        assert isinstance(_YamlDumperBase, type)
+
+    def test_helm_dumper_uses_selected_base(self):
+        assert issubclass(_HelmDumper, _YamlDumperBase)
+
+    def test_c_extensions_used_when_available(self):
+        try:
+            assert _YamlLoader is yaml.CSafeLoader
+            assert _YamlDumperBase is yaml.CDumper
+        except AttributeError:
+            assert _YamlLoader is yaml.SafeLoader
+            assert _YamlDumperBase is yaml.Dumper
+
+    def test_loader_can_parse_yaml(self):
+        result = yaml.load(b"key: value", Loader=_YamlLoader)
+        assert result == {"key": "value"}
 
 
 # ---------------------------------------------------------------------------

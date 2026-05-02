@@ -11,8 +11,15 @@ from fastapi import HTTPException, Request, Response
 
 logger = logging.getLogger(__name__)
 
+try:
+    _YamlLoader = yaml.CSafeLoader
+    _YamlDumperBase = yaml.CDumper
+except AttributeError:
+    _YamlLoader = yaml.SafeLoader
+    _YamlDumperBase = yaml.Dumper
 
-class _HelmDumper(yaml.Dumper):
+
+class _HelmDumper(_YamlDumperBase):
     """YAML dumper that serializes datetime/date objects back to ISO 8601 strings.
 
     yaml.safe_load converts timestamp-shaped YAML scalars (e.g. chart `created`
@@ -109,7 +116,7 @@ def _merge_helm_indexes(raw_indexes: list[bytes], member_names: list[str], membe
         base_url = member_cfg.get("base_url", "").rstrip("/")
 
         try:
-            index = yaml.safe_load(raw_data)
+            index = yaml.load(raw_data, Loader=_YamlLoader)
         except Exception as e:
             logger.warning(f"Virtual: failed to parse index.yaml from member '{member_name}': {e}")
             continue

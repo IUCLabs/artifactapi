@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from typing import Protocol, runtime_checkable
 
 import httpx
+import msgpack as _msgpack
 import yaml
 from fastapi import HTTPException, Request, Response
 
@@ -42,21 +43,43 @@ _HelmDumper.add_representer(datetime, _repr_datetime)
 _HelmDumper.add_representer(date, _repr_date)
 
 
+def _entries_to_msgpack_safe(entries: dict) -> dict:
+    """Convert datetime/date values to ISO strings for msgpack serialization."""
+    result = {}
+    for chart, versions in entries.items():
+        safe_versions = []
+        for v in versions:
+            safe_v = {}
+            for k, val in v.items():
+                if isinstance(val, datetime):
+                    safe_v[k] = val.isoformat()
+                elif isinstance(val, date):
+                    safe_v[k] = val.isoformat()
+                else:
+                    safe_v[k] = val
+            safe_versions.append(safe_v)
+        result[chart] = safe_versions
+    return result
+
+
 async def _get_member_index(
     member_name: str,
     member_cfg: dict,
     path: str,
     storage,
     cache,
-) -> tuple[str, dict, int, bytes | None]:
+) -> tuple[str, dict, int, bytes | None, dict | None]:
     """Fetch or retrieve cached index.yaml for one member remote.
 
-    Returns (member_name, member_cfg, ttl, raw_bytes).
+    Returns (member_name, member_cfg, ttl, raw_bytes, parsed_entries).
     raw_bytes is None if the member is unreachable and not in S3.
+    parsed_entries is the pre-parsed entries dict (from msgpack cache), or None.
     """
     member_ttl = member_cfg.get("cache", {}).get("mutable_ttl", 3600)
     s3_key = storage.get_object_key(member_name, path)
+    msgpack_key = storage.get_object_key(member_name, "index.msgpack")
     raw_data: bytes | None = None
+    parsed_entries: dict | None = None
 
     if storage.exists(s3_key) and cache.is_index_valid(member_name, path):
         try:
@@ -64,6 +87,13 @@ async def _get_member_index(
             logger.info(f"Virtual: cache hit for member '{member_name}'")
         except Exception:
             raw_data = None
+        if raw_data is not None and storage.exists(msgpack_key):
+            try:
+                packed = storage.download_object(msgpack_key)
+                parsed_entries = _msgpack.unpackb(packed, raw=False)
+                logger.debug(f"Virtual: msgpack hit for member '{member_name}'")
+            except Exception:
+                parsed_entries = None
 
     if raw_data is None:
         base_url = member_cfg.get("base_url", "").rstrip("/")
@@ -81,14 +111,23 @@ async def _get_member_index(
                 raw_data = response.content
         except Exception as e:
             logger.warning(f"Virtual: failed to fetch index.yaml from member '{member_name}': {e}")
-            return member_name, member_cfg, member_ttl, None
+            return member_name, member_cfg, member_ttl, None, None
         try:
             storage.upload(s3_key, raw_data)
             cache.mark_index_cached(member_name, path, member_ttl)
         except Exception as e:
             logger.warning(f"Virtual: failed to cache index.yaml for member '{member_name}': {e}")
 
-    return member_name, member_cfg, member_ttl, raw_data
+    if parsed_entries is None and raw_data is not None:
+        try:
+            index = yaml.load(raw_data, Loader=_YamlLoader)
+            safe_entries = _entries_to_msgpack_safe(index.get("entries") or {})
+            storage.upload(msgpack_key, _msgpack.packb(safe_entries, use_bin_type=True))
+            parsed_entries = safe_entries
+        except Exception as e:
+            logger.warning(f"Virtual: failed to build msgpack cache for '{member_name}': {e}")
+
+    return member_name, member_cfg, member_ttl, raw_data, parsed_entries
 
 
 def _rewrite_urls(urls: list, base_url: str, proxy_base: str, member_name: str) -> list:
@@ -104,24 +143,35 @@ def _rewrite_urls(urls: list, base_url: str, proxy_base: str, member_name: str) 
     return rewritten
 
 
-def _merge_helm_indexes(raw_indexes: list[bytes], member_names: list[str], member_configs: list[dict], proxy_base: str) -> bytes:
+def _merge_helm_indexes(
+    raw_indexes: list[bytes],
+    parsed_entries_list: list[dict | None],
+    member_names: list[str],
+    member_configs: list[dict],
+    proxy_base: str,
+) -> bytes:
     """Merge helm index.yaml files with per-member URL rewriting.
 
     Priority is determined by position in member_names: earlier members win
     when the same chart name + version appears in multiple remotes.
+    Uses pre-parsed msgpack entries when available to skip YAML parsing.
     """
     merged_entries: dict[str, list] = {}
 
-    for raw_data, member_name, member_cfg in zip(raw_indexes, member_names, member_configs):
+    for raw_data, pre_parsed, member_name, member_cfg in zip(raw_indexes, parsed_entries_list, member_names, member_configs):
         base_url = member_cfg.get("base_url", "").rstrip("/")
 
-        try:
-            index = yaml.load(raw_data, Loader=_YamlLoader)
-        except Exception as e:
-            logger.warning(f"Virtual: failed to parse index.yaml from member '{member_name}': {e}")
-            continue
+        if pre_parsed is not None:
+            entries = pre_parsed
+        else:
+            try:
+                index = yaml.load(raw_data, Loader=_YamlLoader)
+            except Exception as e:
+                logger.warning(f"Virtual: failed to parse index.yaml from member '{member_name}': {e}")
+                continue
+            entries = index.get("entries") or {}
 
-        for chart_name, versions in (index.get("entries") or {}).items():
+        for chart_name, versions in entries.items():
             for version_entry in versions:
                 version_entry["urls"] = _rewrite_urls(
                     version_entry.get("urls") or [],
@@ -150,7 +200,14 @@ def _merge_helm_indexes(raw_indexes: list[bytes], member_names: list[str], membe
 @runtime_checkable
 class _VirtualHandler(Protocol):
     def accepts_path(self, path: str) -> bool: ...
-    def merge(self, raw_indexes: list[bytes], member_names: list[str], member_configs: list[dict], proxy_base: str) -> bytes: ...
+    def merge(
+        self,
+        raw_indexes: list[bytes],
+        parsed_entries: list[dict | None],
+        member_names: list[str],
+        member_configs: list[dict],
+        proxy_base: str,
+    ) -> bytes: ...
     def path_error(self) -> str: ...
 
 
@@ -158,8 +215,15 @@ class _HelmHandler:
     def accepts_path(self, path: str) -> bool:
         return path == "index.yaml"
 
-    def merge(self, raw_indexes: list[bytes], member_names: list[str], member_configs: list[dict], proxy_base: str) -> bytes:
-        return _merge_helm_indexes(raw_indexes, member_names, member_configs, proxy_base)
+    def merge(
+        self,
+        raw_indexes: list[bytes],
+        parsed_entries: list[dict | None],
+        member_names: list[str],
+        member_configs: list[dict],
+        proxy_base: str,
+    ) -> bytes:
+        return _merge_helm_indexes(raw_indexes, parsed_entries, member_names, member_configs, proxy_base)
 
     def path_error(self) -> str:
         return "Virtual helm repositories only serve index.yaml; chart tarballs are served directly by member remotes"
@@ -210,17 +274,19 @@ async def handle(request: Request, virtual_name: str, path: str, storage, cache,
     fetch_ms = int((time.perf_counter() - t_fetch) * 1000)
 
     raw_indexes: list[bytes] = []
+    used_parsed: list[dict | None] = []
     used_members: list[str] = []
     used_configs: list[dict] = []
     min_ttl: int | None = None
 
-    for member_name, member_cfg, member_ttl, raw_data in results:
+    for member_name, member_cfg, member_ttl, raw_data, parsed_entries in results:
         if min_ttl is None or member_ttl < min_ttl:
             min_ttl = member_ttl
         if raw_data is None:
             logger.warning(f"Virtual '{virtual_name}': skipping unreachable member '{member_name}'")
             continue
         raw_indexes.append(raw_data)
+        used_parsed.append(parsed_entries)
         used_members.append(member_name)
         used_configs.append(member_cfg)
 
@@ -231,7 +297,7 @@ async def handle(request: Request, virtual_name: str, path: str, storage, cache,
         min_ttl = 3600
 
     t_merge = time.perf_counter()
-    merged = await asyncio.to_thread(handler.merge, raw_indexes, used_members, used_configs, proxy_base)
+    merged = await asyncio.to_thread(handler.merge, raw_indexes, used_parsed, used_members, used_configs, proxy_base)
     merge_ms = int((time.perf_counter() - t_merge) * 1000)
 
     try:
@@ -239,9 +305,11 @@ async def handle(request: Request, virtual_name: str, path: str, storage, cache,
         storage.upload(virtual_key, merged)
         cache.mark_index_cached(virtual_name, path, min_ttl)
         store_ms = int((time.perf_counter() - t_store) * 1000)
+        msgpack_hits = sum(1 for p in used_parsed if p is not None)
         logger.info(
             f"Virtual MISS: {virtual_name}/{path} rebuilt from {used_members} "
-            f"(fetch={fetch_ms}ms merge={merge_ms}ms store={store_ms}ms ttl={min_ttl}s)"
+            f"(fetch={fetch_ms}ms merge={merge_ms}ms store={store_ms}ms ttl={min_ttl}s "
+            f"msgpack={msgpack_hits}/{len(used_members)})"
         )
     except Exception as e:
         logger.warning(f"Virtual: failed to store merged index for '{virtual_name}': {e}")

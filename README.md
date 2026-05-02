@@ -390,7 +390,7 @@ If a member is unreachable and has no cached index, it is skipped and a warning 
 
 **Caching:**
 
-The merged index is cached using `min(mutable_ttl)` across all members. Each member's raw index is cached in S3 under its own remote key by the normal proxy rules; the virtual handler reuses those copies when available.
+The merged index is cached using `min(mutable_ttl)` across all members. Each member's raw index is cached in S3 under its own remote key; the virtual handler reuses those copies when available. On rebuild, each member's parsed index is also stored as a compact msgpack file (`index.msgpack`) alongside the raw YAML, eliminating the YAML parse cost on subsequent rebuilds.
 
 **Helm example:**
 

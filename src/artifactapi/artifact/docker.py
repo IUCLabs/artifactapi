@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -47,23 +48,39 @@ async def proxy(request: Request, remote_name: str, path: str, storage, cache, c
             if not await _proxy.handle_expired_mutable(remote_name, path, remote_url, config, cache, storage):
                 cached_key = None
 
+    lock_acquired = False
+    if not cached_key:
+        lock_acquired = cache.acquire_fetch_lock(remote_name, path)
+        if not lock_acquired:
+            # Another pod is already fetching — poll storage briefly before issuing a duplicate upstream request
+            for _ in range(10):
+                await asyncio.sleep(0.5)
+                probe_key = storage.get_object_key(remote_name, path)
+                if storage.exists(probe_key):
+                    cached_key = probe_key
+                    break
+
     if not cached_key:
         logger.info(f"Cache MISS: {remote_name}/{path} - fetching from remote: {remote_url}")
-        result = await _proxy.cache_single_artifact(remote_url, remote_name, path, storage, remote_config)
-        if result["status"] == "error":
-            raise HTTPException(status_code=502, detail=f"Failed to fetch: {result['error']}")
-        if result["status"] == "cached" and is_mutable:
-            cache_config = config.get_cache_config(remote_name)
-            mutable_ttl = cache_config.get("mutable_ttl", 3600)
-            cache.mark_index_cached(remote_name, path, mutable_ttl)
-            logger.info(f"Mutable file cached with TTL: {remote_name}/{path} (ttl: {mutable_ttl}s)")
-            if result.get("etag") or result.get("last_modified"):
-                cache.store_mutable_meta(remote_name, path, result.get("etag"), result.get("last_modified"))
-        if not is_mutable:
-            published = result.get("last_modified")
-            if published:
-                cache.store_artifact_published(remote_name, path, published)
-            _proxy._check_quarantine(remote_name, published, config)
+        try:
+            result = await _proxy.cache_single_artifact(remote_url, remote_name, path, storage, remote_config)
+            if result["status"] == "error":
+                raise HTTPException(status_code=502, detail=f"Failed to fetch: {result['error']}")
+            if result["status"] == "cached" and is_mutable:
+                cache_config = config.get_cache_config(remote_name)
+                mutable_ttl = cache_config.get("mutable_ttl", 3600)
+                cache.mark_index_cached(remote_name, path, mutable_ttl)
+                logger.info(f"Mutable file cached with TTL: {remote_name}/{path} (ttl: {mutable_ttl}s)")
+                if result.get("etag") or result.get("last_modified"):
+                    cache.store_mutable_meta(remote_name, path, result.get("etag"), result.get("last_modified"))
+            if not is_mutable:
+                published = result.get("last_modified")
+                if published:
+                    cache.store_artifact_published(remote_name, path, published)
+                _proxy._check_quarantine(remote_name, published, config)
+        finally:
+            if lock_acquired:
+                cache.release_fetch_lock(remote_name, path)
     elif not is_mutable:
         published = cache.get_artifact_published(remote_name, path)
         if not published:
@@ -90,6 +107,14 @@ async def proxy(request: Request, remote_name: str, path: str, storage, cache, c
             content_type = "application/vnd.oci.image.manifest.v1+json"
 
     digest = f"sha256:{hashlib.sha256(artifact_data).hexdigest()}"
+
+    # Cross-link tag manifests to their sha256 digest key so digest-addressed pulls hit cache
+    if is_mutable and "/manifests/" in path:
+        digest_path = re.sub(r"/manifests/[^/]+$", f"/manifests/{digest}", path)
+        digest_key = storage.get_object_key(remote_name, digest_path)
+        if not storage.exists(digest_key):
+            storage.upload(digest_key, artifact_data)
+
     headers = {
         "Docker-Distribution-Api-Version": "registry/2.0",
         "Docker-Content-Digest": digest,

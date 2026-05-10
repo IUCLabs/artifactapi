@@ -327,3 +327,74 @@ class TestArtifactPublished:
 
     def test_get_returns_none_when_unavailable(self, unavailable_cache):
         assert unavailable_cache.get_artifact_published("remote", "path") is None
+
+
+# ---------------------------------------------------------------------------
+# fetch lock (thundering-herd deduplication)
+# ---------------------------------------------------------------------------
+
+
+class TestFetchLock:
+    def test_acquire_returns_true_when_lock_obtained(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.set.return_value = True
+        result = cache_with_redis.acquire_fetch_lock("myremote", "library/nginx/manifests/latest")
+        assert result is True
+
+    def test_acquire_calls_set_nx_with_ttl(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.set.return_value = True
+        cache_with_redis.acquire_fetch_lock("myremote", "library/nginx/manifests/latest", ttl=15)
+        _, kwargs = mock_redis_client.set.call_args
+        assert kwargs.get("nx") is True
+        assert kwargs.get("ex") == 15
+
+    def test_acquire_returns_false_when_lock_already_held(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.set.return_value = None  # Redis SET NX → None when key exists
+        result = cache_with_redis.acquire_fetch_lock("myremote", "library/nginx/manifests/latest")
+        assert result is False
+
+    def test_acquire_fails_open_when_unavailable(self, unavailable_cache):
+        # caller must be allowed to proceed when Redis is down
+        assert unavailable_cache.acquire_fetch_lock("myremote", "some/path") is True
+
+    def test_acquire_fails_open_on_redis_exception(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.set.side_effect = Exception("connection reset")
+        assert cache_with_redis.acquire_fetch_lock("myremote", "some/path") is True
+
+    def test_lock_key_embeds_path_hash(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.set.return_value = True
+        path = "library/nginx/manifests/latest"
+        cache_with_redis.acquire_fetch_lock("myremote", path)
+        args, _ = mock_redis_client.set.call_args
+        expected_hash = hashlib.sha256(path.encode()).hexdigest()[:16]
+        assert args[0] == f"fetchlock:myremote:{expected_hash}"
+
+    def test_lock_key_hash_is_16_chars(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.set.return_value = True
+        cache_with_redis.acquire_fetch_lock("myremote", "some/long/path/file.tar.gz")
+        args, _ = mock_redis_client.set.call_args
+        # key format: fetchlock:<remote>:<16-char hash>
+        parts = args[0].split(":")
+        assert len(parts) == 3
+        assert len(parts[2]) == 16
+
+    def test_different_paths_produce_different_lock_keys(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.set.return_value = True
+        cache_with_redis.acquire_fetch_lock("myremote", "path/a/manifests/latest")
+        key_a = mock_redis_client.set.call_args[0][0]
+        mock_redis_client.set.reset_mock()
+        cache_with_redis.acquire_fetch_lock("myremote", "path/b/manifests/latest")
+        key_b = mock_redis_client.set.call_args[0][0]
+        assert key_a != key_b
+
+    def test_release_deletes_correct_key(self, cache_with_redis, mock_redis_client):
+        path = "library/nginx/manifests/latest"
+        cache_with_redis.release_fetch_lock("myremote", path)
+        expected_hash = hashlib.sha256(path.encode()).hexdigest()[:16]
+        mock_redis_client.delete.assert_called_once_with(f"fetchlock:myremote:{expected_hash}")
+
+    def test_release_no_op_when_unavailable(self, unavailable_cache):
+        unavailable_cache.release_fetch_lock("myremote", "some/path")  # must not raise
+
+    def test_release_no_op_on_redis_exception(self, cache_with_redis, mock_redis_client):
+        mock_redis_client.delete.side_effect = Exception("timeout")
+        cache_with_redis.release_fetch_lock("myremote", "some/path")  # must not raise

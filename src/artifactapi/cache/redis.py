@@ -99,6 +99,25 @@ class RedisCache:
         except Exception:
             return None
 
+    def acquire_fetch_lock(self, remote_name: str, path: str, ttl: int = 30) -> bool:
+        """Try to acquire a short-lived fetch lock. Returns True if acquired, False if held by another caller."""
+        if not self.available:
+            return True  # fail open: no Redis → behave as if we always hold the lock
+        key = f"fetchlock:{remote_name}:{hashlib.sha256(path.encode()).hexdigest()[:16]}"
+        try:
+            return bool(self.client.set(key, 1, nx=True, ex=ttl))
+        except Exception:
+            return True
+
+    def release_fetch_lock(self, remote_name: str, path: str) -> None:
+        if not self.available:
+            return
+        key = f"fetchlock:{remote_name}:{hashlib.sha256(path.encode()).hexdigest()[:16]}"
+        try:
+            self.client.delete(key)
+        except Exception:
+            pass
+
     def cleanup_expired_index(self, storage, remote_name: str, path: str) -> None:
         if not self.available:
             return

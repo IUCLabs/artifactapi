@@ -11,6 +11,7 @@ FastAPI caching proxy that downloads and stores files from remote sources in S3-
 - Stale-on-upstream-error: refreshes TTL when backend is unreachable rather than evicting
 - URL rewriting for PyPI simple index, npm metadata, and Helm `index.yaml`
 - Access control via regex patterns — unmatched paths return 403
+- Docker tag banning — block named tags (e.g. `latest`) while allowing digest pulls
 
 ## Architecture
 
@@ -242,6 +243,26 @@ remotes:
 ```
 
 Tag manifests and `/tags/list` are built-in mutable patterns. Digest-addressed blobs are immutable.
+
+#### Banning tags
+
+Set `ban_tags_enabled: true` and list named tags in `ban_tags` to block specific tag references. Requests for a banned tag return `403`. Digest-addressed pulls (`sha256:…`) are never blocked, so images already in use can still be referenced by digest.
+
+```yaml
+remotes:
+  dockerhub:
+    base_url: "https://registry-1.docker.io"
+    package: "docker"
+    ban_tags_enabled: true
+    ban_tags:
+      - latest   # force pinned tags in CI/CD
+      - edge
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 300
+```
+
+`ban_tags_enabled` defaults to `false`. Setting it to `true` with an empty `ban_tags` list has no effect.
 
 For RKE2/containerd, configure `/etc/rancher/rke2/registries.yaml`:
 

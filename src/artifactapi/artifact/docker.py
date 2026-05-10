@@ -34,6 +34,16 @@ async def proxy(request: Request, remote_name: str, path: str, storage, cache, c
             logger.info(f"PATTERN BLOCKED: {remote_name}/{path}")
             raise HTTPException(status_code=403, detail="Image not allowed by configuration patterns")
 
+    if remote_config.get("ban_tags_enabled", False):
+        ban_tags = remote_config.get("ban_tags", [])
+        if ban_tags:
+            tag_match = re.search(r"/manifests/([^/]+)$", path)
+            if tag_match:
+                tag = tag_match.group(1)
+                if not tag.startswith("sha256:") and tag in ban_tags:
+                    logger.info(f"TAG BANNED: {remote_name}/{path} (tag: {tag})")
+                    raise HTTPException(status_code=403, detail=f"Tag '{tag}' is not permitted on this remote")
+
     base_url = remote_config.get("base_url", "").rstrip("/")
     remote_url = f"{base_url}/v2/{path}"
 

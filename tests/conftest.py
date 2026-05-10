@@ -41,6 +41,13 @@ TEST_REMOTES = {
             "immutable_patterns": ["^library/nginx"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 300},
         },
+        "docker-bantags-test": {
+            "base_url": "https://registry.example.com",
+            "package": "docker",
+            "ban_tags_enabled": True,
+            "ban_tags": ["latest", "edge"],
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 300},
+        },
         "generic-test": {
             "base_url": "https://releases.example.com",
             "package": "generic",

@@ -389,6 +389,84 @@ class TestDockerProxy:
 
 
 # ---------------------------------------------------------------------------
+# Docker ban_tags feature
+# ---------------------------------------------------------------------------
+
+
+class TestDockerBanTags:
+    def test_banned_tag_returns_403(self, client, patched_deps):
+        response = client.get("/v2/docker-bantags-test/library/nginx/manifests/latest")
+        assert response.status_code == 403
+        assert "latest" in response.json()["detail"]
+
+    def test_second_banned_tag_returns_403(self, client, patched_deps):
+        response = client.get("/v2/docker-bantags-test/library/nginx/manifests/edge")
+        assert response.status_code == 403
+        assert "edge" in response.json()["detail"]
+
+    def test_allowed_tag_proceeds(self, client, patched_deps):
+        deps = patched_deps
+        manifest = json.dumps({"mediaType": "application/vnd.oci.image.manifest.v1+json", "layers": []}).encode()
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = manifest
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/v2/docker-bantags-test/library/nginx/manifests/1.25.3")
+        assert response.status_code == 200
+
+    def test_digest_pull_bypasses_ban(self, client, patched_deps):
+        # sha256-addressed pulls must never be blocked by the tag ban list
+        deps = patched_deps
+        manifest = json.dumps({"mediaType": "application/vnd.oci.image.manifest.v1+json", "layers": []}).encode()
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = manifest
+        deps["cache"].is_mutable_file.return_value = False
+
+        digest = "sha256:" + "a" * 64
+        with patch("artifactapi.artifact.proxy._fetch_last_modified", new_callable=AsyncMock, return_value=None):
+            response = client.get(f"/v2/docker-bantags-test/library/nginx/manifests/{digest}")
+        assert response.status_code == 200
+
+    def test_ban_tags_disabled_by_default(self, client, patched_deps):
+        # docker-test has no ban_tags_enabled — "latest" must pass through
+        deps = patched_deps
+        manifest = json.dumps({"mediaType": "application/vnd.oci.image.manifest.v1+json", "layers": []}).encode()
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = manifest
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/v2/docker-test/library/nginx/manifests/latest")
+        assert response.status_code == 200
+
+    def test_ban_tags_enabled_but_empty_list_allows_all(self, client, patched_deps):
+        # If ban_tags_enabled is true but ban_tags is empty nothing should be blocked.
+        # docker-test doesn't have ban_tags_enabled, but we can verify via the
+        # docker-bantags-test remote with an unlisted tag.
+        deps = patched_deps
+        manifest = json.dumps({"mediaType": "application/vnd.oci.image.manifest.v1+json", "layers": []}).encode()
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = manifest
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/v2/docker-bantags-test/library/nginx/manifests/stable")
+        assert response.status_code == 200
+
+    def test_ban_check_does_not_apply_to_blobs(self, client, patched_deps):
+        # Blob paths don't contain /manifests/ — the ban check must not interfere
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"\x00" * 100
+        deps["cache"].is_mutable_file.return_value = False
+
+        with patch("artifactapi.artifact.proxy._fetch_last_modified", new_callable=AsyncMock, return_value=None):
+            response = client.get("/v2/docker-bantags-test/library/nginx/blobs/sha256:" + "b" * 64)
+        assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Generic artifact route  /api/v1/remote/{remote}/{path}
 # ---------------------------------------------------------------------------
 

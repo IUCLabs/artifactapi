@@ -112,6 +112,12 @@ TEST_REMOTES = {
             "immutable_patterns": [r"\.tgz$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 1800},
         },
+        "puppet-test": {
+            "base_url": "https://forgeapi.puppet.com",
+            "package": "puppet",
+            "immutable_patterns": [r"^v3/files/.*\.tar\.gz$"],
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
+        },
     },
     "locals": {
         "local-test": {

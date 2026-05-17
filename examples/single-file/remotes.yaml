@@ -452,6 +452,20 @@ remotes:
       immutable_ttl: 0
       mutable_ttl: 3600
 
+  puppet-forge:
+    base_url: "https://forgeapi.puppet.com"
+    package: "puppet"
+    description: "Puppet Forge module registry"
+    # Module metadata (v3/modules/, v3/releases) is mutable by default.
+    # Configure r10k / librarian-puppet with this remote as the Forge URL:
+    #   http://your-proxy/api/v1/remote/puppet-forge
+    check_mutable_updates: true
+    immutable_patterns:
+      - "^v3/files/.*\\.tar\\.gz$"
+    cache:
+      immutable_ttl: 0    # Module tarballs cached indefinitely
+      mutable_ttl: 600    # Module metadata refreshed after 10 minutes
+
 
 virtuals:
   helm-all:

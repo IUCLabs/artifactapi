@@ -4,7 +4,7 @@ FastAPI caching proxy that downloads and stores files from remote sources in S3-
 
 ## Features
 
-- Remote definitions via `remotes.yaml` — generic HTTP, Alpine APK, RPM, Docker, PyPI, npm, Helm
+- Remote definitions via `remotes.yaml` — generic HTTP, Alpine APK, RPM, Docker, PyPI, npm, Helm, Puppet Forge
 - Virtual repositories — merge multiple remotes of the same package type into a single unified index
 - Immutable/mutable caching model with per-remote TTLs
 - Conditional revalidation (`If-None-Match` / `If-Modified-Since`) on TTL expiry
@@ -62,6 +62,7 @@ src/artifactapi/
     ├── generic.py        — generic HTTP remotes
     ├── helm.py           — Helm index.yaml URL rewriting
     ├── npm.py            — npm metadata URL rewriting
+    ├── puppet.py         — Puppet Forge JSON URL rewriting
     ├── python.py         — PyPI URL construction + HTML rewriting
     └── rpm.py            — RPM remotes
 ```
@@ -130,7 +131,7 @@ Repositories are declared under three top-level keys matching their type:
 remotes:            # proxy (caching) remotes
   remote-name:
     base_url: "https://example.com"
-    package: "generic"        # generic, alpine, rpm, docker, pypi, npm, helm
+    package: "generic"        # generic, alpine, rpm, docker, pypi, npm, helm, puppet
     description: "..."
     immutable_patterns:       # regex — cached forever
       - ".*\\.tar\\.gz$"
@@ -361,6 +362,48 @@ helm repo add hashicorp https://artifacts.example.com/api/v1/remote/hashicorp-he
 helm repo update
 ```
 
+### puppet
+
+Proxy for [Puppet Forge](https://forge.puppet.com) (forgeapi.puppet.com). Module metadata is cached as mutable; versioned module tarballs are cached as immutable.
+
+```yaml
+remotes:
+  puppet-forge:
+    base_url: "https://forgeapi.puppet.com"
+    package: "puppet"
+    check_mutable_updates: true
+    immutable_patterns:
+      - "^v3/files/.*\\.tar\\.gz$"
+    cache:
+      immutable_ttl: 0    # module tarballs cached indefinitely
+      mutable_ttl: 600    # module metadata refreshed after 10 minutes
+```
+
+`v3/modules/` and `v3/releases` are built-in mutable patterns — module metadata pages expire after `mutable_ttl` and are re-fetched on the next request.
+
+**URL rewriting**: the proxy rewrites `file_uri` fields in Forge JSON responses from relative paths (`/v3/files/…`) to absolute proxy URLs. g10k resolves download URLs with Go's `url.ResolveReference`, so an absolute `file_uri` overrides the forge base entirely — tarballs download straight from the proxy without a second hop.
+
+**Client configuration — g10k**: set `forge_base_url` in the g10k config file:
+
+```yaml
+# g10k.yaml
+cachedir: /tmp/g10k
+forge_base_url: https://artifacts.example.com/api/v1/remote/puppet-forge
+sources:
+  control:
+    remote: git@git.example.com:puppet/control.git
+    basedir: /etc/puppetlabs/code/environments
+```
+
+Alternatively, set the URL per-Puppetfile with the `forge.baseUrl` directive (works with `-puppetfile` mode and does not require a config file):
+
+```ruby
+forge.baseUrl https://artifacts.example.com/api/v1/remote/puppet-forge
+
+mod 'puppetlabs-stdlib', '9.7.0'
+mod 'puppetlabs-inifile', '6.2.0'
+```
+
 ### virtual
 
 A virtual repository presents a single unified index built from multiple member remotes of the same package type. Clients configure one endpoint and get access to all member remotes transparently.
@@ -457,6 +500,7 @@ Each package type has built-in defaults that are merged with any user-defined `m
 | `docker` | Tag manifests (non-digest refs), `/tags/list` |
 | `pypi` | `simple/` (per-package and top-level index pages) |
 | `helm` | `index\.yaml$` |
+| `puppet` | `^v3/modules/`, `^v3/releases` |
 | `npm` | *(none built-in — define via `mutable_patterns`)* |
 | `generic` | *(none)* |
 

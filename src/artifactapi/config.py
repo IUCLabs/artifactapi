@@ -26,6 +26,10 @@ _PACKAGE_MUTABLE_PATTERNS: dict[str, list[str]] = {
     "helm": [
         r"index\.yaml$",
     ],
+    "puppet": [
+        r"^v3/modules/",
+        r"^v3/releases",
+    ],
     "generic": [],
 }
 

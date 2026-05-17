@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request, Response
 from ..auth import get_docker_token_for_response
 from ..remote import helm as _helm
 from ..remote import npm as _npm
+from ..remote import puppet as _puppet
 from ..remote import python as _pypi
 from ..remote.base import get_content_type
 
@@ -84,6 +85,8 @@ def _resolve_content(
         return _npm.resolve_content(data, path, filename, remote_config.get("immutable_patterns", []), base_url, proxy_base, remote_name)
     if package == "helm":
         return _helm.resolve_content(data, path, filename, base_url, proxy_base, remote_name)
+    if package == "puppet":
+        return _puppet.resolve_content(data, path, filename, base_url, proxy_base, remote_name)
     return data, get_content_type(filename)
 
 

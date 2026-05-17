@@ -1118,6 +1118,123 @@ class TestHelmRemote:
 
 
 # ---------------------------------------------------------------------------
+# Puppet Forge remote  /api/v1/remote/puppet-test/...
+# ---------------------------------------------------------------------------
+
+
+class TestPuppetRemote:
+    def test_module_metadata_is_mutable(self, client, patched_deps):
+        """v3/modules/ paths are detected as mutable (package-type default)."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b'{"current_release":{"file_uri":"/v3/files/puppetlabs-stdlib-9.7.0.tar.gz"}}'
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/puppet-test/v3/modules/puppetlabs-stdlib")
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_not_called()
+
+    def test_releases_path_is_mutable(self, client, patched_deps):
+        """v3/releases paths are detected as mutable (package-type default)."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b'{"file_uri":"/v3/files/puppetlabs-stdlib-9.7.0.tar.gz"}'
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/puppet-test/v3/releases/puppetlabs-stdlib-9.7.0")
+        assert response.status_code == 200
+
+    def test_relative_file_uri_rewritten_to_absolute_proxy_url(self, client, patched_deps):
+        """Relative /v3/files/ paths in JSON responses are rewritten to absolute proxy URLs."""
+        deps = patched_deps
+        meta = b'{"current_release":{"file_uri":"/v3/files/puppetlabs-stdlib-9.7.0.tar.gz","version":"9.7.0"}}'
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = meta
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/puppet-test/v3/modules/puppetlabs-stdlib")
+        assert response.status_code == 200
+        assert b'"/v3/files/' not in response.content
+        assert b"/api/v1/remote/puppet-test/v3/files/puppetlabs-stdlib-9.7.0.tar.gz" in response.content
+
+    def test_absolute_forge_url_rewritten_to_proxy(self, client, patched_deps):
+        """Absolute forgeapi.puppet.com URLs in JSON are rewritten to the proxy URL."""
+        deps = patched_deps
+        meta = b'{"uri":"https://forgeapi.puppet.com/v3/modules/puppetlabs-stdlib"}'
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = meta
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/puppet-test/v3/modules/puppetlabs-stdlib")
+        assert response.status_code == 200
+        assert b"forgeapi.puppet.com" not in response.content
+        assert b"/api/v1/remote/puppet-test" in response.content
+
+    def test_metadata_content_type_is_json(self, client, patched_deps):
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b'{"current_release":{}}'
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/puppet-test/v3/modules/puppetlabs-concat")
+        assert response.status_code == 200
+        assert "application/json" in response.headers["content-type"]
+
+    def test_tarball_served_without_rewriting(self, client, patched_deps):
+        """Module tarballs (v3/files/*.tar.gz) are served as binary without URL rewriting."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"\x1f\x8b tarball bytes"
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/puppet-test/v3/files/puppetlabs-stdlib-9.7.0.tar.gz")
+        assert response.status_code == 200
+        assert "application/gzip" in response.headers["content-type"]
+        assert response.headers["X-Artifact-Source"] == "cache"
+
+    def test_tarball_not_blocked_by_immutable_pattern(self, client, patched_deps):
+        """v3/files/*.tar.gz matches the configured immutable_patterns and is allowed."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"\x1f\x8b tarball bytes"
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/puppet-test/v3/files/puppetlabs-inifile-6.2.0.tar.gz")
+        assert response.status_code == 200
+
+    def test_unknown_path_blocked(self, client, patched_deps):
+        """Paths outside v3/modules, v3/releases, and v3/files are blocked."""
+        deps = patched_deps
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/puppet-test/v3/users/puppetlabs")
+        assert response.status_code == 403
+
+    def test_metadata_cache_miss_fetches_upstream(self, client, patched_deps):
+        deps = patched_deps
+        meta = b'{"current_release":{"file_uri":"/v3/files/puppetlabs-stdlib-9.7.0.tar.gz"}}'
+        deps["storage"].exists.return_value = False
+        deps["storage"].download_object.return_value = meta
+        deps["cache"].is_mutable_file.return_value = True
+
+        with patch(
+            "artifactapi.artifact.proxy.cache_single_artifact",
+            new_callable=AsyncMock,
+            return_value={"status": "cached"},
+        ) as mock_fetch:
+            response = client.get("/api/v1/remote/puppet-test/v3/modules/puppetlabs-stdlib")
+
+        mock_fetch.assert_called_once()
+        assert response.status_code == 200
+        assert b'"/v3/files/' not in response.content
+
+
+# ---------------------------------------------------------------------------
 # Quarantine  (quarantine-test remote: quarantine_new=True, quarantine_days=3)
 # ---------------------------------------------------------------------------
 

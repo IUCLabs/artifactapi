@@ -466,6 +466,37 @@ remotes:
       immutable_ttl: 0    # Module tarballs cached indefinitely
       mutable_ttl: 600    # Module metadata refreshed after 10 minutes
 
+  terraform-registry:
+    base_url: "https://registry.terraform.io"
+    package: "terraform"
+    description: "Terraform/OpenTofu provider registry (Registry Protocol)"
+    # Provider version lists are mutable by default.
+    # Point Terraform at this remote via .terraformrc:
+    #   host "registry.terraform.io" {
+    #     services = {
+    #       "providers.v1" = "http://your-proxy/api/v1/remote/terraform-registry/"
+    #     }
+    #   }
+    # releases_remote must match the name of the hashicorp-releases remote below,
+    # so download_url / shasums_url in per-version download info are rewritten.
+    releases_remote: "hashicorp-releases"
+    immutable_patterns:
+      - "[^/]+/[^/]+/[^/]+/download/[^/]+/[^/]+$"
+    cache:
+      immutable_ttl: 0    # Per-version download info cached indefinitely
+      mutable_ttl: 300    # Provider versions list refreshed after 5 minutes
+
+  hashicorp-releases:
+    base_url: "https://releases.hashicorp.com"
+    package: "generic"
+    description: "HashiCorp releases CDN — provider zips, SHA256SUMS, and signatures"
+    immutable_patterns:
+      - ".*\\.zip$"
+      - ".*SHA256SUMS(\\.sig)?$"
+    cache:
+      immutable_ttl: 0    # Release artifacts cached indefinitely
+      mutable_ttl: 0
+
 
 virtuals:
   helm-all:

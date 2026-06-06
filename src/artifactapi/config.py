@@ -30,6 +30,9 @@ _PACKAGE_MUTABLE_PATTERNS: dict[str, list[str]] = {
         r"^v3/modules/",
         r"^v3/releases",
     ],
+    "terraform": [
+        r"[^/]+/[^/]+/versions$",
+    ],
     "generic": [],
 }
 

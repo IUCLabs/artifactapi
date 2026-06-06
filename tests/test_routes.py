@@ -1235,6 +1235,150 @@ class TestPuppetRemote:
 
 
 # ---------------------------------------------------------------------------
+# Terraform registry remote  (terraform-registry-test)
+# ---------------------------------------------------------------------------
+
+
+class TestTerraformRemote:
+    def test_versions_path_is_mutable(self, client, patched_deps):
+        """Provider versions listing is detected as mutable."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b'{"versions":[]}'
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/terraform-registry-test/hashicorp/vault/versions")
+        assert response.status_code == 200
+        deps["cache"].mark_index_cached.assert_not_called()
+
+    def test_versions_returns_json_content_type(self, client, patched_deps):
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b'{"versions":[]}'
+        deps["cache"].is_mutable_file.return_value = True
+        deps["cache"].is_index_valid.return_value = True
+
+        response = client.get("/api/v1/remote/terraform-registry-test/hashicorp/vault/versions")
+        assert response.status_code == 200
+        assert "application/json" in response.headers["content-type"]
+
+    def test_download_info_download_url_rewritten(self, client, patched_deps):
+        """download_url in download-info JSON is rewritten to point to the releases proxy."""
+        deps = patched_deps
+        download_info = json.dumps(
+            {
+                "os": "linux",
+                "arch": "amd64",
+                "filename": "terraform-provider-vault_0.28.0_linux_amd64.zip",
+                "download_url": "https://releases.hashicorp.com/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_linux_amd64.zip",
+                "shasums_url": "https://releases.hashicorp.com/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_SHA256SUMS",
+                "shasums_signature_url": "https://releases.hashicorp.com/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_SHA256SUMS.sig",
+            }
+        ).encode()
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = download_info
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/terraform-registry-test/hashicorp/vault/0.28.0/download/linux/amd64")
+        assert response.status_code == 200
+        data = response.json()
+        assert "releases.hashicorp.com" not in data["download_url"]
+        assert "/api/v1/remote/hashicorp-releases-test/" in data["download_url"]
+
+    def test_download_info_shasums_url_rewritten(self, client, patched_deps):
+        """shasums_url is also rewritten to the releases proxy."""
+        deps = patched_deps
+        download_info = json.dumps(
+            {
+                "os": "linux",
+                "arch": "amd64",
+                "filename": "terraform-provider-vault_0.28.0_linux_amd64.zip",
+                "download_url": "https://releases.hashicorp.com/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_linux_amd64.zip",
+                "shasums_url": "https://releases.hashicorp.com/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_SHA256SUMS",
+                "shasums_signature_url": "https://releases.hashicorp.com/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_SHA256SUMS.sig",
+            }
+        ).encode()
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = download_info
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/terraform-registry-test/hashicorp/vault/0.28.0/download/linux/amd64")
+        assert response.status_code == 200
+        data = response.json()
+        assert "/api/v1/remote/hashicorp-releases-test/" in data["shasums_url"]
+        assert "/api/v1/remote/hashicorp-releases-test/" in data["shasums_signature_url"]
+        assert "releases.hashicorp.com" not in data["shasums_url"]
+        assert "releases.hashicorp.com" not in data["shasums_signature_url"]
+
+    def test_download_info_path_preserved(self, client, patched_deps):
+        """The path portion of the upstream URL is preserved when rewriting."""
+        deps = patched_deps
+        zip_path = "/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_linux_amd64.zip"
+        download_info = json.dumps(
+            {
+                "download_url": f"https://releases.hashicorp.com{zip_path}",
+                "shasums_url": "https://releases.hashicorp.com/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_SHA256SUMS",
+                "shasums_signature_url": "https://releases.hashicorp.com/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_SHA256SUMS.sig",
+            }
+        ).encode()
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = download_info
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get("/api/v1/remote/terraform-registry-test/hashicorp/vault/0.28.0/download/linux/amd64")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["download_url"].endswith(zip_path)
+
+    def test_zip_served_as_binary(self, client, patched_deps):
+        """Provider zip files are served as binary without JSON rewriting."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = True
+        deps["storage"].download_object.return_value = b"PK\x03\x04 zip bytes"
+        deps["cache"].is_mutable_file.return_value = False
+
+        response = client.get(
+            "/api/v1/remote/hashicorp-releases-test/terraform-provider-vault/0.28.0/terraform-provider-vault_0.28.0_linux_amd64.zip"
+        )
+        assert response.status_code == 200
+        assert response.headers["X-Artifact-Source"] == "cache"
+
+    def test_construct_url_prepends_v1_providers(self, client, patched_deps):
+        """Upstream URL for the terraform package type prepends /v1/providers/."""
+        deps = patched_deps
+        deps["storage"].exists.return_value = False
+
+        with patch(
+            "artifactapi.artifact.proxy.cache_single_artifact",
+            new_callable=AsyncMock,
+            return_value={"status": "cached"},
+        ) as mock_fetch:
+            deps["storage"].download_object.return_value = b'{"versions":[]}'
+            deps["cache"].is_mutable_file.return_value = True
+            client.get("/api/v1/remote/terraform-registry-test/hashicorp/vault/versions")
+
+        called_url = mock_fetch.call_args[0][0]
+        assert called_url == "https://registry.terraform.io/v1/providers/hashicorp/vault/versions"
+
+    def test_versions_cache_miss_fetches_upstream(self, client, patched_deps):
+        deps = patched_deps
+        deps["storage"].exists.return_value = False
+        deps["storage"].download_object.return_value = b'{"versions":[]}'
+        deps["cache"].is_mutable_file.return_value = True
+
+        with patch(
+            "artifactapi.artifact.proxy.cache_single_artifact",
+            new_callable=AsyncMock,
+            return_value={"status": "cached"},
+        ) as mock_fetch:
+            response = client.get("/api/v1/remote/terraform-registry-test/hashicorp/vault/versions")
+
+        mock_fetch.assert_called_once()
+        assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Quarantine  (quarantine-test remote: quarantine_new=True, quarantine_days=3)
 # ---------------------------------------------------------------------------
 

@@ -118,6 +118,21 @@ TEST_REMOTES = {
             "immutable_patterns": [r"^v3/files/.*\.tar\.gz$"],
             "cache": {"immutable_ttl": 0, "mutable_ttl": 600},
         },
+        "terraform-registry-test": {
+            "base_url": "https://registry.terraform.io",
+            "package": "terraform",
+            "immutable_patterns": [
+                r"[^/]+/[^/]+/[^/]+/download/[^/]+/[^/]+$",
+            ],
+            "releases_remote": "hashicorp-releases-test",
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 300},
+        },
+        "hashicorp-releases-test": {
+            "base_url": "https://releases.hashicorp.com",
+            "package": "generic",
+            "immutable_patterns": [r".*\.zip$", r".*SHA256SUMS(\.sig)?$"],
+            "cache": {"immutable_ttl": 0, "mutable_ttl": 0},
+        },
     },
     "locals": {
         "local-test": {

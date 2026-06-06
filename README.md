@@ -4,7 +4,7 @@ FastAPI caching proxy that downloads and stores files from remote sources in S3-
 
 ## Features
 
-- Remote definitions via `remotes.yaml` — generic HTTP, Alpine APK, RPM, Docker, PyPI, npm, Helm, Puppet Forge
+- Remote definitions via `remotes.yaml` — generic HTTP, Alpine APK, RPM, Docker, PyPI, npm, Helm, Puppet Forge, Terraform/OpenTofu registry
 - Virtual repositories — merge multiple remotes of the same package type into a single unified index
 - Immutable/mutable caching model with per-remote TTLs
 - Conditional revalidation (`If-None-Match` / `If-Modified-Since`) on TTL expiry
@@ -64,7 +64,8 @@ src/artifactapi/
     ├── npm.py            — npm metadata URL rewriting
     ├── puppet.py         — Puppet Forge JSON URL rewriting
     ├── python.py         — PyPI URL construction + HTML rewriting
-    └── rpm.py            — RPM remotes
+    ├── rpm.py            — RPM remotes
+    └── terraform.py      — Terraform/OpenTofu registry URL construction + download URL rewriting
 ```
 
 ## API Endpoints
@@ -131,7 +132,7 @@ Repositories are declared under three top-level keys matching their type:
 remotes:            # proxy (caching) remotes
   remote-name:
     base_url: "https://example.com"
-    package: "generic"        # generic, alpine, rpm, docker, pypi, npm, helm, puppet
+    package: "generic"        # generic, alpine, rpm, docker, pypi, npm, helm, puppet, terraform
     description: "..."
     immutable_patterns:       # regex — cached forever
       - ".*\\.tar\\.gz$"
@@ -404,6 +405,52 @@ mod 'puppetlabs-stdlib', '9.7.0'
 mod 'puppetlabs-inifile', '6.2.0'
 ```
 
+### terraform
+
+Proxy for [Terraform](https://registry.terraform.io) / [OpenTofu](https://opentofu.org) provider registries using the [Registry Protocol](https://developer.hashicorp.com/terraform/internals/provider-registry-protocol). Provider version listings are mutable; per-version download info is immutable.
+
+Two remotes are needed: one for the registry API and one for the release CDN (where the actual `.zip` binaries live):
+
+```yaml
+remotes:
+  terraform-registry:
+    base_url: "https://registry.terraform.io"
+    package: "terraform"
+    releases_remote: "hashicorp-releases"   # name of the CDN remote below
+    immutable_patterns:
+      - "[^/]+/[^/]+/[^/]+/download/[^/]+/[^/]+$"
+    cache:
+      immutable_ttl: 0    # per-version download info cached indefinitely
+      mutable_ttl: 300    # provider version lists refreshed after 5 minutes
+
+  hashicorp-releases:
+    base_url: "https://releases.hashicorp.com"
+    package: "generic"
+    immutable_patterns:
+      - ".*\\.zip$"
+      - ".*SHA256SUMS(\\.sig)?$"
+    cache:
+      immutable_ttl: 0
+      mutable_ttl: 0
+```
+
+`{namespace}/{type}/versions` is a built-in mutable pattern — the version list expires after `mutable_ttl` and is re-fetched on the next request.
+
+**URL rewriting**: the `download_url`, `shasums_url`, and `shasums_signature_url` fields in per-version download info JSON are rewritten from `releases.hashicorp.com` to point at the remote named by `releases_remote`, so Terraform fetches binaries through the proxy.
+
+**Client configuration**: redirect Terraform's provider registry lookup via `.terraformrc` without changing any provider source addresses in your Terraform code:
+
+```hcl
+# ~/.terraformrc  (or /etc/terraform.rc, or TF_CLI_CONFIG_FILE)
+host "registry.terraform.io" {
+  services = {
+    "providers.v1" = "http://artifacts.example.com/api/v1/remote/terraform-registry/"
+  }
+}
+```
+
+With this in place, `terraform init` / `tofu init` fetches provider metadata from the proxy and downloads zips from the `hashicorp-releases` remote. No changes to `.tf` files are needed.
+
 ### virtual
 
 A virtual repository presents a single unified index built from multiple member remotes of the same package type. Clients configure one endpoint and get access to all member remotes transparently.
@@ -501,6 +548,7 @@ Each package type has built-in defaults that are merged with any user-defined `m
 | `pypi` | `simple/` (per-package and top-level index pages) |
 | `helm` | `index\.yaml$` |
 | `puppet` | `^v3/modules/`, `^v3/releases` |
+| `terraform` | `[^/]+/[^/]+/versions$` |
 | `npm` | *(none built-in — define via `mutable_patterns`)* |
 | `generic` | *(none)* |
 

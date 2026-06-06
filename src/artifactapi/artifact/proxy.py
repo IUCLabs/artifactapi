@@ -13,6 +13,7 @@ from ..remote import helm as _helm
 from ..remote import npm as _npm
 from ..remote import puppet as _puppet
 from ..remote import python as _pypi
+from ..remote import terraform as _terraform
 from ..remote.base import get_content_type
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,9 @@ def _resolve_content(
         return _helm.resolve_content(data, path, filename, base_url, proxy_base, remote_name)
     if package == "puppet":
         return _puppet.resolve_content(data, path, filename, base_url, proxy_base, remote_name)
+    if package == "terraform":
+        releases_remote = remote_config.get("releases_remote")
+        return _terraform.resolve_content(data, path, filename, base_url, proxy_base, remote_name, releases_remote)
     return data, get_content_type(filename)
 
 
@@ -96,6 +100,8 @@ def construct_url(remote_config: dict, path: str) -> str:
         return f"{base_url}/v2/{path}"
     if remote_config.get("package") == "pypi":
         return _pypi.construct_url(base_url, path)
+    if remote_config.get("package") == "terraform":
+        return _terraform.construct_url(base_url, path)
     return f"{base_url}/{path}"
 
 

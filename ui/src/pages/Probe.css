@@ -1,0 +1,141 @@
+.probe-description {
+  color: var(--text-muted);
+  font-size: 0.9em;
+  margin-bottom: 20px;
+}
+
+.probe-form {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.probe-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.probe-row label {
+  width: 70px;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.probe-select {
+  flex: 1;
+  max-width: 350px;
+}
+
+.probe-input {
+  flex: 1;
+}
+
+.presets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.presets-label {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.preset-btn {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 0.8em;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preset-btn:hover {
+  background: var(--bg-elevated);
+  border-color: var(--accent);
+}
+
+.probe-result {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 24px;
+}
+
+.probe-ok {
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.probe-err {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.probe-result-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.probe-duration {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.probe-error {
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: rgba(239, 68, 68, 0.08);
+  padding: 10px;
+  border-radius: 4px;
+}
+
+.probe-dl {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 6px 12px;
+  font-size: 0.9em;
+}
+
+.probe-dl dt {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.probe-dl dd {
+  color: var(--text);
+}
+
+.probe-header-row {
+  display: contents;
+}
+
+.probe-history {
+  margin-top: 8px;
+}
+
+.probe-path-cell {
+  font-size: 0.8em;
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

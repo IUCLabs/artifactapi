@@ -1,0 +1,29 @@
+.stats-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  min-width: 160px;
+}
+
+.stats-label {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.stats-value {
+  font-size: 1.8em;
+  font-weight: 700;
+  color: var(--text-bright);
+  font-family: var(--font-mono);
+  line-height: 1.2;
+}
+
+.stats-sub {
+  font-size: 0.8em;
+  color: var(--text-muted);
+  margin-top: 4px;
+}

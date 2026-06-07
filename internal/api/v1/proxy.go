@@ -1,0 +1,106 @@
+package v1
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/IUCLabs/artifactapi/internal/database"
+	"github.com/IUCLabs/artifactapi/internal/provider"
+	"github.com/IUCLabs/artifactapi/internal/proxy"
+	"github.com/IUCLabs/artifactapi/internal/virtual"
+)
+
+type ProxyHandler struct {
+	engine        *proxy.Engine
+	virtualEngine *virtual.Engine
+	db            *database.DB
+}
+
+func NewProxyHandler(engine *proxy.Engine, virtualEngine *virtual.Engine, db *database.DB) *ProxyHandler {
+	return &ProxyHandler{engine: engine, virtualEngine: virtualEngine, db: db}
+}
+
+func (h *ProxyHandler) Routes() chi.Router {
+	r := chi.NewRouter()
+	r.Get("/remote/{remoteName}/*", h.handleProxy)
+	r.Get("/virtual/{virtualName}/*", h.handleVirtual)
+	return r
+}
+
+func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
+	remoteName := chi.URLParam(r, "remoteName")
+	path := chi.URLParam(r, "*")
+
+	remote, err := h.db.GetRemote(r.Context(), remoteName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("remote %q not found", remoteName), http.StatusNotFound)
+		return
+	}
+
+	prov, err := provider.Get(remote.PackageType)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("no provider for %q", remote.PackageType), http.StatusInternalServerError)
+		return
+	}
+
+	result, err := h.engine.Fetch(r.Context(), *remote, path, prov)
+	if err != nil {
+		var proxyErr *proxy.ProxyError
+		if errors.As(err, &proxyErr) {
+			http.Error(w, proxyErr.Message, proxyErr.Status)
+			return
+		}
+		slog.Error("proxy fetch failed", "remote", remoteName, "path", path, "error", err)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
+	}
+	defer result.Reader.Close()
+
+	w.Header().Set("Content-Type", result.ContentType)
+	w.Header().Set("X-Artifact-Source", result.Source)
+	if result.Size > 0 {
+		w.Header().Set("X-Artifact-Size", fmt.Sprintf("%d", result.Size))
+	}
+	w.WriteHeader(http.StatusOK)
+	io.Copy(w, result.Reader)
+}
+
+func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
+	virtualName := chi.URLParam(r, "virtualName")
+	path := chi.URLParam(r, "*")
+
+	virt, err := h.db.GetVirtual(r.Context(), virtualName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("virtual %q not found", virtualName), http.StatusNotFound)
+		return
+	}
+
+	proxyBaseURL := fmt.Sprintf("%s://%s", scheme(r), r.Host)
+
+	body, contentType, err := h.virtualEngine.Fetch(r.Context(), *virt, path, proxyBaseURL)
+	if err != nil {
+		slog.Error("virtual fetch failed", "virtual", virtualName, "path", path, "error", err)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Artifact-Source", "virtual")
+	w.WriteHeader(http.StatusOK)
+	w.Write(body)
+}
+
+func scheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+		return fwd
+	}
+	return "http"
+}

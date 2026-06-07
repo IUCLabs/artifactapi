@@ -1,0 +1,64 @@
+.objects-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.obj-path {
+  font-size: 0.85em;
+  word-break: break-all;
+}
+
+.hash-cell {
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
+.btn-evict {
+  background: transparent;
+  border: 1px solid var(--red);
+  color: var(--red);
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 0.8em;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-evict:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.page-info {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 0.85em;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.btn-sm:hover:not(:disabled) {
+  background: var(--bg-elevated);
+}
+
+.btn-sm:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

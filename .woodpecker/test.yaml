@@ -3,6 +3,6 @@ when:
 
 steps:
   - name: test
-    image: registry.example.com/example/almalinux9-base:20260606
+    image: golang:1.25
     commands:
-      - uvx --python 3.11 --with tox-uv tox
+      - go test -race -count=1 ./pkg/... ./internal/...

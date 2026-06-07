@@ -1,59 +1,49 @@
-.PHONY: build install dev clean test lint format pre-commit tox docker-build docker-up docker-down docker-logs docker-rebuild docker-clean docker-restart
+.PHONY: build test lint fmt e2e docker docker-ui compose clean tidy check-go
 
-build:
-	docker build -t artifactapi:dev .
+BINARY := bin/artifactapi
+MODULE := github.com/IUCLabs/artifactapi
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
+GO_VERSION_REQUIRED := 1.23
+GO_VERSION_ACTUAL := $(shell go version | sed 's/go version go\([0-9]*\.[0-9]*\).*/\1/')
 
-install: build
+check-go:
+	@if [ "$$(printf '%s\n%s' "$(GO_VERSION_REQUIRED)" "$(GO_VERSION_ACTUAL)" | sort -V | head -1)" != "$(GO_VERSION_REQUIRED)" ]; then \
+		echo "ERROR: Go >= $(GO_VERSION_REQUIRED) required, found $(GO_VERSION_ACTUAL)"; exit 1; \
+	fi
 
-docker-build: build
+build: check-go tidy
+	go build -ldflags="-s -w" -o $(BINARY) ./cmd/artifactapi
 
-dev: build
-	uv sync --dev
+test: check-go
+	go test -race -count=1 ./pkg/... ./internal/...
+
+lint: check-go
+	golangci-lint run ./...
+	go vet ./...
+
+fmt: check-go
+	gofmt -w .
+	goimports -w .
+
+e2e: check-go
+	TESTCONTAINERS_RYUK_DISABLED=true go test -tags=e2e -race -count=1 -timeout=5m ./e2e/...
+
+docker:
+	docker build -t artifactapi:$(VERSION) .
+
+docker-ui:
+	docker build -t artifactapi-ui:$(VERSION) -f ui/Dockerfile.ui ui/
+
+compose:
+	docker compose up -d
 
 clean:
-	rm -rf .venv
-	rm -rf build/
-	rm -rf dist/
-	rm -rf *.egg-info/
+	rm -rf bin/
 
-test:
-	uvx --python 3.11 --with tox-uv tox
-
-tox:
-	uvx --python 3.11 --with tox-uv tox
-
-pre-commit:
-	uvx --python 3.11 pre-commit run --all-files
-
-lint:
-	uv run ruff check --fix .
-
-format:
-	uv run ruff format .
-
-run:
-	uv run python -m src.artifactapi.main
-
-docker-up:
-	docker-compose up --build --force-recreate -d
-
-docker-down:
-	docker-compose down
-
-docker-logs:
-	docker-compose logs -f
-
-docker-rebuild:
-	docker-compose build --no-cache
-
-docker-clean:
-	docker-compose down -v --remove-orphans
-	docker system prune -f
-
-docker-restart: docker-down docker-up
+tidy:
+	go mod tidy
 
 # Bump helpers — reads the latest semver tag and creates the next one.
-# If no tag exists yet, starts from v0.0.0.
 _LATEST := $(shell git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1)
 _BASE   := $(if $(_LATEST),$(_LATEST),v0.0.0)
 _MAJ    := $(shell echo $(_BASE) | sed 's/^v//' | cut -d. -f1)

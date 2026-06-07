@@ -1,0 +1,46 @@
+.remotes-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.search-input {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 0.9em;
+  outline: none;
+  width: 260px;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+}
+
+.type-select {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 0.9em;
+  outline: none;
+  cursor: pointer;
+}
+
+.type-select:focus {
+  border-color: var(--accent);
+}
+
+.result-count {
+  font-size: 0.85em;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.text-muted {
+  color: var(--text-muted);
+}

@@ -3,7 +3,7 @@ when:
 
 steps:
   - name: pre-commit
-    image: registry.example.com/example/almalinux9-base:20260606
+    image: golang:1.25
     commands:
-      - uvx pre-commit run --all-files
-
+      - test -z "$(gofmt -l .)"
+      - go vet ./...

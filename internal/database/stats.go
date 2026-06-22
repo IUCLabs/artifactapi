@@ -76,3 +76,68 @@ func (db *DB) GetTopRemotes(ctx context.Context, limit int) ([]RemoteStatRow, er
 	}
 	return result, rows.Err()
 }
+
+type FileStatRow struct {
+	RemoteName  string `json:"remote_name"`
+	Path        string `json:"path"`
+	AccessCount int64  `json:"access_count"`
+	SizeBytes   int64  `json:"size_bytes"`
+}
+
+func (db *DB) GetTopFilesByHits(ctx context.Context, limit int) ([]FileStatRow, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT a.remote_name, a.path, a.access_count, b.size_bytes
+		FROM artifacts a
+		JOIN blobs b ON a.content_hash = b.content_hash
+		ORDER BY a.access_count DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []FileStatRow
+	for rows.Next() {
+		var r FileStatRow
+		if err := rows.Scan(&r.RemoteName, &r.Path, &r.AccessCount, &r.SizeBytes); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+type BandwidthStatRow struct {
+	RemoteName string `json:"remote_name"`
+	Path       string `json:"path"`
+	Bandwidth  int64  `json:"bandwidth"`
+	Requests   int64  `json:"requests"`
+}
+
+func (db *DB) GetTopFilesByBandwidth(ctx context.Context, limit int) ([]BandwidthStatRow, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT remote_name, path,
+			COALESCE(SUM(size_bytes), 0) AS bandwidth,
+			COUNT(*) AS requests
+		FROM access_log
+		WHERE created_at > NOW() - INTERVAL '30 days'
+		GROUP BY remote_name, path
+		ORDER BY bandwidth DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []BandwidthStatRow
+	for rows.Next() {
+		var r BandwidthStatRow
+		if err := rows.Scan(&r.RemoteName, &r.Path, &r.Bandwidth, &r.Requests); err != nil {
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}

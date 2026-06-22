@@ -3,11 +3,56 @@
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
 }
 
-.obj-path {
+.tree-controls {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.tree-table .tree-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tree-toggle {
+  display: inline-block;
+  width: 16px;
+  font-size: 0.85em;
+  color: var(--text-muted);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.tree-dir-name {
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+.tree-file-name {
   font-size: 0.85em;
   word-break: break-all;
+}
+
+.tree-dir {
+  cursor: pointer;
+}
+
+.tree-dir:hover {
+  background: var(--bg-elevated);
+}
+
+.tree-summary {
+  font-size: 0.8em;
+  color: var(--text-muted);
+}
+
+.num-cell {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
 }
 
 .hash-cell {
@@ -28,20 +73,6 @@
 
 .btn-evict:hover {
   background: rgba(239, 68, 68, 0.15);
-}
-
-.pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  margin-top: 16px;
-}
-
-.page-info {
-  font-size: 0.85em;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
 }
 
 .btn-sm {

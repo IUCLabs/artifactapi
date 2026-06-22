@@ -28,7 +28,7 @@ func (h *ObjectsHandler) Routes() chi.Router {
 func (h *ObjectsHandler) list(w http.ResponseWriter, r *http.Request) {
 	remoteName := chi.URLParam(r, "name")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 || limit > 5000 {
 		limit = 50
 	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))

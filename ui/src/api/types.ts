@@ -62,6 +62,20 @@ export interface RemoteStatRow {
   requests_30d: number;
 }
 
+export interface FileStatRow {
+  remote_name: string;
+  path: string;
+  access_count: number;
+  size_bytes: number;
+}
+
+export interface BandwidthStatRow {
+  remote_name: string;
+  path: string;
+  bandwidth: number;
+  requests: number;
+}
+
 export interface HealthStatus {
   status: string;
   postgres: string;

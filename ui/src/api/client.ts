@@ -1,4 +1,4 @@
-import type { Remote, Virtual, Artifact, OverviewStats, RemoteStatRow, HealthStatus, ProbeResult } from './types';
+import type { Remote, Virtual, Artifact, OverviewStats, RemoteStatRow, FileStatRow, BandwidthStatRow, HealthStatus, ProbeResult } from './types';
 
 const BASE = '';
 
@@ -19,6 +19,8 @@ export const api = {
   health: () => fetchJSON<HealthStatus>('/api/v2/health'),
   stats: () => fetchJSON<OverviewStats>('/api/v2/stats'),
   topRemotes: () => fetchJSON<RemoteStatRow[]>('/api/v2/stats/top-remotes'),
+  topFilesByHits: () => fetchJSON<FileStatRow[]>('/api/v2/stats/top-files-by-hits'),
+  topFilesByBandwidth: () => fetchJSON<BandwidthStatRow[]>('/api/v2/stats/top-files-by-bandwidth'),
 
   listRemotes: () => fetchJSON<Remote[]>('/api/v2/remotes'),
   getRemote: (name: string) => fetchJSON<Remote>(`/api/v2/remotes/${name}`),

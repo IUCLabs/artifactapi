@@ -58,6 +58,17 @@ func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid package type: %q", remote.PackageType), http.StatusBadRequest)
 		return
 	}
+	if remote.RepoType == "" {
+		remote.RepoType = models.RepoTypeRemote
+	}
+	if !remote.RepoType.Valid() {
+		http.Error(w, fmt.Sprintf("invalid repo type: %q", remote.RepoType), http.StatusBadRequest)
+		return
+	}
+	if remote.RepoType == models.RepoTypeRemote && remote.BaseURL == "" {
+		http.Error(w, "base_url is required for remote repositories", http.StatusBadRequest)
+		return
+	}
 	if err := h.db.CreateRemote(r.Context(), &remote); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

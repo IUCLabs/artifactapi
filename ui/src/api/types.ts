@@ -1,6 +1,7 @@
 export interface Remote {
   name: string;
   package_type: string;
+  repo_type: string;
   base_url: string;
   description: string;
   username?: string;

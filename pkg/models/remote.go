@@ -1,10 +1,42 @@
 package models
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
+
+type RepoType string
+
+const (
+	RepoTypeRemote RepoType = "remote"
+	RepoTypeLocal  RepoType = "local"
+)
+
+var validRepoTypes = map[RepoType]bool{
+	RepoTypeRemote: true,
+	RepoTypeLocal:  true,
+}
+
+func (r RepoType) Valid() bool {
+	return validRepoTypes[r]
+}
+
+func (r RepoType) String() string {
+	return string(r)
+}
+
+func ParseRepoType(s string) (RepoType, error) {
+	rt := RepoType(s)
+	if !rt.Valid() {
+		return "", fmt.Errorf("unknown repo type: %q", s)
+	}
+	return rt, nil
+}
 
 type Remote struct {
 	Name        string      `json:"name"`
 	PackageType PackageType `json:"package_type"`
+	RepoType    RepoType    `json:"repo_type"`
 	BaseURL     string      `json:"base_url"`
 	Description string      `json:"description,omitempty"`
 	Username    string      `json:"-"`

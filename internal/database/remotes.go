@@ -6,7 +6,7 @@ import (
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
-const remoteCols = `name, package_type, base_url, description, username, password,
+const remoteCols = `name, package_type, repo_type, base_url, description, username, password,
 	immutable_ttl, mutable_ttl, check_mutable,
 	patterns, blocklist, mutable_patterns, immutable_patterns,
 	ban_tags_enabled, ban_tags,
@@ -15,7 +15,7 @@ const remoteCols = `name, package_type, base_url, description, username, passwor
 
 func scanRemote(scanner interface{ Scan(...any) error }, r *models.Remote) error {
 	return scanner.Scan(
-		&r.Name, &r.PackageType, &r.BaseURL, &r.Description, &r.Username, &r.Password,
+		&r.Name, &r.PackageType, &r.RepoType, &r.BaseURL, &r.Description, &r.Username, &r.Password,
 		&r.ImmutableTTL, &r.MutableTTL, &r.CheckMutable,
 		&r.Patterns, &r.Blocklist, &r.MutablePatterns, &r.ImmutablePatterns,
 		&r.BanTagsEnabled, &r.BanTags,
@@ -54,15 +54,15 @@ func (db *DB) ListRemotes(ctx context.Context) ([]models.Remote, error) {
 func (db *DB) CreateRemote(ctx context.Context, r *models.Remote) error {
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO remotes (
-			name, package_type, base_url, description, username, password,
+			name, package_type, repo_type, base_url, description, username, password,
 			immutable_ttl, mutable_ttl, check_mutable,
 			patterns, blocklist, mutable_patterns, immutable_patterns,
 			ban_tags_enabled, ban_tags,
 			quarantine_enabled, quarantine_days, stale_on_error,
 			releases_remote, managed_by
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 	`,
-		r.Name, r.PackageType, r.BaseURL, r.Description, r.Username, r.Password,
+		r.Name, r.PackageType, r.RepoType, r.BaseURL, r.Description, r.Username, r.Password,
 		r.ImmutableTTL, r.MutableTTL, r.CheckMutable,
 		r.Patterns, r.Blocklist, r.MutablePatterns, r.ImmutablePatterns,
 		r.BanTagsEnabled, r.BanTags,
@@ -75,15 +75,15 @@ func (db *DB) CreateRemote(ctx context.Context, r *models.Remote) error {
 func (db *DB) UpdateRemote(ctx context.Context, r *models.Remote) error {
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE remotes SET
-			package_type=$2, base_url=$3, description=$4, username=$5, password=$6,
-			immutable_ttl=$7, mutable_ttl=$8, check_mutable=$9,
-			patterns=$10, blocklist=$11, mutable_patterns=$12, immutable_patterns=$13,
-			ban_tags_enabled=$14, ban_tags=$15,
-			quarantine_enabled=$16, quarantine_days=$17, stale_on_error=$18,
-			releases_remote=$19, managed_by=$20, updated_at=NOW()
+			package_type=$2, repo_type=$3, base_url=$4, description=$5, username=$6, password=$7,
+			immutable_ttl=$8, mutable_ttl=$9, check_mutable=$10,
+			patterns=$11, blocklist=$12, mutable_patterns=$13, immutable_patterns=$14,
+			ban_tags_enabled=$15, ban_tags=$16,
+			quarantine_enabled=$17, quarantine_days=$18, stale_on_error=$19,
+			releases_remote=$20, managed_by=$21, updated_at=NOW()
 		WHERE name=$1
 	`,
-		r.Name, r.PackageType, r.BaseURL, r.Description, r.Username, r.Password,
+		r.Name, r.PackageType, r.RepoType, r.BaseURL, r.Description, r.Username, r.Password,
 		r.ImmutableTTL, r.MutableTTL, r.CheckMutable,
 		r.Patterns, r.Blocklist, r.MutablePatterns, r.ImmutablePatterns,
 		r.BanTagsEnabled, r.BanTags,

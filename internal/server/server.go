@@ -91,7 +91,9 @@ func (s *Server) routes() chi.Router {
 	r.Get("/health", s.handleHealth)
 	r.Get("/", s.handleRoot)
 
-	proxyHandler := v1.NewProxyHandler(s.engine, s.virtEngine, s.db)
+	localHandler := v2.NewLocalHandler(s.db, s.store)
+
+	proxyHandler := v1.NewProxyHandler(s.engine, s.virtEngine, s.db, s.store, localHandler)
 	r.Mount("/api/v1", proxyHandler.Routes())
 
 	remotesHandler := v2.NewRemotesHandler(s.db)
@@ -113,6 +115,12 @@ func (s *Server) routes() chi.Router {
 			objHandler := v2.NewObjectsHandler(s.db)
 			r.Get("/", objHandler.Routes().ServeHTTP)
 			r.Delete("/*", objHandler.Routes().ServeHTTP)
+		})
+
+		r.Route("/remotes/{name}/files", func(r chi.Router) {
+			r.Put("/*", localHandler.Routes().ServeHTTP)
+			r.Get("/*", localHandler.Routes().ServeHTTP)
+			r.Delete("/*", localHandler.Routes().ServeHTTP)
 		})
 	})
 

@@ -42,7 +42,8 @@ func (db *DB) migrate() error {
 		CREATE TABLE IF NOT EXISTS remotes (
 			name            TEXT PRIMARY KEY,
 			package_type    TEXT NOT NULL,
-			base_url        TEXT NOT NULL,
+			repo_type       TEXT DEFAULT 'remote',
+			base_url        TEXT NOT NULL DEFAULT '',
 			description     TEXT DEFAULT '',
 			username        TEXT DEFAULT '',
 			password        TEXT DEFAULT '',
@@ -121,6 +122,8 @@ func (db *DB) migrate() error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_access_log_remote_time ON access_log(remote_name, created_at);
+
+		ALTER TABLE remotes ADD COLUMN IF NOT EXISTS repo_type TEXT DEFAULT 'remote';
 	`)
 	return err
 }

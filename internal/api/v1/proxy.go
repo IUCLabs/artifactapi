@@ -115,8 +115,13 @@ func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if remote.PackageType == models.PackageTerraform {
+	switch remote.PackageType {
+	case models.PackageTerraform:
 		if h.serveTerraformMirror(w, r, remote, path) {
+			return
+		}
+	case models.PackagePyPI:
+		if h.servePyPIMirror(w, r, remote, path) {
 			return
 		}
 	}
@@ -142,6 +147,24 @@ func (h *ProxyHandler) serveTerraformMirror(w http.ResponseWriter, r *http.Reque
 		version := strings.TrimSuffix(tail, ".json")
 		if semverRe.MatchString(version) {
 			h.local.ServeTerraformVersionDoc(w, r, remote.Name, namespace, typeName, version)
+			return true
+		}
+	}
+
+	return false
+}
+
+func (h *ProxyHandler) servePyPIMirror(w http.ResponseWriter, r *http.Request, remote *models.Remote, path string) bool {
+	if path == "simple" || path == "simple/" {
+		h.local.ServePyPIIndex(w, r, remote.Name)
+		return true
+	}
+
+	if strings.HasPrefix(path, "simple/") {
+		pkg := strings.TrimPrefix(path, "simple/")
+		pkg = strings.TrimSuffix(pkg, "/")
+		if pkg != "" && !strings.Contains(pkg, "/") {
+			h.local.ServePyPIPackageIndex(w, r, remote.Name, pkg)
 			return true
 		}
 	}

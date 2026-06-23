@@ -99,6 +99,29 @@ func (db *DB) ListLocalFilesByPrefix(ctx context.Context, repoName, prefix strin
 	return files, rows.Err()
 }
 
+func (db *DB) ListLocalFilePackages(ctx context.Context, repoName string) ([]string, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT DISTINCT split_part(file_path, '/', 1)
+		FROM local_files
+		WHERE repo_name = $1
+		ORDER BY 1
+	`, repoName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var packages []string
+	for rows.Next() {
+		var pkg string
+		if err := rows.Scan(&pkg); err != nil {
+			return nil, err
+		}
+		packages = append(packages, pkg)
+	}
+	return packages, rows.Err()
+}
+
 func (db *DB) DeleteLocalFile(ctx context.Context, repoName, filePath string) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM local_files WHERE repo_name = $1 AND file_path = $2`, repoName, filePath)
 	return err

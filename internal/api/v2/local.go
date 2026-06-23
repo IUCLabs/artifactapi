@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,37 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
+
+var pypiFileRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*\.(whl|tar\.gz|zip)$`)
+
+var pypiNormalizeRe = regexp.MustCompile(`[-_.]+`)
+
+func pypiNormalize(name string) string {
+	return strings.ToLower(pypiNormalizeRe.ReplaceAllString(name, "-"))
+}
+
+func pypiPackageFromWheel(filename string) string {
+	parts := strings.SplitN(filename, "-", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	return pypiNormalize(parts[0])
+}
+
+func pypiPackageFromSdist(filename string) string {
+	name := filename
+	for _, suffix := range []string{".tar.gz", ".zip"} {
+		if strings.HasSuffix(name, suffix) {
+			name = strings.TrimSuffix(name, suffix)
+			break
+		}
+	}
+	idx := strings.LastIndex(name, "-")
+	if idx <= 0 {
+		return ""
+	}
+	return pypiNormalize(name[:idx])
+}
 
 var providerZipRe = regexp.MustCompile(
 	`^terraform-provider-([a-zA-Z0-9_-]+)_([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?)_([a-z0-9]+)_([a-z0-9]+)\.zip$`,
@@ -61,8 +93,12 @@ func (h *LocalHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if remote.PackageType == models.PackageTerraform {
+	switch remote.PackageType {
+	case models.PackageTerraform:
 		h.uploadTerraformProvider(w, r, remote, filePath)
+		return
+	case models.PackagePyPI:
+		h.uploadPyPI(w, r, remote, filePath)
 		return
 	}
 
@@ -182,6 +218,135 @@ func (h *LocalHandler) uploadGeneric(w http.ResponseWriter, r *http.Request, rem
 		"content_hash": result.ContentHash,
 		"size_bytes":   result.SizeBytes,
 	})
+}
+
+func (h *LocalHandler) uploadPyPI(w http.ResponseWriter, r *http.Request, remote *models.Remote, filePath string) {
+	filename := filePath
+	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
+		filename = filePath[idx+1:]
+	}
+
+	if !pypiFileRe.MatchString(filename) {
+		http.Error(w, fmt.Sprintf("filename %q must be a .whl, .tar.gz, or .zip file", filename), http.StatusBadRequest)
+		return
+	}
+
+	var pkgName string
+	if strings.HasSuffix(filename, ".whl") {
+		pkgName = pypiPackageFromWheel(filename)
+	} else {
+		pkgName = pypiPackageFromSdist(filename)
+	}
+	if pkgName == "" {
+		http.Error(w, fmt.Sprintf("cannot parse package name from %q", filename), http.StatusBadRequest)
+		return
+	}
+
+	storagePath := pkgName + "/" + filename
+
+	existing, err := h.db.GetLocalFile(r.Context(), remote.Name, storagePath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if existing != nil {
+		http.Error(w, fmt.Sprintf("file %q already exists; overwrites are not allowed", storagePath), http.StatusConflict)
+		return
+	}
+
+	contentType := "application/zip"
+	if strings.HasSuffix(filename, ".tar.gz") {
+		contentType = "application/gzip"
+	}
+
+	result, err := h.cas.Store(r.Context(), r.Body, contentType)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("store failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.db.UpsertBlob(r.Context(), result.ContentHash, result.S3Key, result.SizeBytes, contentType); err != nil {
+		http.Error(w, fmt.Sprintf("record blob: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.db.CreateLocalFile(r.Context(), remote.Name, storagePath, result.ContentHash); err != nil {
+		if errors.Is(err, database.ErrAlreadyExists) {
+			http.Error(w, fmt.Sprintf("file %q already exists; overwrites are not allowed", storagePath), http.StatusConflict)
+			return
+		}
+		http.Error(w, fmt.Sprintf("record file: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"package":      pkgName,
+		"filename":     filename,
+		"content_hash": result.ContentHash,
+		"size_bytes":   result.SizeBytes,
+	})
+}
+
+func (h *LocalHandler) ServePyPIIndex(w http.ResponseWriter, r *http.Request, repoName string) {
+	packages, err := h.db.ListLocalFilePackages(r.Context(), repoName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html>\n<html><body>\n")
+	for _, pkg := range packages {
+		fmt.Fprintf(&b, "<a href=\"%s/\">%s</a>\n", pkg, pkg)
+	}
+	b.WriteString("</body></html>\n")
+
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, b.String())
+}
+
+func (h *LocalHandler) ServePyPIPackageIndex(w http.ResponseWriter, r *http.Request, repoName, packageName string) {
+	normalized := pypiNormalize(packageName)
+	prefix := normalized + "/"
+	files, err := h.db.ListLocalFilesByPrefix(r.Context(), repoName, prefix)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if len(files) == 0 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	body := h.generatePyPIPackageHTML(normalized, files)
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(http.StatusOK)
+	w.Write(body)
+}
+
+func (h *LocalHandler) GeneratePyPIPackageHTML(ctx context.Context, repoName, packageName string) ([]byte, error) {
+	normalized := pypiNormalize(packageName)
+	prefix := normalized + "/"
+	files, err := h.db.ListLocalFilesByPrefix(ctx, repoName, prefix)
+	if err != nil {
+		return nil, err
+	}
+	return h.generatePyPIPackageHTML(normalized, files), nil
+}
+
+func (h *LocalHandler) generatePyPIPackageHTML(packageName string, files []database.LocalFile) []byte {
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html>\n<html><body>\n")
+	for _, f := range files {
+		filename := strings.TrimPrefix(f.FilePath, packageName+"/")
+		hash := strings.TrimPrefix(f.ContentHash, "sha256:")
+		fmt.Fprintf(&b, "<a href=\"../../%s/%s#sha256=%s\">%s</a>\n",
+			packageName, filename, hash, filename)
+	}
+	b.WriteString("</body></html>\n")
+	return []byte(b.String())
 }
 
 func (h *LocalHandler) download(w http.ResponseWriter, r *http.Request) {

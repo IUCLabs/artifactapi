@@ -1,20 +1,37 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api } from '../api/client';
-import type { Virtual } from '../api/types';
+import type { Remote, Virtual } from '../api/types';
 import { Badge } from '../components/Badge';
 import { DataTable } from '../components/DataTable';
 import './Virtuals.css';
 
 export function Virtuals() {
   const [virtuals, setVirtuals] = useState<Virtual[]>([]);
+  const [remoteMap, setRemoteMap] = useState<Record<string, Remote>>({});
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    api.listVirtuals()
-      .then(v => setVirtuals(v || []))
+    Promise.all([api.listVirtuals(), api.listRemotes()])
+      .then(([v, r]) => {
+        setVirtuals(v || []);
+        const map: Record<string, Remote> = {};
+        for (const remote of r || []) {
+          map[remote.name] = remote;
+        }
+        setRemoteMap(map);
+      })
       .finally(() => setLoading(false));
   }, []);
+
+  function memberLink(name: string) {
+    const remote = remoteMap[name];
+    if (remote?.repo_type === 'local') {
+      return `/locals/${name}`;
+    }
+    return `/remotes/${name}`;
+  }
 
   return (
     <div>
@@ -40,7 +57,7 @@ export function Virtuals() {
               key: 'members',
               header: 'Members',
               render: (v: Virtual) => (
-                <span className="member-count">{v.members?.length || 0} remotes</span>
+                <span className="member-count">{v.members?.length || 0} repos</span>
               ),
               width: '110px',
             },
@@ -69,12 +86,17 @@ export function Virtuals() {
           <ul className="member-list">
             {virtuals
               .find(v => v.name === expanded)
-              ?.members?.map((m, i) => (
-                <li key={m}>
-                  <span className="member-priority">{i + 1}</span>
-                  <a href={`/remotes/${m}`} className="mono">{m}</a>
-                </li>
-              ))}
+              ?.members?.map((m, i) => {
+                const remote = remoteMap[m];
+                const typeLabel = remote?.repo_type === 'local' ? 'local' : 'remote';
+                return (
+                  <li key={m}>
+                    <span className="member-priority">{i + 1}</span>
+                    <Link to={memberLink(m)} className="mono">{m}</Link>
+                    <Badge variant={typeLabel === 'local' ? 'yellow' : 'default'}>{typeLabel}</Badge>
+                  </li>
+                );
+              })}
           </ul>
         </div>
       )}

@@ -32,9 +32,10 @@ export function Remotes() {
       .finally(() => setLoading(false));
   }, []);
 
-  const types = [...new Set(remotes.map(r => r.package_type))].sort();
+  const remoteOnly = remotes.filter(r => r.repo_type !== 'local');
+  const types = [...new Set(remoteOnly.map(r => r.package_type))].sort();
 
-  const filtered = remotes.filter(r => {
+  const filtered = remoteOnly.filter(r => {
     if (typeFilter && r.package_type !== typeFilter) return false;
     if (filter && !r.name.toLowerCase().includes(filter.toLowerCase())) return false;
     return true;

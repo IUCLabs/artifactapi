@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useLocation, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import type { Artifact } from '../api/types';
 import { formatBytes, timeAgo, truncateHash } from '../components/format';
@@ -171,6 +171,9 @@ function TreeRow({ node, depth, expanded, onToggle, onEvict }: TreeRowProps) {
 
 export function Objects() {
   const { name } = useParams<{ name: string }>();
+  const location = useLocation();
+  const isLocal = location.pathname.startsWith('/locals/');
+  const backLink = isLocal ? `/locals/${name}` : `/remotes/${name}`;
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -233,7 +236,7 @@ export function Objects() {
   return (
     <div>
       <div className="detail-header">
-        <Link to={`/remotes/${name}`} className="back-link">&larr; {name}</Link>
+        <Link to={backLink} className="back-link">&larr; {name}</Link>
         <h1 className="page-title">Cached Objects</h1>
       </div>
 

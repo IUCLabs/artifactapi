@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"sync"
 
 	"github.com/IUCLabs/artifactapi/internal/database"
@@ -14,18 +13,13 @@ import (
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
-type LocalIndexGenerator interface {
-	GeneratePyPIPackageHTML(ctx context.Context, repoName, packageName string) ([]byte, error)
-}
-
 type Engine struct {
 	db          *database.DB
 	proxyEngine *proxy.Engine
-	localGen    LocalIndexGenerator
 }
 
-func NewEngine(db *database.DB, proxyEngine *proxy.Engine, localGen LocalIndexGenerator) *Engine {
-	return &Engine{db: db, proxyEngine: proxyEngine, localGen: localGen}
+func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
+	return &Engine{db: db, proxyEngine: proxyEngine}
 }
 
 func (e *Engine) Fetch(ctx context.Context, virt models.Virtual, path string, proxyBaseURL string) ([]byte, string, error) {
@@ -80,7 +74,7 @@ func (e *Engine) fetchMemberIndexes(ctx context.Context, virt models.Virtual, pa
 			}
 
 			if remote.RepoType == models.RepoTypeLocal {
-				body, err := e.fetchLocalIndex(ctx, *remote, virt.PackageType, path)
+				body, err := e.fetchLocalIndex(ctx, *remote, path)
 				if err != nil {
 					results[idx] = result{err: fmt.Errorf("local index %q: %w", name, err)}
 					return
@@ -126,19 +120,16 @@ func (e *Engine) fetchMemberIndexes(ctx context.Context, virt models.Virtual, pa
 	return members, nil
 }
 
-func (e *Engine) fetchLocalIndex(ctx context.Context, remote models.Remote, packageType models.PackageType, path string) ([]byte, error) {
-	switch packageType {
-	case models.PackagePyPI:
-		if e.localGen == nil {
-			return nil, fmt.Errorf("no local index generator configured")
-		}
-		parts := strings.SplitN(strings.TrimPrefix(path, "simple/"), "/", 2)
-		pkgName := strings.TrimSuffix(parts[0], "/")
-		if pkgName == "" {
-			return nil, fmt.Errorf("cannot determine package name from path %q", path)
-		}
-		return e.localGen.GeneratePyPIPackageHTML(ctx, remote.Name, pkgName)
-	default:
-		return nil, fmt.Errorf("local index generation not supported for %q", packageType)
+func (e *Engine) fetchLocalIndex(ctx context.Context, remote models.Remote, path string) ([]byte, error) {
+	prov, err := provider.Get(remote.PackageType)
+	if err != nil {
+		return nil, fmt.Errorf("no provider for %q: %w", remote.PackageType, err)
 	}
+
+	indexer, ok := prov.(provider.LocalIndexer)
+	if !ok {
+		return nil, fmt.Errorf("provider %q does not support local index generation", remote.PackageType)
+	}
+
+	return indexer.GenerateLocalIndex(ctx, e.db, remote.Name, path)
 }

@@ -24,6 +24,26 @@ type Provider interface {
 	AuthHeaders(ctx context.Context, remote models.Remote) (http.Header, error)
 }
 
+type FileEntry struct {
+	FilePath    string
+	ContentHash string
+}
+
+type FileStore interface {
+	ListFilesByPrefix(ctx context.Context, repoName, prefix string) ([]FileEntry, error)
+	ListPackages(ctx context.Context, repoName string) ([]string, error)
+}
+
+type LocalUploader interface {
+	ValidateUpload(filePath string) (storagePath, contentType string, err error)
+	UploadResponse(storagePath, contentHash string, sizeBytes int64) map[string]any
+}
+
+type LocalIndexer interface {
+	ServeLocalIndex(w http.ResponseWriter, r *http.Request, files FileStore, repoName, path string) bool
+	GenerateLocalIndex(ctx context.Context, files FileStore, repoName, path string) ([]byte, error)
+}
+
 type IndexMerger interface {
 	MergeIndexes(members []MemberIndex, proxyBaseURL string) ([]byte, error)
 }

@@ -63,7 +63,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 	engine := proxy.NewEngine(db, redis, s3)
 	localHandler := v2.NewLocalHandler(db, s3)
-	virtEngine := virtual.NewEngine(db, engine, localHandler)
+	virtEngine := virtual.NewEngine(db, engine)
 	collector := gc.New(db, s3, 1*time.Hour)
 
 	s := &Server{

@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/IUCLabs/artifactapi/internal/provider"
 )
 
 type LocalFile struct {
@@ -120,6 +122,22 @@ func (db *DB) ListLocalFilePackages(ctx context.Context, repoName string) ([]str
 		packages = append(packages, pkg)
 	}
 	return packages, rows.Err()
+}
+
+func (db *DB) ListFilesByPrefix(ctx context.Context, repoName, prefix string) ([]provider.FileEntry, error) {
+	files, err := db.ListLocalFilesByPrefix(ctx, repoName, prefix)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]provider.FileEntry, len(files))
+	for i, f := range files {
+		result[i] = provider.FileEntry{FilePath: f.FilePath, ContentHash: f.ContentHash}
+	}
+	return result, nil
+}
+
+func (db *DB) ListPackages(ctx context.Context, repoName string) ([]string, error) {
+	return db.ListLocalFilePackages(ctx, repoName)
 }
 
 func (db *DB) DeleteLocalFile(ctx context.Context, repoName, filePath string) error {

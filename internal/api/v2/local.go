@@ -1,55 +1,17 @@
 package v2
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/IUCLabs/artifactapi/internal/database"
+	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/pkg/models"
-)
-
-var pypiFileRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*\.(whl|tar\.gz|zip)$`)
-
-var pypiNormalizeRe = regexp.MustCompile(`[-_.]+`)
-
-func pypiNormalize(name string) string {
-	return strings.ToLower(pypiNormalizeRe.ReplaceAllString(name, "-"))
-}
-
-func pypiPackageFromWheel(filename string) string {
-	parts := strings.SplitN(filename, "-", 3)
-	if len(parts) < 2 {
-		return ""
-	}
-	return pypiNormalize(parts[0])
-}
-
-func pypiPackageFromSdist(filename string) string {
-	name := filename
-	for _, suffix := range []string{".tar.gz", ".zip"} {
-		if strings.HasSuffix(name, suffix) {
-			name = strings.TrimSuffix(name, suffix)
-			break
-		}
-	}
-	idx := strings.LastIndex(name, "-")
-	if idx <= 0 {
-		return ""
-	}
-	return pypiNormalize(name[:idx])
-}
-
-var providerZipRe = regexp.MustCompile(
-	`^terraform-provider-([a-zA-Z0-9_-]+)_([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?)_([a-z0-9]+)_([a-z0-9]+)\.zip$`,
 )
 
 type LocalHandler struct {
@@ -93,45 +55,22 @@ func (h *LocalHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch remote.PackageType {
-	case models.PackageTerraform:
-		h.uploadTerraformProvider(w, r, remote, filePath)
-		return
-	case models.PackagePyPI:
-		h.uploadPyPI(w, r, remote, filePath)
+	prov, _ := provider.Get(remote.PackageType)
+
+	if uploader, ok := prov.(provider.LocalUploader); ok {
+		h.uploadValidated(w, r, remote, filePath, uploader)
 		return
 	}
 
 	h.uploadGeneric(w, r, remote, filePath)
 }
 
-func (h *LocalHandler) uploadTerraformProvider(w http.ResponseWriter, r *http.Request, remote *models.Remote, filePath string) {
-	parts := strings.Split(filePath, "/")
-	if len(parts) != 3 {
-		http.Error(w, "path must be {namespace}/{type}/{filename}.zip", http.StatusBadRequest)
+func (h *LocalHandler) uploadValidated(w http.ResponseWriter, r *http.Request, remote *models.Remote, filePath string, uploader provider.LocalUploader) {
+	storagePath, contentType, err := uploader.ValidateUpload(filePath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	namespace, typeName, filename := parts[0], parts[1], parts[2]
-
-	m := providerZipRe.FindStringSubmatch(filename)
-	if m == nil {
-		http.Error(w, fmt.Sprintf(
-			"filename %q does not match terraform-provider-{type}_{version}_{os}_{arch}.zip",
-			filename,
-		), http.StatusBadRequest)
-		return
-	}
-	fileType, version, os, arch := m[1], m[2], m[3], m[4]
-
-	if fileType != typeName {
-		http.Error(w, fmt.Sprintf(
-			"provider type in filename %q does not match path type %q",
-			fileType, typeName,
-		), http.StatusBadRequest)
-		return
-	}
-
-	storagePath := fmt.Sprintf("%s/%s/%s", namespace, typeName, filename)
 
 	existing, err := h.db.GetLocalFile(r.Context(), remote.Name, storagePath)
 	if err != nil {
@@ -139,20 +78,17 @@ func (h *LocalHandler) uploadTerraformProvider(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if existing != nil {
-		http.Error(w, fmt.Sprintf(
-			"provider %s/%s version %s for %s_%s already exists; overwrites are not allowed",
-			namespace, typeName, version, os, arch,
-		), http.StatusConflict)
+		http.Error(w, fmt.Sprintf("file %q already exists; overwrites are not allowed", storagePath), http.StatusConflict)
 		return
 	}
 
-	result, err := h.cas.Store(r.Context(), r.Body, "application/zip")
+	result, err := h.cas.Store(r.Context(), r.Body, contentType)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("store failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	if err := h.db.UpsertBlob(r.Context(), result.ContentHash, result.S3Key, result.SizeBytes, "application/zip"); err != nil {
+	if err := h.db.UpsertBlob(r.Context(), result.ContentHash, result.S3Key, result.SizeBytes, contentType); err != nil {
 		http.Error(w, fmt.Sprintf("record blob: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -166,15 +102,7 @@ func (h *LocalHandler) uploadTerraformProvider(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"namespace":    namespace,
-		"type":         typeName,
-		"version":      version,
-		"os":           os,
-		"arch":         arch,
-		"content_hash": result.ContentHash,
-		"size_bytes":   result.SizeBytes,
-	})
+	writeJSON(w, http.StatusCreated, uploader.UploadResponse(storagePath, result.ContentHash, result.SizeBytes))
 }
 
 func (h *LocalHandler) uploadGeneric(w http.ResponseWriter, r *http.Request, remote *models.Remote, filePath string) {
@@ -220,141 +148,6 @@ func (h *LocalHandler) uploadGeneric(w http.ResponseWriter, r *http.Request, rem
 	})
 }
 
-func (h *LocalHandler) uploadPyPI(w http.ResponseWriter, r *http.Request, remote *models.Remote, filePath string) {
-	filename := filePath
-	if idx := strings.LastIndex(filePath, "/"); idx >= 0 {
-		filename = filePath[idx+1:]
-	}
-
-	if !pypiFileRe.MatchString(filename) {
-		http.Error(w, fmt.Sprintf("filename %q must be a .whl, .tar.gz, or .zip file", filename), http.StatusBadRequest)
-		return
-	}
-
-	var pkgName string
-	if strings.HasSuffix(filename, ".whl") {
-		pkgName = pypiPackageFromWheel(filename)
-	} else {
-		pkgName = pypiPackageFromSdist(filename)
-	}
-	if pkgName == "" {
-		http.Error(w, fmt.Sprintf("cannot parse package name from %q", filename), http.StatusBadRequest)
-		return
-	}
-
-	storagePath := pkgName + "/" + filename
-
-	existing, err := h.db.GetLocalFile(r.Context(), remote.Name, storagePath)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if existing != nil {
-		http.Error(w, fmt.Sprintf("file %q already exists; overwrites are not allowed", storagePath), http.StatusConflict)
-		return
-	}
-
-	contentType := "application/zip"
-	if strings.HasSuffix(filename, ".tar.gz") {
-		contentType = "application/gzip"
-	}
-
-	result, err := h.cas.Store(r.Context(), r.Body, contentType)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("store failed: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	if err := h.db.UpsertBlob(r.Context(), result.ContentHash, result.S3Key, result.SizeBytes, contentType); err != nil {
-		http.Error(w, fmt.Sprintf("record blob: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	if err := h.db.CreateLocalFile(r.Context(), remote.Name, storagePath, result.ContentHash); err != nil {
-		if errors.Is(err, database.ErrAlreadyExists) {
-			http.Error(w, fmt.Sprintf("file %q already exists; overwrites are not allowed", storagePath), http.StatusConflict)
-			return
-		}
-		http.Error(w, fmt.Sprintf("record file: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"package":      pkgName,
-		"filename":     filename,
-		"content_hash": result.ContentHash,
-		"size_bytes":   result.SizeBytes,
-	})
-}
-
-func (h *LocalHandler) ServePyPIIndex(w http.ResponseWriter, r *http.Request, repoName string) {
-	packages, err := h.db.ListLocalFilePackages(r.Context(), repoName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	var b strings.Builder
-	b.WriteString("<!DOCTYPE html>\n<html><body>\n")
-	for _, pkg := range packages {
-		fmt.Fprintf(&b, "<a href=\"%s/\">%s</a>\n", pkg, pkg)
-	}
-	b.WriteString("</body></html>\n")
-
-	w.Header().Set("Content-Type", "text/html")
-	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, b.String())
-}
-
-func (h *LocalHandler) ServePyPIPackageIndex(w http.ResponseWriter, r *http.Request, repoName, packageName string) {
-	normalized := pypiNormalize(packageName)
-	prefix := normalized + "/"
-	files, err := h.db.ListLocalFilesByPrefix(r.Context(), repoName, prefix)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if len(files) == 0 {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-
-	var b strings.Builder
-	b.WriteString("<!DOCTYPE html>\n<html><body>\n")
-	for _, f := range files {
-		filename := strings.TrimPrefix(f.FilePath, normalized+"/")
-		hash := strings.TrimPrefix(f.ContentHash, "sha256:")
-		fmt.Fprintf(&b, "<a href=\"../../%s/%s#sha256=%s\">%s</a>\n",
-			normalized, filename, hash, filename)
-	}
-	b.WriteString("</body></html>\n")
-
-	w.Header().Set("Content-Type", "text/html")
-	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, b.String())
-}
-
-func (h *LocalHandler) GeneratePyPIPackageHTML(ctx context.Context, repoName, packageName string) ([]byte, error) {
-	normalized := pypiNormalize(packageName)
-	prefix := normalized + "/"
-	files, err := h.db.ListLocalFilesByPrefix(ctx, repoName, prefix)
-	if err != nil {
-		return nil, err
-	}
-
-	var b strings.Builder
-	b.WriteString("<!DOCTYPE html>\n<html><body>\n")
-	for _, f := range files {
-		filename := strings.TrimPrefix(f.FilePath, normalized+"/")
-		hash := strings.TrimPrefix(f.ContentHash, "sha256:")
-		fmt.Fprintf(&b, "<a href=\"%s/%s#sha256=%s\">%s</a>\n",
-			normalized, filename, hash, filename)
-	}
-	b.WriteString("</body></html>\n")
-	return []byte(b.String()), nil
-}
-
 func (h *LocalHandler) download(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "name")
 	filePath := chi.URLParam(r, "*")
@@ -394,74 +187,6 @@ func (h *LocalHandler) remove(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type terraformIndex struct {
-	Versions map[string]json.RawMessage `json:"versions"`
-}
-
-type terraformVersionDoc struct {
-	Archives map[string]terraformArchive `json:"archives"`
-}
-
-type terraformArchive struct {
-	URL    string   `json:"url"`
-	Hashes []string `json:"hashes,omitempty"`
-}
-
-func (h *LocalHandler) ServeTerraformIndex(w http.ResponseWriter, r *http.Request, repoName, namespace, typeName string) {
-	prefix := fmt.Sprintf("%s/%s/", namespace, typeName)
-	files, err := h.db.ListLocalFilesByPrefix(r.Context(), repoName, prefix)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	versions := map[string]json.RawMessage{}
-	for _, f := range files {
-		filename := strings.TrimPrefix(f.FilePath, prefix)
-		m := providerZipRe.FindStringSubmatch(filename)
-		if m == nil {
-			continue
-		}
-		versions[m[2]] = json.RawMessage(`{}`)
-	}
-
-	if len(versions) == 0 {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(terraformIndex{Versions: versions})
-}
-
-func (h *LocalHandler) ServeTerraformVersionDoc(w http.ResponseWriter, r *http.Request, repoName, namespace, typeName, version string) {
-	prefix := fmt.Sprintf("%s/%s/terraform-provider-%s_%s_", namespace, typeName, typeName, version)
-	files, err := h.db.ListLocalFilesByPrefix(r.Context(), repoName, prefix)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	archives := map[string]terraformArchive{}
-	for _, f := range files {
-		filename := strings.TrimPrefix(f.FilePath, fmt.Sprintf("%s/%s/", namespace, typeName))
-		m := providerZipRe.FindStringSubmatch(filename)
-		if m == nil || m[2] != version {
-			continue
-		}
-		platform := m[3] + "_" + m[4]
-		archive := terraformArchive{URL: filename}
-		if f.ContentHash != "" {
-			archive.Hashes = []string{"zh:" + strings.TrimPrefix(f.ContentHash, "sha256:")}
-		}
-		archives[platform] = archive
-	}
-
-	if len(archives) == 0 {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(terraformVersionDoc{Archives: archives})
+func (h *LocalHandler) DB() *database.DB {
+	return h.db
 }

@@ -3,6 +3,7 @@ package terraform
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -18,6 +19,12 @@ func init() {
 }
 
 var versionsRe = regexp.MustCompile(`[^/]+/[^/]+/versions$`)
+
+var providerZipRe = regexp.MustCompile(
+	`^terraform-provider-([a-zA-Z0-9_-]+)_([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?)_([a-z0-9]+)_([a-z0-9]+)\.zip$`,
+)
+
+var semverRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?$`)
 
 type Provider struct{}
 
@@ -85,4 +92,146 @@ func rewriteDownloadURL(originalURL, releasesRemote, proxyBaseURL string) string
 
 func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {
 	return auth.BasicHeaders(remote), nil
+}
+
+func (p *Provider) ValidateUpload(filePath string) (storagePath, contentType string, err error) {
+	parts := strings.Split(filePath, "/")
+	if len(parts) != 3 {
+		return "", "", fmt.Errorf("path must be {namespace}/{type}/{filename}.zip")
+	}
+	namespace, typeName, filename := parts[0], parts[1], parts[2]
+
+	m := providerZipRe.FindStringSubmatch(filename)
+	if m == nil {
+		return "", "", fmt.Errorf("filename %q does not match terraform-provider-{type}_{version}_{os}_{arch}.zip", filename)
+	}
+
+	if m[1] != typeName {
+		return "", "", fmt.Errorf("provider type in filename %q does not match path type %q", m[1], typeName)
+	}
+
+	return fmt.Sprintf("%s/%s/%s", namespace, typeName, filename), "application/zip", nil
+}
+
+func (p *Provider) UploadResponse(storagePath, contentHash string, sizeBytes int64) map[string]any {
+	parts := strings.Split(storagePath, "/")
+	if len(parts) != 3 {
+		return map[string]any{"path": storagePath, "content_hash": contentHash, "size_bytes": sizeBytes}
+	}
+
+	m := providerZipRe.FindStringSubmatch(parts[2])
+	if m == nil {
+		return map[string]any{"path": storagePath, "content_hash": contentHash, "size_bytes": sizeBytes}
+	}
+
+	return map[string]any{
+		"namespace":    parts[0],
+		"type":         parts[1],
+		"version":      m[2],
+		"os":           m[3],
+		"arch":         m[4],
+		"content_hash": contentHash,
+		"size_bytes":   sizeBytes,
+	}
+}
+
+type terraformIndex struct {
+	Versions map[string]json.RawMessage `json:"versions"`
+}
+
+type terraformVersionDoc struct {
+	Archives map[string]terraformArchive `json:"archives"`
+}
+
+type terraformArchive struct {
+	URL    string   `json:"url"`
+	Hashes []string `json:"hashes,omitempty"`
+}
+
+func (p *Provider) ServeLocalIndex(w http.ResponseWriter, r *http.Request, files provider.FileStore, repoName, path string) bool {
+	parts := strings.Split(path, "/")
+	if len(parts) < 3 {
+		return false
+	}
+
+	namespace, typeName := parts[0], parts[1]
+	tail := parts[2]
+
+	if tail == "index.json" {
+		p.serveIndex(w, r, files, repoName, namespace, typeName)
+		return true
+	}
+
+	if strings.HasSuffix(tail, ".json") {
+		version := strings.TrimSuffix(tail, ".json")
+		if semverRe.MatchString(version) {
+			p.serveVersionDoc(w, r, files, repoName, namespace, typeName, version)
+			return true
+		}
+	}
+
+	return false
+}
+
+func (p *Provider) GenerateLocalIndex(ctx context.Context, files provider.FileStore, repoName, path string) ([]byte, error) {
+	return nil, fmt.Errorf("terraform local index generation for virtual repos not supported")
+}
+
+func (p *Provider) serveIndex(w http.ResponseWriter, r *http.Request, files provider.FileStore, repoName, namespace, typeName string) {
+	prefix := fmt.Sprintf("%s/%s/", namespace, typeName)
+	entries, err := files.ListFilesByPrefix(r.Context(), repoName, prefix)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	versions := map[string]json.RawMessage{}
+	for _, f := range entries {
+		filename := strings.TrimPrefix(f.FilePath, prefix)
+		m := providerZipRe.FindStringSubmatch(filename)
+		if m == nil {
+			continue
+		}
+		versions[m[2]] = json.RawMessage(`{}`)
+	}
+
+	if len(versions) == 0 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(terraformIndex{Versions: versions})
+}
+
+func (p *Provider) serveVersionDoc(w http.ResponseWriter, r *http.Request, files provider.FileStore, repoName, namespace, typeName, version string) {
+	prefix := fmt.Sprintf("%s/%s/terraform-provider-%s_%s_", namespace, typeName, typeName, version)
+	entries, err := files.ListFilesByPrefix(r.Context(), repoName, prefix)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	archives := map[string]terraformArchive{}
+	for _, f := range entries {
+		filename := strings.TrimPrefix(f.FilePath, fmt.Sprintf("%s/%s/", namespace, typeName))
+		m := providerZipRe.FindStringSubmatch(filename)
+		if m == nil || m[2] != version {
+			continue
+		}
+		platform := m[3] + "_" + m[4]
+		archive := terraformArchive{URL: filename}
+		if f.ContentHash != "" {
+			archive.Hashes = []string{"zh:" + strings.TrimPrefix(f.ContentHash, "sha256:")}
+		}
+		archives[platform] = archive
+	}
+
+	if len(archives) == 0 {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(terraformVersionDoc{Archives: archives})
 }

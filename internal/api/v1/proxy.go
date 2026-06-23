@@ -6,8 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"regexp"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -17,10 +15,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/internal/virtual"
-	"github.com/IUCLabs/artifactapi/pkg/models"
 )
-
-var semverRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?$`)
 
 type ProxyHandler struct {
 	engine        *proxy.Engine
@@ -115,61 +110,14 @@ func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch remote.PackageType {
-	case models.PackageTerraform:
-		if h.serveTerraformMirror(w, r, remote, path) {
-			return
-		}
-	case models.PackagePyPI:
-		if h.servePyPIMirror(w, r, remote, path) {
+	prov, _ := provider.Get(remote.PackageType)
+	if indexer, ok := prov.(provider.LocalIndexer); ok {
+		if indexer.ServeLocalIndex(w, r, h.db, remote.Name, path) {
 			return
 		}
 	}
 
 	h.serveLocalFile(w, r, localName, path)
-}
-
-func (h *ProxyHandler) serveTerraformMirror(w http.ResponseWriter, r *http.Request, remote *models.Remote, path string) bool {
-	parts := strings.Split(path, "/")
-	if len(parts) < 3 {
-		return false
-	}
-
-	namespace, typeName := parts[0], parts[1]
-	tail := parts[2]
-
-	if tail == "index.json" {
-		h.local.ServeTerraformIndex(w, r, remote.Name, namespace, typeName)
-		return true
-	}
-
-	if strings.HasSuffix(tail, ".json") {
-		version := strings.TrimSuffix(tail, ".json")
-		if semverRe.MatchString(version) {
-			h.local.ServeTerraformVersionDoc(w, r, remote.Name, namespace, typeName, version)
-			return true
-		}
-	}
-
-	return false
-}
-
-func (h *ProxyHandler) servePyPIMirror(w http.ResponseWriter, r *http.Request, remote *models.Remote, path string) bool {
-	if path == "simple" || path == "simple/" {
-		h.local.ServePyPIIndex(w, r, remote.Name)
-		return true
-	}
-
-	if strings.HasPrefix(path, "simple/") {
-		pkg := strings.TrimPrefix(path, "simple/")
-		pkg = strings.TrimSuffix(pkg, "/")
-		if pkg != "" && !strings.Contains(pkg, "/") {
-			h.local.ServePyPIPackageIndex(w, r, remote.Name, pkg)
-			return true
-		}
-	}
-
-	return false
 }
 
 func (h *ProxyHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, repoName, path string) {

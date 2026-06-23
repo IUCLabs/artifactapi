@@ -34,14 +34,15 @@ import (
 )
 
 type Server struct {
-	cfg        *config.Config
-	router     chi.Router
-	db         *database.DB
-	cache      *cache.Redis
-	store      *storage.S3
-	engine     *proxy.Engine
-	virtEngine *virtual.Engine
-	gc         *gc.Collector
+	cfg          *config.Config
+	router       chi.Router
+	db           *database.DB
+	cache        *cache.Redis
+	store        *storage.S3
+	engine       *proxy.Engine
+	virtEngine   *virtual.Engine
+	localHandler *v2.LocalHandler
+	gc           *gc.Collector
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -61,17 +62,19 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	engine := proxy.NewEngine(db, redis, s3)
-	virtEngine := virtual.NewEngine(db, engine)
+	localHandler := v2.NewLocalHandler(db, s3)
+	virtEngine := virtual.NewEngine(db, engine, localHandler)
 	collector := gc.New(db, s3, 1*time.Hour)
 
 	s := &Server{
-		cfg:        cfg,
-		db:         db,
-		cache:      redis,
-		store:      s3,
-		engine:     engine,
-		virtEngine: virtEngine,
-		gc:         collector,
+		cfg:          cfg,
+		db:           db,
+		cache:        redis,
+		store:        s3,
+		engine:       engine,
+		virtEngine:   virtEngine,
+		localHandler: localHandler,
+		gc:           collector,
 	}
 
 	s.router = s.routes()
@@ -91,9 +94,7 @@ func (s *Server) routes() chi.Router {
 	r.Get("/health", s.handleHealth)
 	r.Get("/", s.handleRoot)
 
-	localHandler := v2.NewLocalHandler(s.db, s.store)
-
-	proxyHandler := v1.NewProxyHandler(s.engine, s.virtEngine, s.db, s.store, localHandler)
+	proxyHandler := v1.NewProxyHandler(s.engine, s.virtEngine, s.db, s.store, s.localHandler)
 	r.Mount("/api/v1", proxyHandler.Routes())
 
 	remotesHandler := v2.NewRemotesHandler(s.db)
@@ -118,9 +119,9 @@ func (s *Server) routes() chi.Router {
 		})
 
 		r.Route("/remotes/{name}/files", func(r chi.Router) {
-			r.Put("/*", localHandler.Routes().ServeHTTP)
-			r.Get("/*", localHandler.Routes().ServeHTTP)
-			r.Delete("/*", localHandler.Routes().ServeHTTP)
+			r.Put("/*", s.localHandler.Routes().ServeHTTP)
+			r.Get("/*", s.localHandler.Routes().ServeHTTP)
+			r.Delete("/*", s.localHandler.Routes().ServeHTTP)
 		})
 	})
 

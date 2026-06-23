@@ -320,10 +320,19 @@ func (h *LocalHandler) ServePyPIPackageIndex(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	body := h.generatePyPIPackageHTML(normalized, files)
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html>\n<html><body>\n")
+	for _, f := range files {
+		filename := strings.TrimPrefix(f.FilePath, normalized+"/")
+		hash := strings.TrimPrefix(f.ContentHash, "sha256:")
+		fmt.Fprintf(&b, "<a href=\"../../%s/%s#sha256=%s\">%s</a>\n",
+			normalized, filename, hash, filename)
+	}
+	b.WriteString("</body></html>\n")
+
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(http.StatusOK)
-	w.Write(body)
+	io.WriteString(w, b.String())
 }
 
 func (h *LocalHandler) GeneratePyPIPackageHTML(ctx context.Context, repoName, packageName string) ([]byte, error) {
@@ -333,20 +342,17 @@ func (h *LocalHandler) GeneratePyPIPackageHTML(ctx context.Context, repoName, pa
 	if err != nil {
 		return nil, err
 	}
-	return h.generatePyPIPackageHTML(normalized, files), nil
-}
 
-func (h *LocalHandler) generatePyPIPackageHTML(packageName string, files []database.LocalFile) []byte {
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html>\n<html><body>\n")
 	for _, f := range files {
-		filename := strings.TrimPrefix(f.FilePath, packageName+"/")
+		filename := strings.TrimPrefix(f.FilePath, normalized+"/")
 		hash := strings.TrimPrefix(f.ContentHash, "sha256:")
-		fmt.Fprintf(&b, "<a href=\"../../%s/%s#sha256=%s\">%s</a>\n",
-			packageName, filename, hash, filename)
+		fmt.Fprintf(&b, "<a href=\"%s/%s#sha256=%s\">%s</a>\n",
+			normalized, filename, hash, filename)
 	}
 	b.WriteString("</body></html>\n")
-	return []byte(b.String())
+	return []byte(b.String()), nil
 }
 
 func (h *LocalHandler) download(w http.ResponseWriter, r *http.Request) {

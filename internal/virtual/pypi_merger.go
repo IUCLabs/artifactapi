@@ -36,8 +36,13 @@ func (m *PyPIMerger) MergeIndexes(members []MemberIndex, proxyBaseURL string) ([
 			}
 
 			if proxyBaseURL != "" && href != "" {
-				href = fmt.Sprintf("%s/api/v1/remote/%s/%s",
+				routePrefix := "remote"
+				if member.RepoType == "local" {
+					routePrefix = "local"
+				}
+				href = fmt.Sprintf("%s/api/v1/%s/%s/%s",
 					strings.TrimRight(proxyBaseURL, "/"),
+					routePrefix,
 					member.RemoteName,
 					strings.TrimLeft(href, "/"))
 			}

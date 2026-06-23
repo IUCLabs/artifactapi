@@ -8,6 +8,7 @@ import (
 
 type MemberIndex struct {
 	RemoteName string
+	RepoType   models.RepoType
 	Body       []byte
 }
 

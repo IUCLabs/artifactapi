@@ -3,7 +3,15 @@ when:
 
 steps:
   - name: pre-commit
-    image: golang:1.25
+    image: registry.example.com/example/almalinux9-gobuilder:20260606
     commands:
-      - test -z "$(gofmt -l .)"
-      - go vet ./...
+      - uvx pre-commit run --all-files
+    backend_options:
+      kubernetes:
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 1
+          limits:
+            memory: 2Gi
+            cpu: 2

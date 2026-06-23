@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/IUCLabs/artifactapi/pkg/models"
@@ -42,6 +43,67 @@ type LocalUploader interface {
 type LocalIndexer interface {
 	ServeLocalIndex(w http.ResponseWriter, r *http.Request, files FileStore, repoName, path string) bool
 	GenerateLocalIndex(ctx context.Context, files FileStore, repoName, path string) ([]byte, error)
+}
+
+type BlobReader interface {
+	Download(ctx context.Context, key string) (io.ReadCloser, int64, error)
+}
+
+type PostUploadHook interface {
+	AfterUpload(ctx context.Context, repoName, storagePath, contentHash string, blobs BlobReader, db MetadataStore)
+}
+
+type MetadataStore interface {
+	InsertRPMMetadata(ctx context.Context, meta *RPMMetadata) error
+}
+
+type RPMMetadataReader interface {
+	ListRPMMetadataEntries(ctx context.Context, repoName string) ([]RPMMetadata, error)
+}
+
+type RPMMetadata struct {
+	RepoName      string
+	FilePath      string
+	ContentHash   string
+	Name          string
+	Epoch         int
+	Version       string
+	Release       string
+	Arch          string
+	Summary       string
+	Description   string
+	RPMSize       int64
+	InstalledSize int64
+	License       string
+	Vendor        string
+	Group         string
+	BuildHost     string
+	SourceRPM     string
+	URL           string
+	Packager      string
+	Requires      []RPMDep
+	Provides      []RPMDep
+	Files         []RPMFile
+	Changelogs    []RPMChangelog
+}
+
+type RPMDep struct {
+	Name    string `json:"name"`
+	Flags   string `json:"flags,omitempty"`
+	Epoch   string `json:"epoch,omitempty"`
+	Version string `json:"version,omitempty"`
+	Release string `json:"release,omitempty"`
+}
+
+type RPMFile struct {
+	Path string `json:"path"`
+	Type string `json:"type,omitempty"`
+}
+
+type RPMChangelog struct {
+	Author string `json:"author"`
+	Date   int64  `json:"date"`
+	Text   string `json:"text"`
 }
 
 type IndexMerger interface {

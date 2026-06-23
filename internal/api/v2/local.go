@@ -1,6 +1,7 @@
 package v2
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -58,14 +59,14 @@ func (h *LocalHandler) upload(w http.ResponseWriter, r *http.Request) {
 	prov, _ := provider.Get(remote.PackageType)
 
 	if uploader, ok := prov.(provider.LocalUploader); ok {
-		h.uploadValidated(w, r, remote, filePath, uploader)
+		h.uploadValidated(w, r, remote, filePath, prov, uploader)
 		return
 	}
 
 	h.uploadGeneric(w, r, remote, filePath)
 }
 
-func (h *LocalHandler) uploadValidated(w http.ResponseWriter, r *http.Request, remote *models.Remote, filePath string, uploader provider.LocalUploader) {
+func (h *LocalHandler) uploadValidated(w http.ResponseWriter, r *http.Request, remote *models.Remote, filePath string, prov provider.Provider, uploader provider.LocalUploader) {
 	storagePath, contentType, err := uploader.ValidateUpload(filePath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -100,6 +101,10 @@ func (h *LocalHandler) uploadValidated(w http.ResponseWriter, r *http.Request, r
 		}
 		http.Error(w, fmt.Sprintf("record file: %v", err), http.StatusInternalServerError)
 		return
+	}
+
+	if hook, ok := prov.(provider.PostUploadHook); ok {
+		go hook.AfterUpload(context.Background(), remote.Name, storagePath, result.ContentHash, h, h.db)
 	}
 
 	writeJSON(w, http.StatusCreated, uploader.UploadResponse(storagePath, result.ContentHash, result.SizeBytes))
@@ -189,4 +194,12 @@ func (h *LocalHandler) remove(w http.ResponseWriter, r *http.Request) {
 
 func (h *LocalHandler) DB() *database.DB {
 	return h.db
+}
+
+func (h *LocalHandler) Download(ctx context.Context, key string) (io.ReadCloser, int64, error) {
+	reader, info, err := h.store.Download(ctx, key)
+	if err != nil {
+		return nil, 0, err
+	}
+	return reader, info.Size, nil
 }

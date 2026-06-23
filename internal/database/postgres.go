@@ -124,6 +124,37 @@ func (db *DB) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_access_log_remote_time ON access_log(remote_name, created_at);
 
 		ALTER TABLE remotes ADD COLUMN IF NOT EXISTS repo_type TEXT DEFAULT 'remote';
+
+		CREATE TABLE IF NOT EXISTS rpm_metadata (
+			id              BIGSERIAL PRIMARY KEY,
+			repo_name       TEXT NOT NULL,
+			file_path       TEXT NOT NULL,
+			content_hash    TEXT NOT NULL,
+			name            TEXT NOT NULL,
+			epoch           INTEGER DEFAULT 0,
+			version         TEXT NOT NULL,
+			release         TEXT NOT NULL,
+			arch            TEXT NOT NULL,
+			summary         TEXT DEFAULT '',
+			description     TEXT DEFAULT '',
+			rpm_size        BIGINT DEFAULT 0,
+			installed_size  BIGINT DEFAULT 0,
+			license         TEXT DEFAULT '',
+			vendor          TEXT DEFAULT '',
+			build_group     TEXT DEFAULT '',
+			build_host      TEXT DEFAULT '',
+			source_rpm      TEXT DEFAULT '',
+			url             TEXT DEFAULT '',
+			packager        TEXT DEFAULT '',
+			requires        JSONB DEFAULT '[]',
+			provides        JSONB DEFAULT '[]',
+			files           JSONB DEFAULT '[]',
+			changelogs      JSONB DEFAULT '[]',
+			created_at      TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE(repo_name, file_path)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_rpm_metadata_repo ON rpm_metadata(repo_name);
 	`)
 	return err
 }

@@ -65,11 +65,12 @@ func (m *HelmMerger) MergeIndexes(members []MemberIndex, proxyBaseURL string) ([
 							if baseHost != "" && extractHost(u) != baseHost {
 								continue
 							}
+							relPath := extractPathRelativeToBase(u, member.BaseURL)
 							ver.URLs[i] = fmt.Sprintf("%s/api/v1/%s/%s/%s",
 								strings.TrimRight(proxyBaseURL, "/"),
 								routePrefix,
 								member.RemoteName,
-								extractPath(u))
+								relPath)
 						} else {
 							ver.URLs[i] = fmt.Sprintf("%s/api/v1/%s/%s/%s",
 								strings.TrimRight(proxyBaseURL, "/"),
@@ -100,6 +101,18 @@ func extractHost(rawURL string) string {
 		return rest
 	}
 	return rest[:slashIdx]
+}
+
+func extractPathRelativeToBase(rawURL, baseURL string) string {
+	fullPath := extractPath(rawURL)
+	basePath := extractPath(baseURL)
+	if basePath != "" {
+		basePath = strings.TrimRight(basePath, "/") + "/"
+		if strings.HasPrefix(fullPath, basePath) {
+			return fullPath[len(basePath):]
+		}
+	}
+	return fullPath
 }
 
 func extractPath(rawURL string) string {

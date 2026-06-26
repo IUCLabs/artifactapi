@@ -35,6 +35,7 @@ import (
 
 type Server struct {
 	cfg          *config.Config
+	version      string
 	router       chi.Router
 	db           *database.DB
 	cache        *cache.Redis
@@ -45,7 +46,7 @@ type Server struct {
 	gc           *gc.Collector
 }
 
-func New(cfg *config.Config) (*Server, error) {
+func New(cfg *config.Config, version string) (*Server, error) {
 	db, err := database.New(cfg.DatabaseDSN())
 	if err != nil {
 		return nil, fmt.Errorf("database: %w", err)
@@ -68,6 +69,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 	s := &Server{
 		cfg:          cfg,
+		version:      version,
 		db:           db,
 		cache:        redis,
 		store:        s3,
@@ -138,7 +140,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"name":"artifactapi","version":"3.0.0-dev"}`)
+	fmt.Fprintf(w, `{"name":"artifactapi","version":"%s"}`, s.version)
 }
 
 func (s *Server) newHTTPServer() *http.Server {

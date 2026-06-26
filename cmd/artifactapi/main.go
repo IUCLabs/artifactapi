@@ -13,6 +13,8 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/tui"
 )
 
+var version = "dev"
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "tui" {
 		endpoint := os.Getenv("ARTIFACTAPI_ENDPOINT")
@@ -42,7 +44,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	srv, err := server.New(cfg)
+	srv, err := server.New(cfg, version)
 	if err != nil {
 		slog.Error("failed to create server", "error", err)
 		os.Exit(1)

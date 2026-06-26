@@ -12,7 +12,7 @@ check-go:
 	fi
 
 build: check-go tidy
-	go build -ldflags="-s -w" -o $(BINARY) ./cmd/artifactapi
+	go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(BINARY) ./cmd/artifactapi
 
 test: check-go
 	go test -race -count=1 ./pkg/... ./internal/...

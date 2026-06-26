@@ -67,7 +67,7 @@ func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.engine.Fetch(r.Context(), *remote, path, prov)
+	result, err := h.engine.Fetch(r.Context(), *remote, path, prov, r.Header)
 	if err != nil {
 		var proxyErr *proxy.ProxyError
 		if errors.As(err, &proxyErr) {

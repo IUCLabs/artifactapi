@@ -79,7 +79,7 @@ func (e *Engine) fetchMemberIndexes(ctx context.Context, virt models.Virtual, pa
 					results[idx] = result{err: fmt.Errorf("local index %q: %w", name, err)}
 					return
 				}
-				results[idx] = result{index: MemberIndex{RemoteName: name, RepoType: remote.RepoType, Body: body}}
+				results[idx] = result{index: MemberIndex{RemoteName: name, RepoType: remote.RepoType, BaseURL: remote.BaseURL, Body: body}}
 				return
 			}
 
@@ -102,7 +102,7 @@ func (e *Engine) fetchMemberIndexes(ctx context.Context, virt models.Virtual, pa
 				return
 			}
 
-			results[idx] = result{index: MemberIndex{RemoteName: name, RepoType: remote.RepoType, Body: body}}
+			results[idx] = result{index: MemberIndex{RemoteName: name, RepoType: remote.RepoType, BaseURL: remote.BaseURL, Body: body}}
 		}(i, memberName)
 	}
 

@@ -54,15 +54,26 @@ func (m *HelmMerger) MergeIndexes(members []MemberIndex, proxyBaseURL string) ([
 				seen[chart][ver.Version] = true
 
 				if proxyBaseURL != "" {
+					routePrefix := "remote"
+					if member.RepoType == "local" {
+						routePrefix = "local"
+					}
+					baseHost := extractHost(member.BaseURL)
+
 					for i, u := range ver.URLs {
 						if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
-							ver.URLs[i] = fmt.Sprintf("%s/api/v1/remote/%s/%s",
+							if baseHost != "" && extractHost(u) != baseHost {
+								continue
+							}
+							ver.URLs[i] = fmt.Sprintf("%s/api/v1/%s/%s/%s",
 								strings.TrimRight(proxyBaseURL, "/"),
+								routePrefix,
 								member.RemoteName,
 								extractPath(u))
 						} else {
-							ver.URLs[i] = fmt.Sprintf("%s/api/v1/remote/%s/%s",
+							ver.URLs[i] = fmt.Sprintf("%s/api/v1/%s/%s/%s",
 								strings.TrimRight(proxyBaseURL, "/"),
+								routePrefix,
 								member.RemoteName,
 								u)
 						}
@@ -76,6 +87,19 @@ func (m *HelmMerger) MergeIndexes(members []MemberIndex, proxyBaseURL string) ([
 	}
 
 	return yaml.Marshal(merged)
+}
+
+func extractHost(rawURL string) string {
+	idx := strings.Index(rawURL, "://")
+	if idx == -1 {
+		return ""
+	}
+	rest := rawURL[idx+3:]
+	slashIdx := strings.Index(rest, "/")
+	if slashIdx == -1 {
+		return rest
+	}
+	return rest[:slashIdx]
 }
 
 func extractPath(rawURL string) string {

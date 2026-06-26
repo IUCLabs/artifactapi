@@ -37,6 +37,20 @@ func (h *ProxyHandler) Routes() chi.Router {
 	return r
 }
 
+func (h *ProxyHandler) DockerV2Routes() chi.Router {
+	r := chi.NewRouter()
+	r.Get("/", h.handleDockerPing)
+	r.Head("/", h.handleDockerPing)
+	r.Get("/{remoteName}/*", h.handleProxy)
+	r.Head("/{remoteName}/*", h.handleProxy)
+	return r
+}
+
+func (h *ProxyHandler) handleDockerPing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Docker-Distribution-Api-Version", "registry/2.0")
+	w.WriteHeader(http.StatusOK)
+}
+
 func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	remoteName := chi.URLParam(r, "remoteName")
 	path := chi.URLParam(r, "*")

@@ -96,6 +96,7 @@ func (s *Server) routes() chi.Router {
 
 	proxyHandler := v1.NewProxyHandler(s.engine, s.virtEngine, s.db, s.store, s.localHandler)
 	r.Mount("/api/v1", proxyHandler.Routes())
+	r.Mount("/v2", proxyHandler.DockerV2Routes())
 
 	remotesHandler := v2.NewRemotesHandler(s.db)
 	virtualsHandler := v2.NewVirtualsHandler(s.db)

@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/cache"
@@ -145,6 +147,21 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, &UpstreamError{Err: err}
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		token, err := fetchBearerToken(ctx, resp.Header.Get("Www-Authenticate"), remote)
+		if err == nil && token != "" {
+			req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			req2.Header.Set("Authorization", "Bearer "+token)
+			resp, err = http.DefaultClient.Do(req2)
+			if err != nil {
+				return nil, &UpstreamError{Err: err}
+			}
+		} else {
+			return nil, &ProxyError{Status: http.StatusUnauthorized, Message: "upstream returned 401"}
+		}
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -317,6 +334,71 @@ func (r readerAt) ReadAt(p []byte, off int64) (n int, err error) {
 		err = io.EOF
 	}
 	return
+}
+
+func fetchBearerToken(ctx context.Context, wwwAuth string, remote models.Remote) (string, error) {
+	if !strings.HasPrefix(wwwAuth, "Bearer ") {
+		return "", fmt.Errorf("not a Bearer challenge")
+	}
+
+	params := map[string]string{}
+	for _, part := range strings.Split(wwwAuth[7:], ",") {
+		part = strings.TrimSpace(part)
+		eq := strings.Index(part, "=")
+		if eq < 0 {
+			continue
+		}
+		key := part[:eq]
+		val := strings.Trim(part[eq+1:], `"`)
+		params[key] = val
+	}
+
+	realm := params["realm"]
+	if realm == "" {
+		return "", fmt.Errorf("no realm in Bearer challenge")
+	}
+
+	tokenURL := realm
+	sep := "?"
+	if s, ok := params["service"]; ok {
+		tokenURL += sep + "service=" + s
+		sep = "&"
+	}
+	if s, ok := params["scope"]; ok {
+		tokenURL += sep + "scope=" + s
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL, nil)
+	if err != nil {
+		return "", err
+	}
+
+	if remote.Username != "" && remote.Password != "" {
+		req.SetBasicAuth(remote.Username, remote.Password)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token endpoint returned %d", resp.StatusCode)
+	}
+
+	var tokenResp struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", err
+	}
+
+	if tokenResp.Token != "" {
+		return tokenResp.Token, nil
+	}
+	return tokenResp.AccessToken, nil
 }
 
 type ProxyError struct {

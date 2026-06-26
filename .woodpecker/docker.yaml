@@ -23,7 +23,7 @@ steps:
       dockerfile: ui/Dockerfile.ui
       context: ui
       build_args:
-        - BASE_PATH=/ui
+        BASE_PATH: /ui
       username: droneci
       password:
         from_secret: DRONECI_PASSWORD

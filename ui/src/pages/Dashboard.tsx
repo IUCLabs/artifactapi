@@ -50,6 +50,11 @@ export function Dashboard() {
           value={formatNumber(stats.total_blobs_deduped)}
           sub="shared blobs"
         />
+        <StatsCard
+          label="Bandwidth Saved"
+          value={formatBytes(stats.bandwidth_saved_30d)}
+          sub="last 30 days"
+        />
       </div>
 
       {health && (

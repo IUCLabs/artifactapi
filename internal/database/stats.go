@@ -30,6 +30,15 @@ func (db *DB) GetOverviewStats(ctx context.Context) (*models.OverviewStats, erro
 		return nil, err
 	}
 
+	err = db.Pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(size_bytes), 0)
+		FROM access_log
+		WHERE cache_hit = TRUE AND created_at > NOW() - INTERVAL '30 days'
+	`).Scan(&stats.BandwidthSaved30d)
+	if err != nil {
+		return nil, err
+	}
+
 	return &stats, nil
 }
 

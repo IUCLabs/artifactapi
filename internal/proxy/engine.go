@@ -118,9 +118,10 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	}
 
 	if !locked {
-		time.Sleep(500 * time.Millisecond)
-		result, err := e.serveFromStore(ctx, remote, path)
-		if err == nil {
+		// Another request holds the fetch lock. Poll the store until the leader
+		// populates it rather than immediately racing to fetch upstream too; a
+		// cold-cache stampede otherwise hits upstream once per waiter.
+		if result := e.waitForStore(ctx, remote, path); result != nil {
 			result.Source = "cache"
 			e.logAccess(remote.Name, path, true, result.Size, 0)
 			return result, nil
@@ -378,6 +379,31 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 		Size:        casResult.SizeBytes,
 		Source:      "remote",
 	}, nil
+}
+
+// waitForStore polls the store for an artifact populated by the request that
+// holds the fetch lock, returning it once available or nil if it does not
+// appear within the wait budget (after which the caller fetches upstream
+// itself). It stops early if the request context is cancelled.
+func (e *Engine) waitForStore(ctx context.Context, remote models.Remote, path string) *FetchResult {
+	const (
+		pollInterval = 100 * time.Millisecond
+		maxWait      = 5 * time.Second
+	)
+	deadline := time.Now().Add(maxWait)
+	for {
+		if result, err := e.serveFromStore(ctx, remote, path); err == nil {
+			return result
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(pollInterval):
+		}
+	}
 }
 
 func (e *Engine) serveFromStore(ctx context.Context, remote models.Remote, path string) (*FetchResult, error) {

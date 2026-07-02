@@ -70,6 +70,18 @@ func (r *Redis) GetETag(ctx context.Context, remote, path string) (string, error
 	return val, err
 }
 
+func (r *Redis) GetToken(ctx context.Context, key string) (string, error) {
+	val, err := r.client.Get(ctx, "token:"+key).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	return val, err
+}
+
+func (r *Redis) SetToken(ctx context.Context, key, token string, ttl time.Duration) error {
+	return r.client.Set(ctx, "token:"+key, token, ttl).Err()
+}
+
 func (r *Redis) IncrCircuitFailure(ctx context.Context, remote string, cooldown time.Duration) (int64, error) {
 	key := fmt.Sprintf("circuit:%s", remote)
 	pipe := r.client.Pipeline()

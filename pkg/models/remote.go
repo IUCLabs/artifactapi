@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -64,6 +65,30 @@ type Remote struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ValidatePatterns ensures every configured regex compiles. Storing an
+// invalid pattern would otherwise be silently dropped at match time, which
+// for the blocklist is a fail-open: a mistyped deny rule becomes a no-op.
+func (r *Remote) ValidatePatterns() error {
+	groups := []struct {
+		field    string
+		patterns []string
+	}{
+		{"patterns", r.Patterns},
+		{"blocklist", r.Blocklist},
+		{"mutable_patterns", r.MutablePatterns},
+		{"immutable_patterns", r.ImmutablePatterns},
+		{"ban_tags", r.BanTags},
+	}
+	for _, g := range groups {
+		for _, p := range g.patterns {
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("invalid regex in %s: %q: %w", g.field, p, err)
+			}
+		}
+	}
+	return nil
 }
 
 type RemoteWithStats struct {

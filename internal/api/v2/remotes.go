@@ -69,6 +69,10 @@ func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "base_url is required for remote repositories", http.StatusBadRequest)
 		return
 	}
+	if err := remote.ValidatePatterns(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := h.db.CreateRemote(r.Context(), &remote); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -84,6 +88,10 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	remote.Name = name
+	if err := remote.ValidatePatterns(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := h.db.UpdateRemote(r.Context(), &remote); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -138,16 +138,22 @@ func (db *DB) InsertAccessLogBatch(ctx context.Context, entries []AccessLogEntry
 	return err
 }
 
-func (db *DB) FindOrphanedBlobs(ctx context.Context) ([]models.Blob, error) {
+// FindOrphanedBlobs returns blobs no longer referenced by any artifact or
+// local file, restricted to those created before now()-minAge. The age cutoff
+// is a grace period that avoids a TOCTOU race with in-flight dedup uploads,
+// which insert the blob row before the referencing artifact/local_files row.
+func (db *DB) FindOrphanedBlobs(ctx context.Context, minAge time.Duration) ([]models.Blob, error) {
+	cutoff := time.Now().Add(-minAge)
 	rows, err := db.Pool.Query(ctx, `
 		SELECT b.content_hash, b.s3_key, b.size_bytes, b.content_type, b.created_at
 		FROM blobs b
-		WHERE b.content_hash NOT IN (
+		WHERE b.created_at < $1
+		  AND b.content_hash NOT IN (
 			SELECT content_hash FROM artifacts
 			UNION
 			SELECT content_hash FROM local_files
 		)
-	`)
+	`, cutoff)
 	if err != nil {
 		return nil, err
 	}

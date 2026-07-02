@@ -9,6 +9,11 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/storage"
 )
 
+// blobGracePeriod is how old an orphaned blob must be before GC will delete
+// it. This avoids racing in-flight dedup uploads that insert the blob row
+// before the referencing artifact/local_files row exists.
+const blobGracePeriod = 1 * time.Hour
+
 type Collector struct {
 	db       *database.DB
 	store    *storage.S3
@@ -38,7 +43,7 @@ func (c *Collector) Run(ctx context.Context) {
 func (c *Collector) sweep(ctx context.Context) {
 	start := time.Now()
 
-	orphaned, err := c.db.FindOrphanedBlobs(ctx)
+	orphaned, err := c.db.FindOrphanedBlobs(ctx, blobGracePeriod)
 	if err != nil {
 		slog.Error("gc: find orphaned blobs", "error", err)
 		return

@@ -250,17 +250,8 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 func (e *Engine) serveFromStore(ctx context.Context, remote models.Remote, path string) (*FetchResult, error) {
 	artifact, err := e.db.GetArtifact(ctx, remote.Name, path)
 	if err == nil && artifact != nil {
-		reader, info, err := e.store.Download(ctx, artifact.ContentHash[len("sha256:"):])
-		if err == nil {
-			_ = e.db.TouchArtifactAccess(ctx, remote.Name, path)
-			return &FetchResult{
-				Reader:      reader,
-				ContentType: info.ContentType,
-				Size:        info.Size,
-			}, nil
-		}
 		s3Key := storage.BlobKey(artifact.ContentHash[len("sha256:"):])
-		reader, info, err = e.store.Download(ctx, s3Key)
+		reader, info, err := e.store.Download(ctx, s3Key)
 		if err == nil {
 			_ = e.db.TouchArtifactAccess(ctx, remote.Name, path)
 			return &FetchResult{

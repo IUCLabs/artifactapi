@@ -130,6 +130,87 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	return result, nil
 }
 
+// HeadResult carries artifact metadata for a HEAD request. There is no body.
+type HeadResult struct {
+	ContentType string
+	Size        int64
+	Source      string // "cache" or "remote"
+}
+
+// Head resolves artifact metadata without fetching or streaming the body.
+// Cached artifacts/indexes are answered from the store metadata; on a miss it
+// issues an upstream HEAD. It never downloads or caches the body.
+func (e *Engine) Head(ctx context.Context, remote models.Remote, path string, prov provider.Provider) (*HeadResult, error) {
+	class := NewClassifier(prov).Classify(remote, path)
+	if class == ClassDenied {
+		return nil, &ProxyError{Status: http.StatusForbidden, Message: "access denied"}
+	}
+
+	if artifact, err := e.db.GetArtifact(ctx, remote.Name, path); err == nil && artifact != nil {
+		return &HeadResult{ContentType: artifact.ContentType, Size: artifact.SizeBytes, Source: "cache"}, nil
+	}
+	if info, err := e.store.Stat(ctx, storage.IndexKey(remote.Name, path)); err == nil {
+		return &HeadResult{ContentType: info.ContentType, Size: info.Size, Source: "cache"}, nil
+	}
+
+	return e.headUpstream(ctx, remote, path, prov)
+}
+
+func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider) (*HeadResult, error) {
+	url := prov.UpstreamURL(remote, path)
+
+	authHeaders, err := prov.AuthHeaders(ctx, remote)
+	if err != nil {
+		return nil, fmt.Errorf("auth headers: %w", err)
+	}
+
+	doHead := func(extra http.Header) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		for k, vv := range authHeaders {
+			for _, v := range vv {
+				req.Header.Add(k, v)
+			}
+		}
+		for k, vv := range extra {
+			for _, v := range vv {
+				req.Header.Set(k, v)
+			}
+		}
+		return http.DefaultClient.Do(req)
+	}
+
+	resp, err := doHead(nil)
+	if err != nil {
+		return nil, &UpstreamError{Err: err}
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		token, terr := fetchBearerToken(ctx, resp.Header.Get("Www-Authenticate"), remote)
+		if terr == nil && token != "" {
+			resp, err = doHead(http.Header{"Authorization": []string{"Bearer " + token}})
+			if err != nil {
+				return nil, &UpstreamError{Err: err}
+			}
+		} else {
+			return nil, &ProxyError{Status: http.StatusUnauthorized, Message: "upstream returned 401"}
+		}
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &ProxyError{Status: resp.StatusCode, Message: fmt.Sprintf("upstream returned %d", resp.StatusCode)}
+	}
+
+	contentType := prov.ContentType(path)
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		contentType = ct
+	}
+	return &HeadResult{ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
+}
+
 func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
 	url := prov.UpstreamURL(remote, path)
 

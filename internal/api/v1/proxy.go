@@ -42,7 +42,7 @@ func (h *ProxyHandler) DockerV2Routes() chi.Router {
 	r.Get("/", h.handleDockerPing)
 	r.Head("/", h.handleDockerPing)
 	r.Get("/{remoteName}/*", h.handleProxy)
-	r.Head("/{remoteName}/*", h.handleProxy)
+	r.Head("/{remoteName}/*", h.handleProxyHead)
 	return r
 }
 
@@ -87,6 +87,42 @@ func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	io.Copy(w, result.Reader)
+}
+
+func (h *ProxyHandler) handleProxyHead(w http.ResponseWriter, r *http.Request) {
+	remoteName := chi.URLParam(r, "remoteName")
+	path := chi.URLParam(r, "*")
+
+	remote, err := h.db.GetRemote(r.Context(), remoteName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("remote %q not found", remoteName), http.StatusNotFound)
+		return
+	}
+
+	prov, err := provider.Get(remote.PackageType)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("no provider for %q", remote.PackageType), http.StatusInternalServerError)
+		return
+	}
+
+	result, err := h.engine.Head(r.Context(), *remote, path, prov)
+	if err != nil {
+		var proxyErr *proxy.ProxyError
+		if errors.As(err, &proxyErr) {
+			http.Error(w, proxyErr.Message, proxyErr.Status)
+			return
+		}
+		slog.Error("proxy head failed", "remote", remoteName, "path", path, "error", err)
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", result.ContentType)
+	w.Header().Set("X-Artifact-Source", result.Source)
+	if result.Size > 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", result.Size))
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"regexp"
+	"sync"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/pkg/models"
@@ -60,10 +61,29 @@ func (c *Classifier) Classify(remote models.Remote, path string) Classification 
 	return ClassImmutable
 }
 
+// patternCache memoises regex compilation. Classify runs on every proxied
+// request and previously recompiled each remote's pattern lists every time;
+// keying by the pattern string lets each distinct pattern compile once and
+// then be reused, with no invalidation needed (the pattern text is the key).
+// A pattern that fails to compile is cached as a typed nil so we don't retry.
+var patternCache sync.Map // map[string]*regexp.Regexp
+
+func compileCached(pattern string) *regexp.Regexp {
+	if v, ok := patternCache.Load(pattern); ok {
+		return v.(*regexp.Regexp)
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		re = nil
+	}
+	patternCache.Store(pattern, re)
+	return re
+}
+
 func compilePatterns(patterns []string) []*regexp.Regexp {
 	compiled := make([]*regexp.Regexp, 0, len(patterns))
 	for _, p := range patterns {
-		if re, err := regexp.Compile(p); err == nil {
+		if re := compileCached(p); re != nil {
 			compiled = append(compiled, re)
 		}
 	}

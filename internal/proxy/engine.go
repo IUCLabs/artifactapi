@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -422,8 +423,6 @@ func (e *UpstreamError) Error() string { return fmt.Sprintf("upstream error: %v"
 func (e *UpstreamError) Unwrap() error { return e.Err }
 
 func isNetworkError(err error) bool {
-	if _, ok := err.(*UpstreamError); ok {
-		return true
-	}
-	return false
+	var ue *UpstreamError
+	return errors.As(err, &ue)
 }

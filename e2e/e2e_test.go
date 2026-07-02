@@ -95,7 +95,7 @@ func TestMain(m *testing.M) {
 	}
 	cfg.ListenAddr = "127.0.0.1:0"
 
-	srv, err := server.New(cfg)
+	srv, err := server.New(cfg, "e2e-test")
 	if err != nil {
 		log.Fatalf("server: %v", err)
 	}

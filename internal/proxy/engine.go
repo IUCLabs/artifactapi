@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -233,7 +235,7 @@ func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path st
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
-		token, terr := fetchBearerToken(ctx, resp.Header.Get("Www-Authenticate"), remote)
+		token, _, terr := fetchBearerToken(ctx, resp.Header.Get("Www-Authenticate"), remote)
 		if terr == nil && token != "" {
 			resp, err = doHead(http.Header{"Authorization": []string{"Bearer " + token}})
 			if err != nil {
@@ -513,6 +515,11 @@ const (
 	bearerTokenTTLDefault = 60 * time.Second
 	bearerTokenTTLMargin  = 10 * time.Second
 )
+
+func sha256Hash(data []byte) string {
+	h := sha256.Sum256(data)
+	return hex.EncodeToString(h[:])
+}
 
 // cachedBearerToken returns a bearer token for the given challenge, reusing a
 // Redis-cached token for the same remote+challenge while it is still valid.

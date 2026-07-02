@@ -47,6 +47,11 @@ type Remote struct {
 	MutableTTL   int  `json:"mutable_ttl"`
 	CheckMutable bool `json:"check_mutable"`
 
+	// Upstream HTTP timeouts in seconds. 0 means use the server default.
+	UpstreamDialTimeout           int `json:"upstream_dial_timeout,omitempty"`
+	UpstreamTLSTimeout            int `json:"upstream_tls_timeout,omitempty"`
+	UpstreamResponseHeaderTimeout int `json:"upstream_response_header_timeout,omitempty"`
+
 	Patterns          []string `json:"patterns,omitempty"`
 	Blocklist         []string `json:"blocklist,omitempty"`
 	MutablePatterns   []string `json:"mutable_patterns,omitempty"`

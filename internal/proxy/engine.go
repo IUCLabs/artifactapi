@@ -279,7 +279,7 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 		}
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := clientForRemote(remote).Do(req)
 	if err != nil {
 		return nil, &UpstreamError{Err: err}
 	}
@@ -295,7 +295,7 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 					req2.Header.Set("Accept", accept)
 				}
 			}
-			resp, err = http.DefaultClient.Do(req2)
+			resp, err = clientForRemote(remote).Do(req2)
 			if err != nil {
 				return nil, &UpstreamError{Err: err}
 			}
@@ -452,7 +452,7 @@ func (e *Engine) checkUpstream(ctx context.Context, remote models.Remote, path, 
 		}
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := clientForRemote(remote).Do(req)
 	if err != nil {
 		return false, &UpstreamError{Err: err}
 	}
@@ -579,7 +579,7 @@ func fetchBearerToken(ctx context.Context, wwwAuth string, remote models.Remote)
 		req.SetBasicAuth(remote.Username, remote.Password)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := clientForRemote(remote).Do(req)
 	if err != nil {
 		return "", 0, err
 	}

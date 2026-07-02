@@ -24,6 +24,30 @@ func TestRoot(t *testing.T) {
 	}
 }
 
+func TestRemoteUpstreamTimeouts(t *testing.T) {
+	createRemote(t, `{
+		"name": "timeout-test",
+		"package_type": "generic",
+		"base_url": "https://example.com",
+		"stale_on_error": true,
+		"upstream_dial_timeout": 3,
+		"upstream_tls_timeout": 4,
+		"upstream_response_header_timeout": 5
+	}`)
+	defer deleteRemote(t, "timeout-test")
+
+	remote := getJSON(t, apiURL("/api/v2/remotes/timeout-test"))
+	for field, want := range map[string]float64{
+		"upstream_dial_timeout":            3,
+		"upstream_tls_timeout":             4,
+		"upstream_response_header_timeout": 5,
+	} {
+		if got, _ := remote[field].(float64); got != want {
+			t.Errorf("%s: got %v, want %v", field, remote[field], want)
+		}
+	}
+}
+
 func TestRemoteCRUD(t *testing.T) {
 	createRemote(t, `{
 		"name": "test-generic",

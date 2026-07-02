@@ -11,7 +11,9 @@ const remoteCols = `name, package_type, repo_type, base_url, description, userna
 	patterns, blocklist, mutable_patterns, immutable_patterns,
 	ban_tags_enabled, ban_tags,
 	quarantine_enabled, quarantine_days, stale_on_error,
-	releases_remote, managed_by, created_at, updated_at`
+	releases_remote, managed_by,
+	upstream_dial_timeout, upstream_tls_timeout, upstream_response_header_timeout,
+	created_at, updated_at`
 
 func scanRemote(scanner interface{ Scan(...any) error }, r *models.Remote) error {
 	return scanner.Scan(
@@ -20,7 +22,9 @@ func scanRemote(scanner interface{ Scan(...any) error }, r *models.Remote) error
 		&r.Patterns, &r.Blocklist, &r.MutablePatterns, &r.ImmutablePatterns,
 		&r.BanTagsEnabled, &r.BanTags,
 		&r.QuarantineEnabled, &r.QuarantineDays, &r.StaleOnError,
-		&r.ReleasesRemote, &r.ManagedBy, &r.CreatedAt, &r.UpdatedAt,
+		&r.ReleasesRemote, &r.ManagedBy,
+		&r.UpstreamDialTimeout, &r.UpstreamTLSTimeout, &r.UpstreamResponseHeaderTimeout,
+		&r.CreatedAt, &r.UpdatedAt,
 	)
 }
 
@@ -59,8 +63,9 @@ func (db *DB) CreateRemote(ctx context.Context, r *models.Remote) error {
 			patterns, blocklist, mutable_patterns, immutable_patterns,
 			ban_tags_enabled, ban_tags,
 			quarantine_enabled, quarantine_days, stale_on_error,
-			releases_remote, managed_by
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			releases_remote, managed_by,
+			upstream_dial_timeout, upstream_tls_timeout, upstream_response_header_timeout
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 	`,
 		r.Name, r.PackageType, r.RepoType, r.BaseURL, r.Description, r.Username, r.Password,
 		r.ImmutableTTL, r.MutableTTL, r.CheckMutable,
@@ -68,6 +73,7 @@ func (db *DB) CreateRemote(ctx context.Context, r *models.Remote) error {
 		r.BanTagsEnabled, r.BanTags,
 		r.QuarantineEnabled, r.QuarantineDays, r.StaleOnError,
 		r.ReleasesRemote, r.ManagedBy,
+		r.UpstreamDialTimeout, r.UpstreamTLSTimeout, r.UpstreamResponseHeaderTimeout,
 	)
 	return err
 }
@@ -80,7 +86,9 @@ func (db *DB) UpdateRemote(ctx context.Context, r *models.Remote) error {
 			patterns=$11, blocklist=$12, mutable_patterns=$13, immutable_patterns=$14,
 			ban_tags_enabled=$15, ban_tags=$16,
 			quarantine_enabled=$17, quarantine_days=$18, stale_on_error=$19,
-			releases_remote=$20, managed_by=$21, updated_at=NOW()
+			releases_remote=$20, managed_by=$21,
+			upstream_dial_timeout=$22, upstream_tls_timeout=$23, upstream_response_header_timeout=$24,
+			updated_at=NOW()
 		WHERE name=$1
 	`,
 		r.Name, r.PackageType, r.RepoType, r.BaseURL, r.Description, r.Username, r.Password,
@@ -89,6 +97,7 @@ func (db *DB) UpdateRemote(ctx context.Context, r *models.Remote) error {
 		r.BanTagsEnabled, r.BanTags,
 		r.QuarantineEnabled, r.QuarantineDays, r.StaleOnError,
 		r.ReleasesRemote, r.ManagedBy,
+		r.UpstreamDialTimeout, r.UpstreamTLSTimeout, r.UpstreamResponseHeaderTimeout,
 	)
 	return err
 }

@@ -20,19 +20,63 @@ import (
 
 const fetchLockTTL = 30 * time.Second
 
+const (
+	accessLogBufferSize = 4096
+	accessLogBatchSize  = 128
+	accessLogFlushEvery = 2 * time.Second
+)
+
 type Engine struct {
-	db    *database.DB
-	cache *cache.Redis
-	store *storage.S3
-	cas   *storage.CAS
+	db        *database.DB
+	cache     *cache.Redis
+	store     *storage.S3
+	cas       *storage.CAS
+	accessLog chan database.AccessLogEntry
 }
 
 func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
-	return &Engine{
-		db:    db,
-		cache: c,
-		store: s,
-		cas:   storage.NewCAS(s),
+	e := &Engine{
+		db:        db,
+		cache:     c,
+		store:     s,
+		cas:       storage.NewCAS(s),
+		accessLog: make(chan database.AccessLogEntry, accessLogBufferSize),
+	}
+	go e.runAccessLogWriter()
+	return e
+}
+
+// runAccessLogWriter drains the access-log channel and writes rows in batches,
+// replacing a goroutine-per-request insert. It runs for the process lifetime;
+// access logs are best-effort telemetry, so a small tail may be lost on abrupt
+// shutdown.
+func (e *Engine) runAccessLogWriter() {
+	ticker := time.NewTicker(accessLogFlushEvery)
+	defer ticker.Stop()
+
+	batch := make([]database.AccessLogEntry, 0, accessLogBatchSize)
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := e.db.InsertAccessLogBatch(ctx, batch); err != nil {
+			slog.Warn("access log batch insert failed", "error", err, "count", len(batch))
+		}
+		cancel()
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case entry := <-e.accessLog:
+			batch = append(batch, entry)
+			if len(batch) >= accessLogBatchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
 	}
 }
 
@@ -62,7 +106,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 		result, err := e.serveFromStore(ctx, remote, path)
 		if err == nil {
 			result.Source = "cache"
-			go e.logAccess(remote.Name, path, true, result.Size, 0)
+			e.logAccess(remote.Name, path, true, result.Size, 0)
 			return result, nil
 		}
 		slog.Warn("cache hit but S3 miss, re-fetching", "remote", remote.Name, "path", path)
@@ -78,7 +122,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 		result, err := e.serveFromStore(ctx, remote, path)
 		if err == nil {
 			result.Source = "cache"
-			go e.logAccess(remote.Name, path, true, result.Size, 0)
+			e.logAccess(remote.Name, path, true, result.Size, 0)
 			return result, nil
 		}
 	}
@@ -97,7 +141,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 				result, err := e.serveFromStore(ctx, remote, path)
 				if err == nil {
 					result.Source = "cache"
-					go e.logAccess(remote.Name, path, true, result.Size, 0)
+					e.logAccess(remote.Name, path, true, result.Size, 0)
 					return result, nil
 				}
 			}
@@ -119,14 +163,14 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 			if serr == nil {
 				slog.Warn("serving stale on upstream error", "remote", remote.Name, "path", path, "error", err)
 				stale.Source = "cache"
-				go e.logAccess(remote.Name, path, true, stale.Size, 0)
+				e.logAccess(remote.Name, path, true, stale.Size, 0)
 				return stale, nil
 			}
 		}
 		return nil, err
 	}
 
-	go e.logAccess(remote.Name, path, false, result.Size, upstreamMS)
+	e.logAccess(remote.Name, path, false, result.Size, upstreamMS)
 	return result, nil
 }
 
@@ -403,10 +447,20 @@ func (e *Engine) ttlFor(remote models.Remote, class Classification) time.Duratio
 	}
 }
 
+// logAccess enqueues an access-log entry for the batch writer. It never blocks
+// the request path: if the buffer is full the entry is dropped.
 func (e *Engine) logAccess(remoteName, path string, cacheHit bool, size int64, upstreamMS int) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = e.db.InsertAccessLog(ctx, remoteName, path, cacheHit, size, upstreamMS, "")
+	select {
+	case e.accessLog <- database.AccessLogEntry{
+		RemoteName: remoteName,
+		Path:       path,
+		CacheHit:   cacheHit,
+		SizeBytes:  size,
+		UpstreamMS: upstreamMS,
+	}:
+	default:
+		slog.Warn("access log buffer full, dropping entry", "remote", remoteName, "path", path)
+	}
 }
 
 func bytesReader(data []byte) io.Reader {

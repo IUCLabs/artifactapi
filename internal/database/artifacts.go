@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -106,6 +108,33 @@ func (db *DB) InsertAccessLog(ctx context.Context, remoteName, path string, cach
 		INSERT INTO access_log (remote_name, path, cache_hit, size_bytes, upstream_ms, client_ip)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, remoteName, path, cacheHit, sizeBytes, upstreamMS, clientIP)
+	return err
+}
+
+// AccessLogEntry is one buffered access-log record.
+type AccessLogEntry struct {
+	RemoteName string
+	Path       string
+	CacheHit   bool
+	SizeBytes  int64
+	UpstreamMS int
+	ClientIP   string
+}
+
+// InsertAccessLogBatch bulk-inserts access-log rows with a single COPY.
+func (db *DB) InsertAccessLogBatch(ctx context.Context, entries []AccessLogEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	rows := make([][]any, len(entries))
+	for i, e := range entries {
+		rows[i] = []any{e.RemoteName, e.Path, e.CacheHit, e.SizeBytes, e.UpstreamMS, e.ClientIP}
+	}
+	_, err := db.Pool.CopyFrom(ctx,
+		pgx.Identifier{"access_log"},
+		[]string{"remote_name", "path", "cache_hit", "size_bytes", "upstream_ms", "client_ip"},
+		pgx.CopyFromRows(rows),
+	)
 	return err
 }
 

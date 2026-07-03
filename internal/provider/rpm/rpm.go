@@ -151,6 +151,15 @@ func (p *Provider) AfterUpload(ctx context.Context, repoName, storagePath, conte
 	slog.Info("rpm metadata: parsed", "repo", repoName, "name", meta.Name, "version", meta.Version, "arch", meta.Arch)
 }
 
+func (p *Provider) AfterDelete(ctx context.Context, repoName, storagePath string, db provider.MetadataDeleter) error {
+	if err := db.DeleteRPMMetadata(ctx, repoName, storagePath); err != nil {
+		slog.Error("rpm metadata: delete failed", "repo", repoName, "path", storagePath, "error", err)
+		return err
+	}
+	slog.Info("rpm metadata: deleted", "repo", repoName, "path", storagePath)
+	return nil
+}
+
 func rpmDepFromEntry(e rpmlib.Dependency) provider.RPMDep {
 	dep := provider.RPMDep{Name: e.Name()}
 	if e.Flags() != 0 {

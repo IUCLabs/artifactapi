@@ -185,11 +185,33 @@ func (h *LocalHandler) remove(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "name")
 	filePath := chi.URLParam(r, "*")
 
-	if err := h.db.DeleteLocalFile(r.Context(), repoName, filePath); err != nil {
+	if err := deleteLocalFile(r.Context(), h.db, repoName, filePath); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteLocalFile removes a local file and runs the provider's post-delete hook,
+// so provider-derived state (e.g. RPM metadata that feeds generated repodata)
+// stops referencing a package that no longer exists.
+func deleteLocalFile(ctx context.Context, db *database.DB, repoName, filePath string) error {
+	if err := db.DeleteLocalFile(ctx, repoName, filePath); err != nil {
+		return err
+	}
+
+	remote, err := db.GetRemote(ctx, repoName)
+	if err != nil {
+		return nil // file is gone; no repo left to resolve a cleanup hook from
+	}
+	prov, err := provider.Get(remote.PackageType)
+	if err != nil {
+		return nil
+	}
+	if hook, ok := prov.(provider.PostDeleteHook); ok {
+		return hook.AfterDelete(ctx, repoName, filePath, db)
+	}
+	return nil
 }
 
 func (h *LocalHandler) DB() *database.DB {

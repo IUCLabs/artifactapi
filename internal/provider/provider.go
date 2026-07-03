@@ -53,8 +53,18 @@ type PostUploadHook interface {
 	AfterUpload(ctx context.Context, repoName, storagePath, contentHash string, blobs BlobReader, db MetadataStore)
 }
 
+// PostDeleteHook lets a provider clean up derived state (e.g. RPM metadata that
+// feeds generated repodata) after a local file is removed.
+type PostDeleteHook interface {
+	AfterDelete(ctx context.Context, repoName, storagePath string, db MetadataDeleter) error
+}
+
 type MetadataStore interface {
 	InsertRPMMetadata(ctx context.Context, meta *RPMMetadata) error
+}
+
+type MetadataDeleter interface {
+	DeleteRPMMetadata(ctx context.Context, repoName, filePath string) error
 }
 
 type RPMMetadataReader interface {

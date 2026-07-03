@@ -32,6 +32,11 @@ func (db *DB) InsertRPMMetadata(ctx context.Context, meta *provider.RPMMetadata)
 	return err
 }
 
+func (db *DB) DeleteRPMMetadata(ctx context.Context, repoName, filePath string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM rpm_metadata WHERE repo_name = $1 AND file_path = $2`, repoName, filePath)
+	return err
+}
+
 type RPMMetadataRow struct {
 	RepoName      string
 	FilePath      string

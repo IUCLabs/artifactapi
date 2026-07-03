@@ -75,7 +75,7 @@ func (h *ObjectsHandler) evictLocal(w http.ResponseWriter, r *http.Request) {
 	repoName := chi.URLParam(r, "name")
 	path := chi.URLParam(r, "*")
 
-	if err := h.db.DeleteLocalFile(r.Context(), repoName, path); err != nil {
+	if err := deleteLocalFile(r.Context(), h.db, repoName, path); err != nil {
 		http.Error(w, fmt.Sprintf("evict failed: %v", err), http.StatusInternalServerError)
 		return
 	}

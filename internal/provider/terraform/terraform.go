@@ -26,6 +26,27 @@ var providerZipRe = regexp.MustCompile(
 
 var semverRe = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?$`)
 
+// ParsedProviderZip describes a terraform-provider-{type}_{version}_{os}_{arch}.zip
+// filename. Ok is false when the name doesn't match that convention.
+type ParsedProviderZip struct {
+	Type    string
+	Version string
+	OS      string
+	Arch    string
+	Ok      bool
+}
+
+// ParseProviderZip extracts the type, version and platform from a provider zip
+// filename (the base name, not a full path). It's the canonical parser shared by
+// the network-mirror index and the provider registry handler.
+func ParseProviderZip(filename string) ParsedProviderZip {
+	m := providerZipRe.FindStringSubmatch(filename)
+	if m == nil {
+		return ParsedProviderZip{}
+	}
+	return ParsedProviderZip{Type: m[1], Version: m[2], OS: m[3], Arch: m[4], Ok: true}
+}
+
 type Provider struct{}
 
 func (p *Provider) Type() models.PackageType { return models.PackageTerraform }

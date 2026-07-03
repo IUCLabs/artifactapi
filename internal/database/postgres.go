@@ -158,6 +158,13 @@ func (db *DB) migrate() error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_rpm_metadata_repo ON rpm_metadata(repo_name);
+
+		CREATE TABLE IF NOT EXISTS signing_keys (
+			purpose             TEXT PRIMARY KEY,
+			private_key_armor   TEXT NOT NULL,
+			key_id              TEXT NOT NULL,
+			created_at          TIMESTAMPTZ DEFAULT NOW()
+		);
 	`)
 	return err
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	tfregistry "github.com/IUCLabs/artifactapi/internal/api/terraform"
 	v1 "github.com/IUCLabs/artifactapi/internal/api/v1"
 	v2 "github.com/IUCLabs/artifactapi/internal/api/v2"
 	"github.com/IUCLabs/artifactapi/internal/cache"
@@ -30,6 +31,7 @@ import (
 	_ "github.com/IUCLabs/artifactapi/internal/provider/terraform"
 	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/internal/storage"
+	"github.com/IUCLabs/artifactapi/internal/tfsign"
 	"github.com/IUCLabs/artifactapi/internal/virtual"
 )
 
@@ -43,6 +45,7 @@ type Server struct {
 	engine       *proxy.Engine
 	virtEngine   *virtual.Engine
 	localHandler *v2.LocalHandler
+	tfRegistry   *tfregistry.Handler
 	gc           *gc.Collector
 }
 
@@ -67,6 +70,25 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	virtEngine := virtual.NewEngine(db, engine)
 	collector := gc.New(db, s3, 1*time.Hour)
 
+	// The terraform registry signs with a GPG key. A configured file wins (BYO
+	// key); otherwise artifactapi generates one on first start and persists it in
+	// the database so every replica shares it. A failure here must not take the
+	// server down — the registry just stays disabled.
+	var signer *tfsign.Signer
+	if cfg.TFSigningKeyPath != "" {
+		signer, err = tfsign.Load(cfg.TFSigningKeyPath, cfg.TFSigningKeyPassphrase)
+	} else {
+		signer, err = tfsign.LoadOrCreate(context.Background(), db, "terraform-provider")
+	}
+	if err != nil {
+		slog.Warn("terraform provider registry disabled", "error", err)
+		signer = nil
+	}
+	tfRegistry := tfregistry.NewHandler(db, signer, cfg.TFProviderProtocols)
+	if tfRegistry.Enabled() {
+		slog.Info("terraform provider registry enabled", "key_id", signer.KeyID())
+	}
+
 	s := &Server{
 		cfg:          cfg,
 		version:      version,
@@ -76,6 +98,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		engine:       engine,
 		virtEngine:   virtEngine,
 		localHandler: localHandler,
+		tfRegistry:   tfRegistry,
 		gc:           collector,
 	}
 
@@ -96,6 +119,11 @@ func (s *Server) routes() chi.Router {
 	r.Get("/health", s.handleHealth)
 	r.Get("/", s.handleRoot)
 	r.Get("/version", s.handleVersion)
+
+	// Terraform provider registry: service discovery at the well-known path,
+	// providers.v1 protocol under /terraform/v1/providers.
+	r.Get("/.well-known/terraform.json", s.tfRegistry.ServiceDiscovery)
+	r.Mount(tfregistry.MountPath, s.tfRegistry.Routes())
 
 	proxyHandler := v1.NewProxyHandler(s.engine, s.virtEngine, s.db, s.store, s.localHandler)
 	r.Mount("/api/v1", proxyHandler.Routes())

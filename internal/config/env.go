@@ -24,6 +24,14 @@ type Config struct {
 	S3Bucket    string
 	S3Secure    bool
 	S3Region    string
+
+	// Terraform provider registry signing. When TFSigningKeyPath points at a
+	// readable armored GPG private key, artifactapi serves local terraform
+	// repos as a real provider registry (service discovery + signed
+	// SHA256SUMS). Left empty, the registry endpoints stay disabled.
+	TFSigningKeyPath       string
+	TFSigningKeyPassphrase string
+	TFProviderProtocols    string
 }
 
 func (c *Config) DatabaseDSN() string {
@@ -59,6 +67,10 @@ func Load() (*Config, error) {
 		S3Bucket:    getenv("MINIO_BUCKET", "artifacts"),
 		S3Secure:    s3Secure,
 		S3Region:    getenv("MINIO_REGION", ""),
+
+		TFSigningKeyPath:       getenv("TF_SIGNING_KEY_PATH", ""),
+		TFSigningKeyPassphrase: getenv("TF_SIGNING_KEY_PASSPHRASE", ""),
+		TFProviderProtocols:    getenv("TF_PROVIDER_PROTOCOLS", "5.0,6.0"),
 	}
 
 	return cfg, nil

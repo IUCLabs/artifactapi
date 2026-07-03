@@ -129,13 +129,32 @@ func req(t *testing.T, method, path string, body string) (*http.Response, []byte
 	return resp, b
 }
 
+// reqNoRedirect issues a request without following redirects so the response's
+// status and Location header can be asserted directly.
+func reqNoRedirect(t *testing.T, method, path string) *http.Response {
+	t.Helper()
+	rq, _ := http.NewRequest(method, testTS.URL+path, nil)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Do(rq)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	resp.Body.Close()
+	return resp
+}
+
 func TestServerHealthAndRoot(t *testing.T) {
 	requireStack(t)
 	if resp, _ := req(t, "GET", "/health", ""); resp.StatusCode != 200 {
 		t.Errorf("health: %d", resp.StatusCode)
 	}
-	if resp, b := req(t, "GET", "/", ""); resp.StatusCode != 200 || !strings.Contains(string(b), "test-version") {
-		t.Errorf("root: %d %s", resp.StatusCode, b)
+	if resp := reqNoRedirect(t, "GET", "/"); resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/ui/" {
+		t.Errorf("root redirect: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp, b := req(t, "GET", "/version", ""); resp.StatusCode != 200 || !strings.Contains(string(b), "test-version") {
+		t.Errorf("version: %d %s", resp.StatusCode, b)
 	}
 	if resp, _ := req(t, "GET", "/api/v2/health", ""); resp.StatusCode != 200 {
 		t.Errorf("health v2: %d", resp.StatusCode)

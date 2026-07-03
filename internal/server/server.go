@@ -95,6 +95,7 @@ func (s *Server) routes() chi.Router {
 
 	r.Get("/health", s.handleHealth)
 	r.Get("/", s.handleRoot)
+	r.Get("/version", s.handleVersion)
 
 	proxyHandler := v1.NewProxyHandler(s.engine, s.virtEngine, s.db, s.store, s.localHandler)
 	r.Mount("/api/v1", proxyHandler.Routes())
@@ -143,7 +144,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"status":"ok"}`)
 }
 
+// handleRoot sends browsers landing on the bare domain to the web UI, which is
+// served under /ui. The service identity that used to live here is at /version.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/ui/", http.StatusFound)
+}
+
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, `{"name":"artifactapi","version":"%s"}`, s.version)

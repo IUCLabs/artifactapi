@@ -1,0 +1,18 @@
+# Overlay for the dockerised end-to-end suite (scripts/docker-e2e.sh).
+# Adds a static mock upstream that the artifactapi container proxies, so the
+# caching tests are hermetic and need no internet access.
+services:
+  mockupstream:
+    image: nginx:alpine
+    volumes:
+      - ./e2e-docker/fixtures:/usr/share/nginx/html:ro,z
+    # No host port needed: only the artifactapi container talks to it, and the
+    # tests compare served bytes against the on-disk fixtures.
+
+  artifactapi:
+    # The host port is set via ARTIFACTAPI_PORT (see scripts/docker-e2e.sh),
+    # defaulting to 8000; the e2e run uses 8001 to avoid colliding with a
+    # locally-running instance.
+    depends_on:
+      mockupstream:
+        condition: service_started

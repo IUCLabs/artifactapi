@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt e2e docker docker-ui compose clean tidy check-go
+.PHONY: build test lint fmt e2e docker-e2e docker docker-ui compose clean tidy check-go
 
 BINARY := bin/artifactapi
 MODULE := github.com/IUCLabs/artifactapi
@@ -27,6 +27,11 @@ fmt: check-go
 
 e2e: check-go
 	TESTCONTAINERS_RYUK_DISABLED=true go test -tags=e2e -race -count=1 -timeout=5m ./e2e/...
+
+# Build the container, bring up the full docker-compose stack + a mock upstream,
+# and run the black-box suite against the running product.
+docker-e2e: check-go
+	./scripts/docker-e2e.sh
 
 docker:
 	docker build -t artifactapi:$(VERSION) .

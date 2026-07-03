@@ -2,7 +2,7 @@ services:
   artifactapi:
     build: .
     ports:
-      - "8000:8000"
+      - "${ARTIFACTAPI_PORT:-8000}:8000"
     environment:
       LISTEN_ADDR: ":8000"
       DBHOST: postgres

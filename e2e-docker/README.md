@@ -1,0 +1,39 @@
+# Dockerised end-to-end suite
+
+Black-box tests that run against a fully **containerised** artifactapi stack
+(built image + Postgres + Redis + MinIO) plus a static mock upstream. Unlike the
+in-process `e2e/` suite (testcontainers, server run in-process), these only speak
+HTTP to the running product, so they exercise the shipped container image.
+
+## Run
+
+```bash
+make docker-e2e          # build image, compose up, run suite, compose down
+```
+
+`scripts/docker-e2e.sh` builds and starts `docker-compose.yml` +
+`docker-compose.e2e.yml`, waits for `/health`, then runs
+`go test -tags=dockere2e ./e2e-docker/...` and tears everything down.
+
+The stack publishes artifactapi on host port **8001** (to avoid colliding with a
+local instance on 8000). Override with `ARTIFACTAPI_URL` to point the tests at an
+already-running stack.
+
+## Coverage
+
+- **Repository lifecycle** — add / change / delete for remote, local and virtual repos.
+- **Caching** — one immutable artifact per remote package type (generic, docker,
+  helm, pypi, npm, rpm, alpine, puppet, terraform, goproxy) proxied through the
+  mock upstream: first fetch `X-Artifact-Source: remote`, second `cache`, bytes
+  verified against the origin fixture.
+- **Local uploads** — generic (upload/download), pypi (wheel + generated `simple/`
+  index), rpm (real package + **automatic repodata** generation).
+- **Virtual repositories** — pypi simple-index merge and helm `index.yaml` merge
+  across two members.
+
+## Fixtures
+
+`fixtures/` is served by the mock upstream at its web root. Paths mirror each
+provider's upstream URL layout (e.g. `v2/...` for docker, `v1/providers/...` for
+terraform). The RPM under `fixtures/rpmrepo/Packages/` is a real package so the
+rpm provider can parse its metadata for repodata generation.

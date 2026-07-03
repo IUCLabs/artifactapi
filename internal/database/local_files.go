@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
+	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
 type LocalFile struct {
@@ -76,6 +77,40 @@ func (db *DB) ListLocalFiles(ctx context.Context, repoName string, limit, offset
 		files = append(files, f)
 	}
 	return files, rows.Err()
+}
+
+// ListLocalArtifacts returns a repo's local files shaped as models.Artifact so
+// the UI's cached-objects view can render them the same way as remote artifacts.
+// Local files carry no access/fetch counters, so those are left at zero and the
+// timestamps are all derived from created_at.
+func (db *DB) ListLocalArtifacts(ctx context.Context, repoName string, limit, offset int) ([]models.Artifact, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT lf.id, lf.repo_name, lf.file_path, lf.content_hash,
+			lf.created_at, b.size_bytes, b.content_type
+		FROM local_files lf
+		JOIN blobs b ON lf.content_hash = b.content_hash
+		WHERE lf.repo_name = $1
+		ORDER BY lf.file_path
+		LIMIT $2 OFFSET $3
+	`, repoName, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var artifacts []models.Artifact
+	for rows.Next() {
+		var a models.Artifact
+		var createdAt time.Time
+		if err := rows.Scan(&a.ID, &a.RemoteName, &a.Path, &a.ContentHash, &createdAt, &a.SizeBytes, &a.ContentType); err != nil {
+			return nil, err
+		}
+		a.FirstSeenAt = createdAt
+		a.LastFetchedAt = createdAt
+		a.LastAccessedAt = createdAt
+		artifacts = append(artifacts, a)
+	}
+	return artifacts, rows.Err()
 }
 
 func (db *DB) ListLocalFilesByPrefix(ctx context.Context, repoName, prefix string) ([]LocalFile, error) {

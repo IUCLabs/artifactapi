@@ -34,6 +34,12 @@ export const api = {
   evictObject: (remote: string, path: string) =>
     fetchJSON<void>(`/api/v2/remotes/${remote}/objects/${path}`, { method: 'DELETE' }),
 
+  listLocalObjects: (name: string, page = 1, perPage = 50) =>
+    fetchJSON<Artifact[]>(`/api/v2/locals/${name}/objects?page=${page}&per_page=${perPage}`),
+
+  evictLocalObject: (name: string, path: string) =>
+    fetchJSON<void>(`/api/v2/locals/${name}/objects/${path}`, { method: 'DELETE' }),
+
   flushRemoteCache: (remote: string) =>
     fetchJSON<void>(`/api/v2/remotes/${remote}/cache`, { method: 'DELETE' }),
 

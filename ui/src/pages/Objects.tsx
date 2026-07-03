@@ -182,16 +182,17 @@ export function Objects() {
   const load = useCallback(() => {
     if (!name) return;
     setLoading(true);
-    api.listObjects(name, 1, 5000)
+    const req = isLocal ? api.listLocalObjects(name, 1, 5000) : api.listObjects(name, 1, 5000);
+    req
       .then(a => setArtifacts(a || []))
       .finally(() => setLoading(false));
-  }, [name]);
+  }, [name, isLocal]);
 
   useEffect(() => { load(); }, [load]);
 
   const handleEvict = async (path: string) => {
     if (!name || !confirm(`Evict ${path}?`)) return;
-    await api.evictObject(name, path);
+    await (isLocal ? api.evictLocalObject(name, path) : api.evictObject(name, path));
     load();
   };
 

@@ -24,7 +24,6 @@ type ProxyHandler struct {
 	store         *storage.S3
 	local         *v2.LocalHandler
 	cas           *storage.CAS
-	uploads       *uploadStore
 }
 
 func NewProxyHandler(engine *proxy.Engine, virtualEngine *virtual.Engine, db *database.DB, store *storage.S3, local *v2.LocalHandler) *ProxyHandler {
@@ -35,7 +34,6 @@ func NewProxyHandler(engine *proxy.Engine, virtualEngine *virtual.Engine, db *da
 		store:         store,
 		local:         local,
 		cas:           storage.NewCAS(store),
-		uploads:       newUploadStore(),
 	}
 }
 

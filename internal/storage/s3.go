@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -96,4 +97,19 @@ func (s *S3) Stat(ctx context.Context, key string) (*minio.ObjectInfo, error) {
 		return nil, err
 	}
 	return &info, nil
+}
+
+// ListStaleObjects returns keys under prefix last modified before cutoff. Used
+// by the GC to reap abandoned staging objects (e.g. cancelled docker pushes).
+func (s *S3) ListStaleObjects(ctx context.Context, prefix string, cutoff time.Time) ([]string, error) {
+	var keys []string
+	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+		if obj.Err != nil {
+			return nil, obj.Err
+		}
+		if obj.LastModified.Before(cutoff) {
+			keys = append(keys, obj.Key)
+		}
+	}
+	return keys, nil
 }

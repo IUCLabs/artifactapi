@@ -14,6 +14,11 @@ import (
 // before the referencing artifact/local_files row exists.
 const blobGracePeriod = 1 * time.Hour
 
+// uploadGracePeriod is how long a docker blob-upload staging object
+// (uploads/<uuid>) may sit idle before GC treats it as an abandoned push and
+// reaps it. Generous so a slow but live push is never cut off mid-flight.
+const uploadGracePeriod = 24 * time.Hour
+
 type Collector struct {
 	db       *database.DB
 	store    *storage.S3
@@ -43,6 +48,8 @@ func (c *Collector) Run(ctx context.Context) {
 func (c *Collector) sweep(ctx context.Context) {
 	start := time.Now()
 
+	c.sweepUploads(ctx)
+
 	orphaned, err := c.db.FindOrphanedBlobs(ctx, blobGracePeriod)
 	if err != nil {
 		slog.Error("gc: find orphaned blobs", "error", err)
@@ -68,5 +75,26 @@ func (c *Collector) sweep(ctx context.Context) {
 			"deleted", deleted,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
+	}
+}
+
+// sweepUploads reaps docker blob-upload staging objects abandoned longer than
+// uploadGracePeriod (cancelled or interrupted pushes that never finalised).
+func (c *Collector) sweepUploads(ctx context.Context) {
+	stale, err := c.store.ListStaleObjects(ctx, "uploads/", time.Now().Add(-uploadGracePeriod))
+	if err != nil {
+		slog.Error("gc: list stale uploads", "error", err)
+		return
+	}
+	reaped := 0
+	for _, key := range stale {
+		if err := c.store.Delete(ctx, key); err != nil {
+			slog.Warn("gc: delete stale upload", "key", key, "error", err)
+			continue
+		}
+		reaped++
+	}
+	if reaped > 0 {
+		slog.Info("gc: reaped stale docker uploads", "count", reaped)
 	}
 }

@@ -38,6 +38,20 @@ func (db *DB) CreateLocalFile(ctx context.Context, repoName, filePath, contentHa
 	return nil
 }
 
+// UpsertLocalFile inserts a local file or repoints an existing path at a new
+// blob. Unlike CreateLocalFile it never errors on a duplicate path — it is for
+// mutable references such as Docker tags, where re-pushing a tag must move it to
+// the newly-pushed manifest rather than being rejected as an overwrite.
+func (db *DB) UpsertLocalFile(ctx context.Context, repoName, filePath, contentHash string) error {
+	_, err := db.Pool.Exec(ctx, `
+		INSERT INTO local_files (repo_name, file_path, content_hash)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (repo_name, file_path)
+		DO UPDATE SET content_hash = EXCLUDED.content_hash, created_at = NOW()
+	`, repoName, filePath, contentHash)
+	return err
+}
+
 func (db *DB) GetLocalFile(ctx context.Context, repoName, filePath string) (*LocalFile, error) {
 	row := db.Pool.QueryRow(ctx, `
 		SELECT id, repo_name, file_path, content_hash, created_at

@@ -23,10 +23,20 @@ type ProxyHandler struct {
 	db            *database.DB
 	store         *storage.S3
 	local         *v2.LocalHandler
+	cas           *storage.CAS
+	uploads       *uploadStore
 }
 
 func NewProxyHandler(engine *proxy.Engine, virtualEngine *virtual.Engine, db *database.DB, store *storage.S3, local *v2.LocalHandler) *ProxyHandler {
-	return &ProxyHandler{engine: engine, virtualEngine: virtualEngine, db: db, store: store, local: local}
+	return &ProxyHandler{
+		engine:        engine,
+		virtualEngine: virtualEngine,
+		db:            db,
+		store:         store,
+		local:         local,
+		cas:           storage.NewCAS(store),
+		uploads:       newUploadStore(),
+	}
 }
 
 func (h *ProxyHandler) Routes() chi.Router {
@@ -37,12 +47,20 @@ func (h *ProxyHandler) Routes() chi.Router {
 	return r
 }
 
+// DockerV2Routes mounts the Docker Registry HTTP API V2. Reads (GET/HEAD)
+// dispatch to a local registry implementation for local docker repos and fall
+// through to the upstream proxy otherwise; writes (POST/PATCH/PUT/DELETE) are
+// only valid for local docker repos and drive push.
 func (h *ProxyHandler) DockerV2Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.handleDockerPing)
 	r.Head("/", h.handleDockerPing)
-	r.Get("/{remoteName}/*", h.handleProxy)
-	r.Head("/{remoteName}/*", h.handleProxyHead)
+	r.Get("/{remoteName}/*", h.dockerGet)
+	r.Head("/{remoteName}/*", h.dockerHead)
+	r.Post("/{remoteName}/*", h.dockerPost)
+	r.Patch("/{remoteName}/*", h.dockerPatch)
+	r.Put("/{remoteName}/*", h.dockerPut)
+	r.Delete("/{remoteName}/*", h.dockerDelete)
 	return r
 }
 

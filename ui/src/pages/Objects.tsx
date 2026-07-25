@@ -3,6 +3,7 @@ import { useParams, useLocation, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import type { Artifact } from '../api/types';
 import { formatBytes, timeAgo, truncateHash } from '../components/format';
+import { downloadUrlFor } from '../components/downloads';
 import './Objects.css';
 
 interface TreeNode {
@@ -100,11 +101,16 @@ interface TreeRowProps {
   expanded: Set<string>;
   onToggle: (path: string) => void;
   onEvict: (path: string) => void;
+  repo: string;
+  packageType?: string;
 }
 
-function TreeRow({ node, depth, expanded, onToggle, onEvict }: TreeRowProps) {
+function TreeRow({ node, depth, expanded, onToggle, onEvict, repo, packageType }: TreeRowProps) {
   const isDir = node.children.size > 0 && !node.artifact;
   const isExpanded = expanded.has(node.path);
+  const downloadUrl = node.artifact
+    ? downloadUrlFor(packageType, repo, node.artifact.path)
+    : null;
 
   const sortedChildren = useMemo(() => {
     if (!isDir) return [];
@@ -124,9 +130,20 @@ function TreeRow({ node, depth, expanded, onToggle, onEvict }: TreeRowProps) {
             {isDir && (
               <span className="tree-toggle">{isExpanded ? '▾' : '▸'}</span>
             )}
-            <span className={isDir ? 'tree-dir-name' : 'mono tree-file-name'}>
-              {node.name}{isDir ? '/' : ''}
-            </span>
+            {downloadUrl ? (
+              <a
+                className="mono tree-file-name tree-file-link"
+                href={downloadUrl}
+                download
+                onClick={(e) => e.stopPropagation()}
+              >
+                {node.name}
+              </a>
+            ) : (
+              <span className={isDir ? 'tree-dir-name' : 'mono tree-file-name'}>
+                {node.name}{isDir ? '/' : ''}
+              </span>
+            )}
           </span>
         </td>
         <td className="num-cell">{formatBytes(node.totalSize)}</td>
@@ -163,6 +180,8 @@ function TreeRow({ node, depth, expanded, onToggle, onEvict }: TreeRowProps) {
           expanded={expanded}
           onToggle={onToggle}
           onEvict={onEvict}
+          repo={repo}
+          packageType={packageType}
         />
       ))}
     </>
@@ -175,6 +194,7 @@ export function Objects() {
   const isLocal = location.pathname.startsWith('/locals/');
   const backLink = isLocal ? `/locals/${name}` : `/remotes/${name}`;
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [packageType, setPackageType] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -189,6 +209,15 @@ export function Objects() {
   }, [name, isLocal]);
 
   useEffect(() => { load(); }, [load]);
+
+  // The repo's package_type is the modularity hook: it decides whether file
+  // names render as direct-download links (see downloadableTypes).
+  useEffect(() => {
+    if (!name) return;
+    api.getRemote(name)
+      .then(r => setPackageType(r.package_type))
+      .catch(() => setPackageType(undefined));
+  }, [name]);
 
   const handleEvict = async (path: string) => {
     if (!name || !confirm(`Evict ${path}?`)) return;
@@ -287,6 +316,8 @@ export function Objects() {
                     expanded={expanded}
                     onToggle={toggleExpand}
                     onEvict={handleEvict}
+                    repo={name!}
+                    packageType={packageType}
                   />
                 ))
               )}

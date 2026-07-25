@@ -37,6 +37,15 @@
   word-break: break-all;
 }
 
+.tree-file-link {
+  color: var(--accent, #4c9aff);
+  text-decoration: none;
+}
+
+.tree-file-link:hover {
+  text-decoration: underline;
+}
+
 .tree-dir {
   cursor: pointer;
 }

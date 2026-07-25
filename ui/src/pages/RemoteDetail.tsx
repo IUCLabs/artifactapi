@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import type { Remote } from '../api/types';
 import { Badge } from '../components/Badge';
+import { UsageInstructions } from '../components/UsageInstructions';
 import './RemoteDetail.css';
 
 export function RemoteDetail() {
@@ -108,6 +109,8 @@ export function RemoteDetail() {
           </div>
         )}
       </div>
+
+      <UsageInstructions packageType={remote.package_type} repoClass="remote" name={remote.name} />
 
       <div className="detail-actions">
         <Link to={`/remotes/${remote.name}/objects`} className="btn btn-primary">

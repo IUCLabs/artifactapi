@@ -4,6 +4,7 @@ import { api } from '../api/client';
 import type { Remote, Virtual } from '../api/types';
 import { Badge } from '../components/Badge';
 import { DataTable } from '../components/DataTable';
+import { UsageInstructions } from '../components/UsageInstructions';
 import './Virtuals.css';
 
 export function Virtuals() {
@@ -98,6 +99,12 @@ export function Virtuals() {
                 );
               })}
           </ul>
+          {(() => {
+            const v = virtuals.find(x => x.name === expanded);
+            return v ? (
+              <UsageInstructions packageType={v.package_type} repoClass="virtual" name={v.name} defaultOpen />
+            ) : null;
+          })()}
         </div>
       )}
     </div>

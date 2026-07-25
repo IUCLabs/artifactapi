@@ -1,0 +1,99 @@
+.usage-panel {
+  margin: 24px 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.usage-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 14px 18px;
+  background: transparent;
+  border: none;
+  color: var(--text-bright);
+  font-size: 0.95em;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.usage-toggle:hover {
+  background: var(--bg-elevated);
+}
+
+.usage-caret {
+  display: inline-block;
+  transition: transform 0.15s;
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+.usage-caret.open {
+  transform: rotate(90deg);
+}
+
+.usage-body {
+  padding: 4px 18px 18px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.usage-snippet-title {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin: 14px 0 8px;
+}
+
+.usage-codebox {
+  position: relative;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.usage-codebox pre {
+  margin: 0;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--text-bright);
+  white-space: pre;
+}
+
+.usage-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 3px 10px;
+  font-size: 0.75em;
+  font-family: var(--font-sans);
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.usage-copy-btn:hover {
+  color: var(--text-bright);
+  border-color: var(--accent);
+}
+
+.usage-note {
+  margin-top: 8px;
+  font-size: 0.82em;
+  color: var(--text-muted);
+  line-height: 1.45;
+}

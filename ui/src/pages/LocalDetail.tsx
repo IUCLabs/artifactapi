@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import type { Remote } from '../api/types';
 import { Badge } from '../components/Badge';
+import { UsageInstructions } from '../components/UsageInstructions';
 import './RemoteDetail.css';
 
 export function LocalDetail() {
@@ -35,6 +36,8 @@ export function LocalDetail() {
       {remote.description && (
         <p className="detail-description">{remote.description}</p>
       )}
+
+      <UsageInstructions packageType={remote.package_type} repoClass="local" name={remote.name} />
 
       <div className="detail-actions">
         <Link to={`/locals/${remote.name}/objects`} className="btn btn-primary">

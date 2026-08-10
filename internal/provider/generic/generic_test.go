@@ -4,10 +4,55 @@ import (
 	"context"
 	"testing"
 
+	"github.com/IUCLabs/artifactapi/internal/githubauth"
 	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/internal/provider/generic"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
+
+type staticCred string
+
+func (s staticCred) Token(context.Context) (string, error) { return string(s), nil }
+
+func TestProvider_AuthHeaders_GitHubServerCredential(t *testing.T) {
+	githubauth.SetServer(staticCred("ghs_server"))
+	t.Cleanup(func() { githubauth.SetServer(nil) })
+
+	p := &generic.Provider{}
+	h, err := p.AuthHeaders(context.Background(), models.Remote{BaseURL: "https://github.com"})
+	if err != nil {
+		t.Fatalf("auth headers: %v", err)
+	}
+	if h.Get("Authorization") != "Bearer ghs_server" {
+		t.Fatalf("Authorization = %q, want Bearer ghs_server", h.Get("Authorization"))
+	}
+}
+
+func TestProvider_AuthHeaders_NonGitHubHostNoServerCredential(t *testing.T) {
+	githubauth.SetServer(staticCred("ghs_server"))
+	t.Cleanup(func() { githubauth.SetServer(nil) })
+
+	p := &generic.Provider{}
+	h, _ := p.AuthHeaders(context.Background(), models.Remote{BaseURL: "https://example.com/downloads"})
+	if h.Get("Authorization") != "" {
+		t.Fatalf("server credential must not be sent to non-github host, got %q", h.Get("Authorization"))
+	}
+}
+
+func TestProvider_AuthHeaders_PerRemoteOverridesServerCredential(t *testing.T) {
+	githubauth.SetServer(staticCred("ghs_server"))
+	t.Cleanup(func() { githubauth.SetServer(nil) })
+
+	p := &generic.Provider{}
+	h, _ := p.AuthHeaders(context.Background(), models.Remote{
+		BaseURL:  "https://github.com",
+		Username: "user",
+		Password: "pass",
+	})
+	if got := h.Get("Authorization"); got != "Basic dXNlcjpwYXNz" {
+		t.Fatalf("per-remote Basic auth must win, got %q", got)
+	}
+}
 
 func TestProvider_Type(t *testing.T) {
 	p := &generic.Provider{}

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 
+	"github.com/IUCLabs/artifactapi/internal/githubauth"
 	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
@@ -59,10 +61,42 @@ func (p *Provider) RewriteResponse(_ []byte, _ models.Remote, _ string) ([]byte,
 	return nil, nil
 }
 
-func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {
+// AuthHeaders authenticates outbound requests. A per-remote username/password
+// (Basic auth) takes precedence. Otherwise, when the remote points at a GitHub
+// host (e.g. a releases_remote proxying private release assets), the process-wide
+// GitHub credential is attached as a bearer token so private downloads work.
+func (p *Provider) AuthHeaders(ctx context.Context, remote models.Remote) (http.Header, error) {
 	h := http.Header{}
 	if remote.Username != "" {
 		h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(remote.Username+":"+remote.Password)))
+		return h, nil
+	}
+	if isGitHubHost(remote.BaseURL) {
+		if c := githubauth.Server(); c != nil {
+			tok, err := c.Token(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if tok != "" {
+				h.Set("Authorization", "Bearer "+tok)
+			}
+		}
 	}
 	return h, nil
+}
+
+// isGitHubHost reports whether rawURL targets a GitHub API/download host that
+// accepts the server credential. objects.githubusercontent.com is deliberately
+// excluded: release-asset downloads 302-redirect there with a pre-signed URL
+// that must not carry an Authorization header.
+func isGitHubHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "github.com", "www.github.com", "api.github.com", "codeload.github.com", "uploads.github.com":
+		return true
+	}
+	return false
 }

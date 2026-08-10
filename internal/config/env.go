@@ -44,6 +44,18 @@ type Config struct {
 	GitHubSyncBurst        int
 	GitHubSyncWorkers      int
 	GitHubSyncPollInterval int
+
+	// Server-level GitHub machine credential, applied by default to every
+	// outbound GitHub request (releases scan, ranged asset fetches, and the
+	// generic-github byte proxy for private assets). Delivered via env/secret
+	// only — never stored per-remote, never returned by an API, never logged.
+	// Configure exactly one mode: a Personal Access Token, or a GitHub App
+	// (id + installation id + private key). Partial App config fails at startup.
+	GitHubToken             string
+	GitHubAppID             string
+	GitHubAppInstallationID string
+	GitHubAppPrivateKey     string
+	GitHubAppPrivateKeyPath string
 }
 
 func (c *Config) DatabaseDSN() string {
@@ -105,6 +117,12 @@ func Load() (*Config, error) {
 		GitHubSyncBurst:        syncBurst,
 		GitHubSyncWorkers:      syncWorkers,
 		GitHubSyncPollInterval: syncPoll,
+
+		GitHubToken:             getenv("GITHUB_TOKEN", ""),
+		GitHubAppID:             getenv("GITHUB_APP_ID", ""),
+		GitHubAppInstallationID: getenv("GITHUB_APP_INSTALLATION_ID", ""),
+		GitHubAppPrivateKey:     getenv("GITHUB_APP_PRIVATE_KEY", ""),
+		GitHubAppPrivateKeyPath: getenv("GITHUB_APP_PRIVATE_KEY_PATH", ""),
 	}
 
 	return cfg, nil

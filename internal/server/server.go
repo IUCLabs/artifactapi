@@ -19,6 +19,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/config"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/gc"
+	"github.com/IUCLabs/artifactapi/internal/githubauth"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/alpine"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/docker"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/generic"
@@ -64,6 +65,25 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	s3, err := storage.NewS3(cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket, cfg.S3Secure, cfg.S3Region)
 	if err != nil {
 		return nil, fmt.Errorf("s3: %w", err)
+	}
+
+	// Install the process-wide GitHub credential before any provider makes an
+	// outbound call. A misconfiguration (e.g. App id without a private key) fails
+	// closed here rather than silently falling back to anonymous. No credential
+	// configured is fine — requests stay anonymous.
+	ghCred, err := githubauth.New(githubauth.Options{
+		Token:          cfg.GitHubToken,
+		AppID:          cfg.GitHubAppID,
+		InstallationID: cfg.GitHubAppInstallationID,
+		PrivateKeyPEM:  cfg.GitHubAppPrivateKey,
+		PrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("github auth: %w", err)
+	}
+	githubauth.SetServer(ghCred)
+	if ghCred != nil {
+		slog.Info("github machine credential configured")
 	}
 
 	engine := proxy.NewEngine(db, redis, s3)

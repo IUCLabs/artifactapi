@@ -73,6 +73,8 @@ type githubFixture struct {
 	etag        string            // when set, served as ETag; matching If-None-Match yields 304
 	releasesHit int               // total releases-list requests (200 + 304)
 	notModHit   int               // releases-list requests answered 304
+	releaseAuth string            // Authorization header seen on the last releases request
+	assetAuth   string            // Authorization header seen on the last asset request
 	mu          sync.Mutex
 }
 
@@ -94,6 +96,7 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 		}
 		f.mu.Lock()
 		f.releasesHit++
+		f.releaseAuth = r.Header.Get("Authorization")
 		etag := f.etag
 		if etag != "" && r.Header.Get("If-None-Match") == etag {
 			f.notModHit++
@@ -130,6 +133,7 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 		}
 		rng := r.Header.Get("Range")
 		f.mu.Lock()
+		f.assetAuth = r.Header.Get("Authorization")
 		if rng != "" {
 			f.rangeHit[name]++
 		} else {

@@ -111,6 +111,71 @@ resource "artifactapi_remote_github_rpm" "acme-tools" {
 The repo is multi-arch (no `$basearch` needed) — `dnf` selects matching packages
 from the synthesized metadata.
 
+### GitHub authentication
+
+Anonymous GitHub is capped at **60 requests/hour** and cannot read private
+repositories. Configure a **server-level GitHub credential** to raise the ceiling
+to roughly **5000 requests/hour** and to read private-repo release assets. The
+credential is a process-wide machine identity applied by default to *every*
+outbound GitHub request — the releases scan, the ranged asset-header fetches, and
+the generic-github byte proxy that streams private release assets.
+
+The credential is read from the environment (deliver it from a Vault or
+Kubernetes secret). It is **never** stored per-remote in the database, **never**
+returned by any API, and **never** logged. Configure **exactly one** mode.
+
+**Precedence.** A remote's own `username`/`password` credential still wins for
+that remote's requests; the server credential is the default for everything else.
+With no credential configured at all, requests stay anonymous (current behavior).
+Partial configuration (e.g. an App id with no private key) is a **startup error**
+— artifactapi fails closed rather than silently falling back to anonymous.
+
+Both modes share the syncer's single global rate limiter, so a token simply
+raises the effective GitHub ceiling; the default limiter settings stay safe.
+
+#### Mode 1 — Personal Access Token (minimum viable, recommended for free accounts)
+
+Set `GITHUB_TOKEN`. It is sent as `Authorization: Bearer <token>`.
+
+Recommended free-account setup — a **fine-grained PAT** scoped to just the target
+repositories:
+
+1. GitHub → *Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token*.
+2. Limit *Repository access* to the specific repo(s) serving releases.
+3. Grant repository permissions **Contents: Read-only** and **Metadata:
+   Read-only** (Metadata is mandatory and auto-selected).
+
+A classic PAT with the `repo` scope also works but is broader than necessary.
+
+```bash
+GITHUB_TOKEN=github_pat_xxxxxxxx
+```
+
+#### Mode 2 — GitHub App installation token (proper machine identity)
+
+A GitHub App is not tied to a personal account and can be created and installed on
+free personal repos. artifactapi mints a short-lived RS256 **JWT** from the app
+private key, exchanges it at `POST /app/installations/{id}/access_tokens` for a
+~1-hour **installation access token**, caches that token, and refreshes it a few
+minutes before expiry (thread-safe, single-flighted).
+
+1. GitHub → *Settings → Developer settings → GitHub Apps → New GitHub App*.
+2. Under *Permissions → Repository permissions* grant **Contents: Read-only**
+   (Metadata: Read-only is implied).
+3. Generate a **private key** (downloads a PEM) and note the **App ID**.
+4. *Install* the App on the account and select the target repositories, then read
+   the **Installation ID** from the installation URL
+   (`.../settings/installations/<installation-id>`).
+
+```bash
+GITHUB_APP_ID=123456
+GITHUB_APP_INSTALLATION_ID=7654321
+GITHUB_APP_PRIVATE_KEY_PATH=/etc/artifactapi/github-app.pem
+# or inline PEM (e.g. mounted from a secret):
+# GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+```
+
 ## Terraform
 
 Remotes and virtuals are managed by Terraform. Each package type has its own resource:
@@ -277,6 +342,11 @@ S3 client supports MinIO, Ceph RGW, and AWS S3 (via minio-go).
 | `GITHUB_SYNC_BURST` | `5` | Token-bucket burst for the shared limiter |
 | `GITHUB_SYNC_WORKERS` | `3` | Concurrent `github_rpm` scan workers |
 | `GITHUB_SYNC_POLL_INTERVAL` | `60` | Base scheduler tick in seconds; per-remote cadence is its `mutable_ttl`, enforced by the DB lease |
+| `GITHUB_TOKEN` | | Server-level GitHub PAT (fine-grained or classic), sent as `Authorization: Bearer`. Applies to every GitHub request; per-remote creds override it. See [GitHub authentication](#github-authentication) |
+| `GITHUB_APP_ID` | | GitHub App id (App auth mode; mutually exclusive with `GITHUB_TOKEN`) |
+| `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |
+| `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
+| `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
 
 ## Development
 

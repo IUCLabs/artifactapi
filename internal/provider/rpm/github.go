@@ -20,6 +20,7 @@ import (
 	rpmlib "github.com/cavaliergopher/rpm"
 	"golang.org/x/time/rate"
 
+	"github.com/IUCLabs/artifactapi/internal/githubauth"
 	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
@@ -75,6 +76,10 @@ type GitHubProvider struct {
 	// syncer, when set, routes freshness refresh and cold-start priming through
 	// the shared background work queue instead of an inline per-replica scan.
 	syncer *Syncer
+
+	// serverCred overrides the process-wide GitHub credential for this provider
+	// instance. nil falls back to githubauth.Server(); set directly in tests.
+	serverCred githubauth.Credential
 
 	mu       sync.Mutex
 	scanning map[string]bool
@@ -136,8 +141,8 @@ func (p *GitHubProvider) RewriteResponse(_ []byte, _ models.Remote, _ string) ([
 	return nil, nil
 }
 
-func (p *GitHubProvider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {
-	return githubHeaders(remote, false), nil
+func (p *GitHubProvider) AuthHeaders(ctx context.Context, remote models.Remote) (http.Header, error) {
+	return p.githubHeaders(ctx, remote, false)
 }
 
 // ServeRemote answers a request against a github_rpm remote. It refreshes the
@@ -414,7 +419,11 @@ func (p *GitHubProvider) fetchReleases(ctx context.Context, remote models.Remote
 		if err != nil {
 			return nil, "", false, err
 		}
-		copyHeaders(req, githubHeaders(remote, true))
+		hdr, err := p.githubHeaders(ctx, remote, true)
+		if err != nil {
+			return nil, "", false, err
+		}
+		copyHeaders(req, hdr)
 		if page == 1 && etag != "" {
 			req.Header.Set("If-None-Match", etag)
 		}
@@ -571,7 +580,11 @@ func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, dow
 	if err != nil {
 		return nil, false, err
 	}
-	copyHeaders(req, githubHeaders(remote, false))
+	hdr, err := p.githubHeaders(ctx, remote, false)
+	if err != nil {
+		return nil, false, err
+	}
+	copyHeaders(req, hdr)
 	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", n-1))
 
 	if err := p.limiterWait(ctx); err != nil {
@@ -599,7 +612,11 @@ func (p *GitHubProvider) computeSHA256(ctx context.Context, remote models.Remote
 	if err != nil {
 		return "", err
 	}
-	copyHeaders(req, githubHeaders(remote, false))
+	hdr, err := p.githubHeaders(ctx, remote, false)
+	if err != nil {
+		return "", err
+	}
+	copyHeaders(req, hdr)
 
 	if err := p.limiterWait(ctx); err != nil {
 		return "", err
@@ -638,23 +655,48 @@ func sha256FromDigest(digest string) (string, bool) {
 	return "", false
 }
 
-func githubHeaders(remote models.Remote, api bool) http.Header {
+// githubHeaders builds the outbound headers for a GitHub request, attaching a
+// bearer credential when one is available. A per-remote credential wins; absent
+// that, the process-wide server credential is used; absent both, the request is
+// unauthenticated (anonymous, subject to the 60/hr cap).
+func (p *GitHubProvider) githubHeaders(ctx context.Context, remote models.Remote, api bool) (http.Header, error) {
 	h := http.Header{}
 	if api {
 		h.Set("Accept", "application/vnd.github+json")
 		h.Set("X-GitHub-Api-Version", "2022-11-28")
 	}
-	if tok := githubToken(remote); tok != "" {
+	tok, err := p.githubToken(ctx, remote)
+	if err != nil {
+		return nil, err
+	}
+	if tok != "" {
 		h.Set("Authorization", "Bearer "+tok)
 	}
-	return h
+	return h, nil
 }
 
-func githubToken(remote models.Remote) string {
+// githubToken resolves the bearer token for a remote. Precedence: a per-remote
+// credential (password, then username) overrides the server credential.
+func (p *GitHubProvider) githubToken(ctx context.Context, remote models.Remote) (string, error) {
 	if remote.Password != "" {
-		return remote.Password
+		return remote.Password, nil
 	}
-	return remote.Username
+	if remote.Username != "" {
+		return remote.Username, nil
+	}
+	if c := p.serverCredential(); c != nil {
+		return c.Token(ctx)
+	}
+	return "", nil
+}
+
+// serverCredential returns this provider's server credential, defaulting to the
+// process-wide one installed at startup.
+func (p *GitHubProvider) serverCredential() githubauth.Credential {
+	if p.serverCred != nil {
+		return p.serverCred
+	}
+	return githubauth.Server()
 }
 
 func copyHeaders(req *http.Request, h http.Header) {

@@ -83,6 +83,15 @@ func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Metadata-only remotes (e.g. github_rpm) synthesize their own responses and
+	// redirect package downloads to a backend remote instead of proxying bytes.
+	if rs, ok := prov.(provider.RemoteServer); ok {
+		proxyBaseURL := fmt.Sprintf("%s://%s", scheme(r), r.Host)
+		if rs.ServeRemote(w, r, *remote, path, proxyBaseURL, h.db) {
+			return
+		}
+	}
+
 	result, err := h.engine.Fetch(r.Context(), *remote, path, prov, r.Header)
 	if err != nil {
 		var proxyErr *proxy.ProxyError

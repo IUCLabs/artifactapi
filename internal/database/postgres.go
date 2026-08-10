@@ -151,6 +151,8 @@ func (db *DB) migrate() error {
 			packager        TEXT DEFAULT '',
 			requires        JSONB DEFAULT '[]',
 			provides        JSONB DEFAULT '[]',
+			conflicts       JSONB DEFAULT '[]',
+			obsoletes       JSONB DEFAULT '[]',
 			files           JSONB DEFAULT '[]',
 			changelogs      JSONB DEFAULT '[]',
 			created_at      TIMESTAMPTZ DEFAULT NOW(),
@@ -158,6 +160,9 @@ func (db *DB) migrate() error {
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_rpm_metadata_repo ON rpm_metadata(repo_name);
+
+		ALTER TABLE rpm_metadata ADD COLUMN IF NOT EXISTS conflicts JSONB DEFAULT '[]';
+		ALTER TABLE rpm_metadata ADD COLUMN IF NOT EXISTS obsoletes JSONB DEFAULT '[]';
 
 		CREATE TABLE IF NOT EXISTS signing_keys (
 			purpose             TEXT PRIMARY KEY,

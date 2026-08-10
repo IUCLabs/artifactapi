@@ -10,6 +10,8 @@ import (
 func (db *DB) InsertRPMMetadata(ctx context.Context, meta *provider.RPMMetadata) error {
 	requiresJSON, _ := json.Marshal(meta.Requires)
 	providesJSON, _ := json.Marshal(meta.Provides)
+	conflictsJSON, _ := json.Marshal(meta.Conflicts)
+	obsoletesJSON, _ := json.Marshal(meta.Obsoletes)
 	filesJSON, _ := json.Marshal(meta.Files)
 	changelogsJSON, _ := json.Marshal(meta.Changelogs)
 
@@ -19,15 +21,15 @@ func (db *DB) InsertRPMMetadata(ctx context.Context, meta *provider.RPMMetadata)
 			name, epoch, version, release, arch,
 			summary, description, rpm_size, installed_size,
 			license, vendor, build_group, build_host, source_rpm, url, packager,
-			requires, provides, files, changelogs
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+			requires, provides, conflicts, obsoletes, files, changelogs
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 		ON CONFLICT (repo_name, file_path) DO NOTHING
 	`,
 		meta.RepoName, meta.FilePath, meta.ContentHash,
 		meta.Name, meta.Epoch, meta.Version, meta.Release, meta.Arch,
 		meta.Summary, meta.Description, meta.RPMSize, meta.InstalledSize,
 		meta.License, meta.Vendor, meta.Group, meta.BuildHost, meta.SourceRPM, meta.URL, meta.Packager,
-		requiresJSON, providesJSON, filesJSON, changelogsJSON,
+		requiresJSON, providesJSON, conflictsJSON, obsoletesJSON, filesJSON, changelogsJSON,
 	)
 	return err
 }
@@ -59,6 +61,8 @@ type RPMMetadataRow struct {
 	Packager      string
 	Requires      json.RawMessage
 	Provides      json.RawMessage
+	Conflicts     json.RawMessage
+	Obsoletes     json.RawMessage
 	Files         json.RawMessage
 	Changelogs    json.RawMessage
 }
@@ -93,6 +97,8 @@ func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]pr
 		}
 		json.Unmarshal(r.Requires, &meta.Requires)
 		json.Unmarshal(r.Provides, &meta.Provides)
+		json.Unmarshal(r.Conflicts, &meta.Conflicts)
+		json.Unmarshal(r.Obsoletes, &meta.Obsoletes)
 		json.Unmarshal(r.Files, &meta.Files)
 		json.Unmarshal(r.Changelogs, &meta.Changelogs)
 		result[i] = meta
@@ -106,7 +112,7 @@ func (db *DB) ListRPMMetadata(ctx context.Context, repoName string) ([]RPMMetada
 			name, epoch, version, release, arch,
 			summary, description, rpm_size, installed_size,
 			license, vendor, build_group, build_host, source_rpm, url, packager,
-			requires, provides, files, changelogs
+			requires, provides, conflicts, obsoletes, files, changelogs
 		FROM rpm_metadata
 		WHERE repo_name = $1
 		ORDER BY name, epoch, version, release, arch
@@ -124,7 +130,7 @@ func (db *DB) ListRPMMetadata(ctx context.Context, repoName string) ([]RPMMetada
 			&r.Name, &r.Epoch, &r.Version, &r.Release, &r.Arch,
 			&r.Summary, &r.Description, &r.RPMSize, &r.InstalledSize,
 			&r.License, &r.Vendor, &r.Group, &r.BuildHost, &r.SourceRPM, &r.URL, &r.Packager,
-			&r.Requires, &r.Provides, &r.Files, &r.Changelogs,
+			&r.Requires, &r.Provides, &r.Conflicts, &r.Obsoletes, &r.Files, &r.Changelogs,
 		); err != nil {
 			return nil, err
 		}

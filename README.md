@@ -32,8 +32,53 @@ API: `http://localhost:8000` | Frontend: `http://localhost:5173`
 | `puppet` | `v3/modules/*`, `v3/releases*` | `.tar.gz` |
 | `terraform` | `*/versions` | `*/download/*/*` |
 | `goproxy` | `@v/list`, `@latest` | `.info`, `.mod`, `.zip` |
+| `github_rpm` | `repodata/*` (synthesized) | `.rpm` (redirected) |
 
 Providers classify paths automatically. Users only configure what to proxy and TTLs.
+
+### `github_rpm` — GitHub releases as a yum repo (metadata-only, no precache)
+
+A `github_rpm` remote turns a GitHub repo's **releases** into a real `dnf`/`yum`
+repository without ever caching the packages. It scans releases for `.rpm`
+assets, derives each package's metadata (NEVRA, requires/provides/conflicts/
+obsoletes, files, checksum) and **synthesizes `repodata/` on the fly**. Package
+metadata comes from a **ranged GET of just the RPM header** (the header sits at
+the front of the file, so the whole package is never downloaded); the sha256
+checksum comes from the GitHub asset `digest` when present, else a one-time
+lazy stream. Derived metadata is cached (keyed by asset) so repodata generation
+is cheap on repeat, and refreshed no more often than `mutable_ttl`.
+
+Each package's `<location>` points back at the remote, which **302-redirects**
+the download to the `releases_remote` — an existing generic `github.com` remote
+that streams the actual bytes. `dnf` follows the redirect transparently.
+
+```hcl
+# Backend that serves the actual .rpm bytes from github.com.
+resource "artifactapi_remote_generic" "github" {
+  name     = "github"
+  base_url = "https://github.com"
+  patterns = [
+    "acme/tools/releases/download/.*\\.rpm$", # allowlist the repo's release assets
+  ]
+}
+
+resource "artifactapi_remote_github_rpm" "acme-tools" {
+  name            = "acme-tools"
+  base_url        = "https://api.github.com/repos/acme/tools" # the releases API root
+  releases_remote = "github"                                  # backend for downloads
+  mutable_ttl     = 3600                                      # release re-scan interval
+
+  # Optional: restrict which release assets become packages (regex on filename).
+  patterns = [".*\\.x86_64\\.rpm$", ".*\\.noarch\\.rpm$"]
+
+  # Optional: a token for private repos / higher API rate limits.
+  # password = "ghp_..."
+}
+```
+
+`dnf` config: `baseurl=https://artifactapi.example/api/v1/remote/acme-tools`.
+The repo is multi-arch (no `$basearch` needed) — `dnf` selects matching packages
+from the synthesized metadata.
 
 ## Terraform
 

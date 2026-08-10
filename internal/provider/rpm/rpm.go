@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -133,12 +134,24 @@ func (p *Provider) AfterUpload(ctx context.Context, repoName, storagePath, conte
 	for _, prov := range pkg.Provides() {
 		meta.Provides = append(meta.Provides, rpmDepFromEntry(prov))
 	}
+	for _, con := range pkg.Conflicts() {
+		meta.Conflicts = append(meta.Conflicts, rpmDepFromEntry(con))
+	}
+	for _, obs := range pkg.Obsoletes() {
+		meta.Obsoletes = append(meta.Obsoletes, rpmDepFromEntry(obs))
+	}
 
 	if meta.Requires == nil {
 		meta.Requires = []provider.RPMDep{}
 	}
 	if meta.Provides == nil {
 		meta.Provides = []provider.RPMDep{}
+	}
+	if meta.Conflicts == nil {
+		meta.Conflicts = []provider.RPMDep{}
+	}
+	if meta.Obsoletes == nil {
+		meta.Obsoletes = []provider.RPMDep{}
 	}
 	meta.Files = []provider.RPMFile{}
 	meta.Changelogs = []provider.RPMChangelog{}
@@ -229,10 +242,28 @@ func (p *Provider) GenerateLocalIndex(ctx context.Context, files provider.FileSt
 	return nil, fmt.Errorf("rpm local index generation for virtual repos not supported")
 }
 
-func (p *Provider) serveRepomd(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {
+// readMetadataEntries loads the repo's derived metadata, translating the read
+// error into an HTTP response. A canceled/deadline-exceeded context (typically a
+// client that went away) becomes a retryable 503 rather than a hard 500, so a
+// dnf disconnect never looks like a server fault. ok is false when a response
+// has already been written.
+func readMetadataEntries(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) ([]provider.RPMMetadata, bool) {
 	metas, err := reader.ListRPMMetadataEntries(r.Context(), repoName)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			slog.Warn("rpm: metadata read canceled", "repo", repoName, "error", err)
+			http.Error(w, "metadata read canceled", http.StatusServiceUnavailable)
+			return nil, false
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return nil, false
+	}
+	return metas, true
+}
+
+func (p *Provider) serveRepomd(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {
+	metas, ok := readMetadataEntries(w, r, reader, repoName)
+	if !ok {
 		return
 	}
 
@@ -252,9 +283,8 @@ func (p *Provider) serveRepomd(w http.ResponseWriter, r *http.Request, reader pr
 }
 
 func (p *Provider) servePrimary(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {
-	metas, err := reader.ListRPMMetadataEntries(r.Context(), repoName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	metas, ok := readMetadataEntries(w, r, reader, repoName)
+	if !ok {
 		return
 	}
 
@@ -264,9 +294,8 @@ func (p *Provider) servePrimary(w http.ResponseWriter, r *http.Request, reader p
 }
 
 func (p *Provider) serveFilelists(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {
-	metas, err := reader.ListRPMMetadataEntries(r.Context(), repoName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	metas, ok := readMetadataEntries(w, r, reader, repoName)
+	if !ok {
 		return
 	}
 
@@ -276,9 +305,8 @@ func (p *Provider) serveFilelists(w http.ResponseWriter, r *http.Request, reader
 }
 
 func (p *Provider) serveOther(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {
-	metas, err := reader.ListRPMMetadataEntries(r.Context(), repoName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	metas, ok := readMetadataEntries(w, r, reader, repoName)
+	if !ok {
 		return
 	}
 
@@ -362,6 +390,20 @@ func generatePrimaryXMLGZ(metas []provider.RPMMetadata) []byte {
 				writeRPMEntry(&xmlBuf, d)
 			}
 			xmlBuf.WriteString("    </rpm:requires>\n")
+		}
+		if len(m.Conflicts) > 0 {
+			xmlBuf.WriteString("    <rpm:conflicts>\n")
+			for _, d := range m.Conflicts {
+				writeRPMEntry(&xmlBuf, d)
+			}
+			xmlBuf.WriteString("    </rpm:conflicts>\n")
+		}
+		if len(m.Obsoletes) > 0 {
+			xmlBuf.WriteString("    <rpm:obsoletes>\n")
+			for _, d := range m.Obsoletes {
+				writeRPMEntry(&xmlBuf, d)
+			}
+			xmlBuf.WriteString("    </rpm:obsoletes>\n")
 		}
 
 		fmt.Fprintf(&xmlBuf, "  </format>\n")

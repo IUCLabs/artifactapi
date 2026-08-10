@@ -57,7 +57,7 @@ func do(t *testing.T, h http.Handler, method, path, body string) int {
 }
 
 func TestRemotesErrorPaths(t *testing.T) {
-	h := NewRemotesHandler(closedDB(t)).Routes()
+	h := NewRemotesHandler(closedDB(t), nil).Routes()
 	if c := do(t, h, "GET", "/", ""); c != 500 {
 		t.Errorf("list with dead db = %d, want 500", c)
 	}

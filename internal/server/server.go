@@ -27,7 +27,7 @@ import (
 	_ "github.com/IUCLabs/artifactapi/internal/provider/npm"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/puppet"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/pypi"
-	_ "github.com/IUCLabs/artifactapi/internal/provider/rpm"
+	"github.com/IUCLabs/artifactapi/internal/provider/rpm"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/terraform"
 	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/internal/storage"
@@ -47,6 +47,7 @@ type Server struct {
 	localHandler *v2.LocalHandler
 	tfRegistry   *tfregistry.Handler
 	gc           *gc.Collector
+	syncer       *rpm.Syncer
 }
 
 func New(cfg *config.Config, version string) (*Server, error) {
@@ -69,6 +70,12 @@ func New(cfg *config.Config, version string) (*Server, error) {
 	localHandler := v2.NewLocalHandler(db, s3)
 	virtEngine := virtual.NewEngine(db, engine)
 	collector := gc.New(db, s3, 1*time.Hour)
+	syncer := rpm.NewSyncer(db, rpm.SyncConfig{
+		RatePerSec:   cfg.GitHubSyncRatePerSec,
+		Burst:        cfg.GitHubSyncBurst,
+		Workers:      cfg.GitHubSyncWorkers,
+		PollInterval: time.Duration(cfg.GitHubSyncPollInterval) * time.Second,
+	})
 
 	// The terraform registry signs with a GPG key. A configured file wins (BYO
 	// key); otherwise artifactapi generates one on first start and persists it in
@@ -100,6 +107,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		localHandler: localHandler,
 		tfRegistry:   tfRegistry,
 		gc:           collector,
+		syncer:       syncer,
 	}
 
 	s.router = s.routes()
@@ -129,7 +137,7 @@ func (s *Server) routes() chi.Router {
 	r.Mount("/api/v1", proxyHandler.Routes())
 	r.Mount("/v2", proxyHandler.DockerV2Routes())
 
-	remotesHandler := v2.NewRemotesHandler(s.db)
+	remotesHandler := v2.NewRemotesHandler(s.db, s.syncer)
 	virtualsHandler := v2.NewVirtualsHandler(s.db)
 	healthHandler := v2.NewHealthHandler(s.db, s.cache, s.store)
 	statsHandler := v2.NewStatsHandler(s.db)
@@ -196,6 +204,7 @@ func (s *Server) newHTTPServer() *http.Server {
 
 func (s *Server) Run(ctx context.Context) error {
 	go s.gc.Run(ctx)
+	go s.syncer.Run(ctx)
 
 	httpServer := s.newHTTPServer()
 
@@ -216,6 +225,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 	go s.gc.Run(ctx)
+	go s.syncer.Run(ctx)
 
 	httpServer := s.newHTTPServer()
 

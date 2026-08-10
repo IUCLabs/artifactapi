@@ -66,11 +66,14 @@ func (f *fakeStore) ListRPMMetadataEntries(ctx context.Context, _ string) ([]pro
 // Range support) for a set of packages. digest controls whether the asset
 // carries a sha256 digest (no-download path) or not (compute path).
 type githubFixture struct {
-	srv      *httptest.Server
-	rpmBytes map[string][]byte // asset filename -> bytes
-	rangeHit map[string]int    // asset filename -> number of ranged GETs
-	fullHit  map[string]int    // asset filename -> number of full GETs
-	mu       sync.Mutex
+	srv         *httptest.Server
+	rpmBytes    map[string][]byte // asset filename -> bytes
+	rangeHit    map[string]int    // asset filename -> number of ranged GETs
+	fullHit     map[string]int    // asset filename -> number of full GETs
+	etag        string            // when set, served as ETag; matching If-None-Match yields 304
+	releasesHit int               // total releases-list requests (200 + 304)
+	notModHit   int               // releases-list requests answered 304
+	mu          sync.Mutex
 }
 
 func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
@@ -88,6 +91,19 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 		if page != "" && page != "1" {
 			w.Write([]byte("[]"))
 			return
+		}
+		f.mu.Lock()
+		f.releasesHit++
+		etag := f.etag
+		if etag != "" && r.Header.Get("If-None-Match") == etag {
+			f.notModHit++
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		f.mu.Unlock()
+		if etag != "" {
+			w.Header().Set("ETag", etag)
 		}
 		var assets []map[string]any
 		for name := range f.rpmBytes {

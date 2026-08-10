@@ -32,6 +32,18 @@ type Config struct {
 	TFSigningKeyPath       string
 	TFSigningKeyPassphrase string
 	TFProviderProtocols    string
+
+	// github_rpm background syncer. The syncer keeps derived RPM metadata for
+	// every github_rpm remote fresh off the client request path, sharing a
+	// single global token-bucket limiter across all remotes so GitHub is never
+	// hammered. Defaults are conservative: 1 req/s (3600/hr) sits well under an
+	// authenticated token's 5000/hr. Unauthenticated remotes (60/hr) lean on
+	// ETag/304 — an unchanged repo costs nothing — so keep those repos small or
+	// configure a token.
+	GitHubSyncRatePerSec   float64
+	GitHubSyncBurst        int
+	GitHubSyncWorkers      int
+	GitHubSyncPollInterval int
 }
 
 func (c *Config) DatabaseDSN() string {
@@ -48,6 +60,23 @@ func Load() (*Config, error) {
 	}
 
 	s3Secure, _ := strconv.ParseBool(getenv("MINIO_SECURE", "false"))
+
+	syncRate, err := strconv.ParseFloat(getenv("GITHUB_SYNC_RATE", "1"), 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid GITHUB_SYNC_RATE: %w", err)
+	}
+	syncBurst, err := strconv.Atoi(getenv("GITHUB_SYNC_BURST", "5"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid GITHUB_SYNC_BURST: %w", err)
+	}
+	syncWorkers, err := strconv.Atoi(getenv("GITHUB_SYNC_WORKERS", "3"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid GITHUB_SYNC_WORKERS: %w", err)
+	}
+	syncPoll, err := strconv.Atoi(getenv("GITHUB_SYNC_POLL_INTERVAL", "60"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid GITHUB_SYNC_POLL_INTERVAL: %w", err)
+	}
 
 	cfg := &Config{
 		ListenAddr: getenv("LISTEN_ADDR", ":8000"),
@@ -71,6 +100,11 @@ func Load() (*Config, error) {
 		TFSigningKeyPath:       getenv("TF_SIGNING_KEY_PATH", ""),
 		TFSigningKeyPassphrase: getenv("TF_SIGNING_KEY_PASSPHRASE", ""),
 		TFProviderProtocols:    getenv("TF_PROVIDER_PROTOCOLS", "5.0,6.0"),
+
+		GitHubSyncRatePerSec:   syncRate,
+		GitHubSyncBurst:        syncBurst,
+		GitHubSyncWorkers:      syncWorkers,
+		GitHubSyncPollInterval: syncPoll,
 	}
 
 	return cfg, nil

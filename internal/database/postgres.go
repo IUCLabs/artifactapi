@@ -164,6 +164,14 @@ func (db *DB) migrate() error {
 		ALTER TABLE rpm_metadata ADD COLUMN IF NOT EXISTS conflicts JSONB DEFAULT '[]';
 		ALTER TABLE rpm_metadata ADD COLUMN IF NOT EXISTS obsoletes JSONB DEFAULT '[]';
 
+		CREATE TABLE IF NOT EXISTS github_rpm_sync_state (
+			remote_name        TEXT PRIMARY KEY,
+			etag               TEXT DEFAULT '',
+			last_synced_at     TIMESTAMPTZ,
+			sync_lease_owner   TEXT DEFAULT '',
+			sync_lease_expires TIMESTAMPTZ
+		);
+
 		CREATE TABLE IF NOT EXISTS signing_keys (
 			purpose             TEXT PRIMARY KEY,
 			private_key_armor   TEXT NOT NULL,

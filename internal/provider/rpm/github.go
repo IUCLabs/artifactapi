@@ -18,13 +18,19 @@ import (
 	"time"
 
 	rpmlib "github.com/cavaliergopher/rpm"
+	"golang.org/x/time/rate"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
+// gitHubProvider is the process-wide singleton. The background Syncer binds its
+// shared rate limiter and work queue onto this instance so the request path and
+// the syncer drive the same derive machinery.
+var gitHubProvider = newGitHubProvider()
+
 func init() {
-	provider.Register(newGitHubProvider())
+	provider.Register(gitHubProvider)
 }
 
 // Tuning knobs for the no-precache header fetch. Fields (not consts) so tests
@@ -39,6 +45,12 @@ const (
 	defaultScanTimeout = 10 * time.Minute
 	// defaultServeTimeout bounds a repodata DB read served on a detached context.
 	defaultServeTimeout = 30 * time.Second
+
+	// defaultColdWait bounds how long a repodata request blocks waiting for a
+	// just-enqueued prime to populate an empty cache before returning a
+	// retryable 503. Kept short so a client never hangs on a rate-limited derive
+	// of a large repo; small repos usually prime within this window.
+	defaultColdWait = 8 * time.Second
 )
 
 // GitHubProvider is a metadata-only remote: it scans a GitHub repo's releases
@@ -54,6 +66,15 @@ type GitHubProvider struct {
 	pageCap       int
 	scanTimeout   time.Duration
 	serveTimeout  time.Duration
+	coldWait      time.Duration
+
+	// limiter, when set by the Syncer, gates every GitHub HTTP call (releases
+	// list + each ranged asset fetch) through a single process-wide token bucket.
+	// nil means unlimited (direct provider use / unit tests).
+	limiter *rate.Limiter
+	// syncer, when set, routes freshness refresh and cold-start priming through
+	// the shared background work queue instead of an inline per-replica scan.
+	syncer *Syncer
 
 	mu       sync.Mutex
 	scanning map[string]bool
@@ -68,9 +89,19 @@ func newGitHubProvider() *GitHubProvider {
 		pageCap:       defaultReleasePageCap,
 		scanTimeout:   defaultScanTimeout,
 		serveTimeout:  defaultServeTimeout,
+		coldWait:      defaultColdWait,
 		scanning:      map[string]bool{},
 		lastScan:      map[string]time.Time{},
 	}
+}
+
+// limiterWait blocks until the shared rate limiter grants a token, or returns
+// the context error if it is canceled first. A nil limiter is a no-op.
+func (p *GitHubProvider) limiterWait(ctx context.Context) error {
+	if p.limiter == nil {
+		return nil
+	}
+	return p.limiter.Wait(ctx)
 }
 
 func (p *GitHubProvider) Type() models.PackageType { return models.PackageGitHubRPM }
@@ -114,7 +145,7 @@ func (p *GitHubProvider) AuthHeaders(_ context.Context, remote models.Remote) (h
 // 302-redirects .rpm downloads to the backend releases_remote. Returns false
 // only for paths it does not own, letting the normal proxy path take over.
 func (p *GitHubProvider) ServeRemote(w http.ResponseWriter, r *http.Request, remote models.Remote, path, proxyBaseURL string, store provider.RemoteMetadataStore) bool {
-	p.refresh(remote, store)
+	p.onRequest(remote, store)
 
 	if strings.HasPrefix(path, "repodata/") {
 		// Serve repodata on a context detached from the inbound request: a
@@ -123,6 +154,15 @@ func (p *GitHubProvider) ServeRemote(w http.ResponseWriter, r *http.Request, rem
 		sctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), p.serveTimeout)
 		defer cancel()
 		sr := r.WithContext(sctx)
+
+		// Cold start: with the syncer wired, an empty cache means the prime has
+		// not landed yet. Enqueue it and wait briefly rather than serving empty
+		// repodata; if it still has not primed, return a retryable 503.
+		if p.syncer != nil && !p.ensurePrimed(sctx, remote, store) {
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "metadata is being prepared, retry shortly", http.StatusServiceUnavailable)
+			return true
+		}
 
 		tail := strings.TrimPrefix(path, "repodata/")
 		lp := &Provider{}
@@ -152,6 +192,56 @@ func (p *GitHubProvider) ServeRemote(w http.ResponseWriter, r *http.Request, rem
 	}
 
 	return false
+}
+
+// onRequest keeps a remote's derived metadata fresh off the request path. With
+// the background syncer wired it enqueues a deduped, rate-limited, lease-gated
+// refresh and returns immediately; the request always serves the current cache.
+// Without a syncer (direct provider use / unit tests) it falls back to the
+// legacy inline single-flight scan.
+func (p *GitHubProvider) onRequest(remote models.Remote, store provider.RemoteMetadataStore) {
+	if p.syncer != nil {
+		p.syncer.enqueue(remote, false)
+		return
+	}
+	p.refresh(remote, store)
+}
+
+// ensurePrimed returns true once the remote has at least one cached metadata
+// row. On an empty cache it enqueues a prime and polls briefly for it to land,
+// so the very first client after a remote is created gets real repodata instead
+// of an empty index or a blocking multi-minute derive. Returns false if the
+// cache is still empty after the bounded wait.
+func (p *GitHubProvider) ensurePrimed(ctx context.Context, remote models.Remote, store provider.RemoteMetadataStore) bool {
+	if !p.cacheEmpty(ctx, store, remote.Name) {
+		return true
+	}
+	if p.syncer != nil {
+		p.syncer.enqueue(remote, true)
+	}
+
+	deadline := time.Now().Add(p.coldWait)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(400 * time.Millisecond):
+		}
+		if !p.cacheEmpty(ctx, store, remote.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *GitHubProvider) cacheEmpty(ctx context.Context, store provider.RemoteMetadataStore, name string) bool {
+	rows, err := store.ListRPMMetadataEntries(ctx, name)
+	if err != nil {
+		// Treat a failed read as "not empty" so a transient DB error becomes a
+		// normal serve attempt (which reports its own error) rather than a 503.
+		return false
+	}
+	return len(rows) == 0
 }
 
 // refresh brings the derived metadata up to date without coupling the scan to
@@ -212,15 +302,31 @@ func (p *GitHubProvider) runScan(remote models.Remote, store provider.RemoteMeta
 	p.mu.Unlock()
 }
 
+// scan runs a full unconditional derive. Retained for the legacy inline refresh
+// path and existing tests; the syncer uses scanWithState to pass and receive the
+// releases-list ETag.
 func (p *GitHubProvider) scan(ctx context.Context, remote models.Remote, store provider.RemoteMetadataStore) error {
-	releases, err := p.fetchReleases(ctx, remote)
+	_, _, err := p.scanWithState(ctx, remote, store, "")
+	return err
+}
+
+// scanWithState derives metadata incrementally. It sends the prior releases-list
+// ETag as a conditional request: a 304 means nothing changed, so it returns
+// (etag, changed=false) without a single asset fetch. On a 200 it diffs the
+// release assets against the cache, derives only new/changed assets, prunes
+// assets that disappeared, and returns the new ETag.
+func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote, store provider.RemoteMetadataStore, etag string) (newEtag string, changed bool, err error) {
+	releases, newEtag, notModified, err := p.fetchReleases(ctx, remote, etag)
 	if err != nil {
-		return err
+		return etag, false, err
+	}
+	if notModified {
+		return etag, false, nil
 	}
 
 	existing, err := store.ListRPMMetadataEntries(ctx, remote.Name)
 	if err != nil {
-		return err
+		return newEtag, false, err
 	}
 	existingByPath := make(map[string]provider.RPMMetadata, len(existing))
 	for _, m := range existing {
@@ -229,7 +335,7 @@ func (p *GitHubProvider) scan(ctx context.Context, remote models.Remote, store p
 
 	allow, err := compilePatterns(remote.Patterns)
 	if err != nil {
-		return err
+		return newEtag, false, err
 	}
 
 	seen := map[string]bool{}
@@ -277,7 +383,7 @@ func (p *GitHubProvider) scan(ctx context.Context, remote models.Remote, store p
 			_ = store.DeleteRPMMetadata(ctx, remote.Name, fp)
 		}
 	}
-	return nil
+	return newEtag, true, nil
 }
 
 type ghRelease struct {
@@ -293,32 +399,53 @@ type ghAsset struct {
 	Digest             string `json:"digest"`
 }
 
-func (p *GitHubProvider) fetchReleases(ctx context.Context, remote models.Remote) ([]ghRelease, error) {
+// fetchReleases lists a repo's releases. It sends the prior ETag as
+// If-None-Match on page 1 (the newest releases, where a new one first appears):
+// a 304 there means the repo is unchanged, so it returns notModified without
+// paging further — GitHub does not count 304 conditional responses against the
+// rate limit, making an unchanged repo nearly free. On a 200 it captures the
+// page-1 ETag and pages through the rest normally. Every call waits on the
+// shared limiter first.
+func (p *GitHubProvider) fetchReleases(ctx context.Context, remote models.Remote, etag string) (all []ghRelease, newEtag string, notModified bool, err error) {
 	base := strings.TrimRight(remote.BaseURL, "/") + "/releases"
-	var all []ghRelease
 	for page := 1; page <= p.pageCap; page++ {
 		u := fmt.Sprintf("%s?per_page=100&page=%d", base, page)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
 		copyHeaders(req, githubHeaders(remote, true))
+		if page == 1 && etag != "" {
+			req.Header.Set("If-None-Match", etag)
+		}
 
+		if err := p.limiterWait(ctx); err != nil {
+			return nil, "", false, err
+		}
 		resp, err := p.client.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
+		}
+		if page == 1 && resp.StatusCode == http.StatusNotModified {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, etag, true, nil
 		}
 		body, err := io.ReadAll(resp.Body)
+		respEtag := resp.Header.Get("ETag")
 		resp.Body.Close()
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("github releases API %s: status %d", u, resp.StatusCode)
+			return nil, "", false, fmt.Errorf("github releases API %s: status %d", u, resp.StatusCode)
+		}
+		if page == 1 {
+			newEtag = respEtag
 		}
 		var releases []ghRelease
 		if err := json.Unmarshal(body, &releases); err != nil {
-			return nil, fmt.Errorf("decode releases: %w", err)
+			return nil, "", false, fmt.Errorf("decode releases: %w", err)
 		}
 		if len(releases) == 0 {
 			break
@@ -328,7 +455,7 @@ func (p *GitHubProvider) fetchReleases(ctx context.Context, remote models.Remote
 			break
 		}
 	}
-	return all, nil
+	return all, newEtag, false, nil
 }
 
 func (p *GitHubProvider) deriveAsset(ctx context.Context, remote models.Remote, asset ghAsset, fp string) (*provider.RPMMetadata, error) {
@@ -447,6 +574,9 @@ func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, dow
 	copyHeaders(req, githubHeaders(remote, false))
 	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", n-1))
 
+	if err := p.limiterWait(ctx); err != nil {
+		return nil, false, err
+	}
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return nil, false, err
@@ -471,6 +601,9 @@ func (p *GitHubProvider) computeSHA256(ctx context.Context, remote models.Remote
 	}
 	copyHeaders(req, githubHeaders(remote, false))
 
+	if err := p.limiterWait(ctx); err != nil {
+		return "", err
+	}
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", err

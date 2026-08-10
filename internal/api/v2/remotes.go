@@ -11,12 +11,19 @@ import (
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
-type RemotesHandler struct {
-	db *database.DB
+// Primer enqueues a background metadata prime for a newly created remote so the
+// create call never blocks on a derive. *rpm.Syncer satisfies it.
+type Primer interface {
+	EnqueuePrime(remote models.Remote)
 }
 
-func NewRemotesHandler(db *database.DB) *RemotesHandler {
-	return &RemotesHandler{db: db}
+type RemotesHandler struct {
+	db     *database.DB
+	primer Primer
+}
+
+func NewRemotesHandler(db *database.DB, primer Primer) *RemotesHandler {
+	return &RemotesHandler{db: db, primer: primer}
 }
 
 func (h *RemotesHandler) Routes() chi.Router {
@@ -76,6 +83,11 @@ func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.CreateRemote(r.Context(), &remote); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Prime a github_rpm remote's metadata in the background so its first
+	// repodata request is served from cache instead of a cold on-demand derive.
+	if h.primer != nil && remote.PackageType == models.PackageGitHubRPM {
+		h.primer.EnqueuePrime(remote)
 	}
 	writeJSON(w, http.StatusCreated, remote)
 }

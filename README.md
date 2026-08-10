@@ -46,11 +46,42 @@ metadata comes from a **ranged GET of just the RPM header** (the header sits at
 the front of the file, so the whole package is never downloaded); the sha256
 checksum comes from the GitHub asset `digest` when present, else a one-time
 lazy stream. Derived metadata is cached (keyed by asset) so repodata generation
-is cheap on repeat, and refreshed no more often than `mutable_ttl`.
+is served from primed DB rows, never a cold on-demand derive.
 
 Each package's `<location>` points back at the remote, which **302-redirects**
 the download to the `releases_remote` — an existing generic `github.com` remote
 that streams the actual bytes. `dnf` follows the redirect transparently.
+
+#### Background syncer
+
+A single process-wide **background syncer** keeps every `github_rpm` remote's
+derived metadata current off the client request path:
+
+- **Prime on create.** Creating a `github_rpm` remote enqueues a background prime
+  scan, so its metadata is derived right away without blocking the create call.
+  The first `dnf` request is served from cache. If a request arrives before the
+  prime lands, it returns a retryable `503` (with `Retry-After`) rather than
+  serving an empty repo or blocking on a multi-minute derive.
+- **Periodic re-check, driven by `mutable_ttl`.** Each remote is re-checked for
+  new or changed releases no more often than its `mutable_ttl`. New/changed
+  assets are derived incrementally; assets already cached are never re-fetched,
+  and assets that disappear upstream are pruned.
+- **ETag / 304 conditional requests.** The releases-list `ETag` is stored per
+  remote and sent as `If-None-Match`; a `304 Not Modified` means nothing changed
+  and the syncer derives nothing. GitHub does not count `304` conditional
+  responses against the rate limit, so an unchanged repo is nearly free — this is
+  the main lever keeping GitHub traffic low.
+- **Global rate limit.** Every GitHub call (releases list + each ranged asset
+  header GET) passes through a single token-bucket limiter **shared across all
+  remotes**, so GitHub is never hammered. Configure a token (`password`) on the
+  remote for the higher authenticated rate limit (~5000/hr vs ~60/hr
+  unauthenticated).
+- **Multi-replica coordination.** State is shared through the database. Before a
+  periodic scan a replica must atomically claim a per-remote lease
+  (`github_rpm_sync_state`: `last_synced_at`, `etag`, `sync_lease_owner`,
+  `sync_lease_expires`); only the winner scans. This bounds total GitHub load to
+  ~once per `mutable_ttl` regardless of replica count, and the shared `etag`
+  lets any replica issue the conditional request.
 
 ```hcl
 # Backend that serves the actual .rpm bytes from github.com.
@@ -242,6 +273,10 @@ S3 client supports MinIO, Ceph RGW, and AWS S3 (via minio-go).
 | `MINIO_BUCKET` | `artifacts` | S3 bucket |
 | `MINIO_SECURE` | `false` | Use HTTPS for S3 |
 | `MINIO_REGION` | | S3 region (AWS) |
+| `GITHUB_SYNC_RATE` | `1` | `github_rpm` syncer global GitHub request rate (req/s), shared across all remotes. `1`/s = 3600/hr, under an authenticated token's ~5000/hr; unauthenticated (~60/hr) relies on ETag/304 |
+| `GITHUB_SYNC_BURST` | `5` | Token-bucket burst for the shared limiter |
+| `GITHUB_SYNC_WORKERS` | `3` | Concurrent `github_rpm` scan workers |
+| `GITHUB_SYNC_POLL_INTERVAL` | `60` | Base scheduler tick in seconds; per-remote cadence is its `mutable_ttl`, enforced by the DB lease |
 
 ## Development
 

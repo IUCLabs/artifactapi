@@ -17,6 +17,7 @@ const (
 	PackageTerraform PackageType = "terraform"
 	PackageGoProxy   PackageType = "goproxy"
 	PackageGitHubRPM PackageType = "github_rpm"
+	PackageGitHubDeb PackageType = "github_deb"
 )
 
 var validPackageTypes = map[PackageType]bool{
@@ -32,6 +33,7 @@ var validPackageTypes = map[PackageType]bool{
 	PackageTerraform: true,
 	PackageGoProxy:   true,
 	PackageGitHubRPM: true,
+	PackageGitHubDeb: true,
 }
 
 func (p PackageType) Valid() bool {

@@ -194,7 +194,14 @@ func extractControl(deb []byte) (string, error) {
 		return "", err
 	}
 
-	tr := tar.NewReader(bytes.NewReader(tarBytes))
+	return readControlParagraph(tarBytes)
+}
+
+// readControlParagraph scans a decompressed control.tar and returns the raw
+// ./control paragraph. Shared by the local upload path (extractControl) and the
+// github_deb ranged-prefix parser.
+func readControlParagraph(controlTar []byte) (string, error) {
+	tr := tar.NewReader(bytes.NewReader(controlTar))
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -370,8 +377,12 @@ func generatePackages(metas []provider.DebMetadata) []byte {
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "Filename: %s\n", m.FilePath)
 		fmt.Fprintf(&b, "Size: %d\n", m.Size)
-		fmt.Fprintf(&b, "MD5sum: %s\n", m.MD5)
-		fmt.Fprintf(&b, "SHA256: %s\n", m.SHA256)
+		if m.MD5 != "" {
+			fmt.Fprintf(&b, "MD5sum: %s\n", m.MD5)
+		}
+		if m.SHA256 != "" {
+			fmt.Fprintf(&b, "SHA256: %s\n", m.SHA256)
+		}
 		b.WriteString("\n")
 	}
 	return b.Bytes()

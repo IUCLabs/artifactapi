@@ -12,18 +12,20 @@ import (
 )
 
 // Primer enqueues a background metadata prime for a newly created remote so the
-// create call never blocks on a derive. *rpm.Syncer satisfies it.
+// create call never blocks on a derive. *rpm.Syncer and *deb.Syncer satisfy it.
 type Primer interface {
 	EnqueuePrime(remote models.Remote)
 }
 
 type RemotesHandler struct {
-	db     *database.DB
-	primer Primer
+	db      *database.DB
+	primers map[models.PackageType]Primer
 }
 
-func NewRemotesHandler(db *database.DB, primer Primer) *RemotesHandler {
-	return &RemotesHandler{db: db, primer: primer}
+// NewRemotesHandler wires the handler to the per-type metadata primers. primers
+// may be nil; a package type with no registered primer simply skips priming.
+func NewRemotesHandler(db *database.DB, primers map[models.PackageType]Primer) *RemotesHandler {
+	return &RemotesHandler{db: db, primers: primers}
 }
 
 func (h *RemotesHandler) Routes() chi.Router {
@@ -84,10 +86,10 @@ func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Prime a github_rpm remote's metadata in the background so its first
-	// repodata request is served from cache instead of a cold on-demand derive.
-	if h.primer != nil && remote.PackageType == models.PackageGitHubRPM {
-		h.primer.EnqueuePrime(remote)
+	// Prime a metadata-only remote (github_rpm/github_deb) in the background so
+	// its first index request is served from cache instead of a cold derive.
+	if primer := h.primers[remote.PackageType]; primer != nil {
+		primer.EnqueuePrime(remote)
 	}
 	writeJSON(w, http.StatusCreated, remote)
 }

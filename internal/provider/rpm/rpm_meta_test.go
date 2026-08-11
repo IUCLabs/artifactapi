@@ -28,6 +28,8 @@ func (f *fakeMetaStore) InsertRPMMetadata(_ context.Context, m *provider.RPMMeta
 	return nil
 }
 
+func (f *fakeMetaStore) InsertDebMetadata(context.Context, *provider.DebMetadata) error { return nil }
+
 type fakeRPMReader struct{ metas []provider.RPMMetadata }
 
 func (f fakeRPMReader) ListRPMMetadataEntries(_ context.Context, _ string) ([]provider.RPMMetadata, error) {

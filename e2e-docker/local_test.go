@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/IUCLabs/artifactapi/internal/testsupport"
 )
 
 func uploadFile(t *testing.T, repo, filePath string, body []byte, contentType string) {
@@ -89,5 +91,48 @@ func TestLocalRPMRepodata(t *testing.T) {
 	s := string(body)
 	if !strings.Contains(s, "<repomd") || !strings.Contains(s, "primary") {
 		t.Fatalf("repomd.xml not a valid repodata document: %s", s)
+	}
+}
+
+// TestLocalDebRepo uploads a .deb and validates that the flat apt index
+// (Packages / Release) is generated automatically from the parsed control
+// stanza (the deb-local analog of rpm repodata generation).
+func TestLocalDebRepo(t *testing.T) {
+	createRepo(t, `{"name":"local-deb","package_type":"deb","repo_type":"local"}`)
+	defer deleteRepo(t, "local-deb")
+
+	deb := testsupport.MinimalDeb("e2e-testpkg", "1.0.0", "amd64")
+	uploadFile(t, "local-deb", "e2e-testpkg_1.0.0_amd64.deb", deb, "application/vnd.debian.binary-package")
+
+	// The index is generated asynchronously after upload; poll for it.
+	resp, body := getEventually(t, api("/api/v1/local/local-deb/Packages"), 15*time.Second)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Packages: status %d: %s", resp.StatusCode, body)
+	}
+	pkgs := string(body)
+	for _, want := range []string{"Package: e2e-testpkg", "Version: 1.0.0", "Architecture: amd64", "Filename: pool/e2e-testpkg_1.0.0_amd64.deb", "SHA256:"} {
+		if !strings.Contains(pkgs, want) {
+			t.Fatalf("Packages missing %q:\n%s", want, pkgs)
+		}
+	}
+
+	resp, body = doRequest(t, http.MethodGet, api("/api/v1/local/local-deb/Release"), nil, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Release: status %d: %s", resp.StatusCode, body)
+	}
+	rel := string(body)
+	for _, want := range []string{"Architectures: amd64", "SHA256:", "Packages"} {
+		if !strings.Contains(rel, want) {
+			t.Fatalf("Release missing %q:\n%s", want, rel)
+		}
+	}
+
+	// The .deb downloads back byte-identical from its pool path.
+	resp, body = doRequest(t, http.MethodGet, api("/api/v1/local/local-deb/pool/e2e-testpkg_1.0.0_amd64.deb"), nil, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("download deb: status %d: %s", resp.StatusCode, body)
+	}
+	if !bytes.Equal(body, deb) {
+		t.Fatalf("deb content mismatch")
 	}
 }

@@ -164,6 +164,24 @@ func (db *DB) migrate() error {
 		ALTER TABLE rpm_metadata ADD COLUMN IF NOT EXISTS conflicts JSONB DEFAULT '[]';
 		ALTER TABLE rpm_metadata ADD COLUMN IF NOT EXISTS obsoletes JSONB DEFAULT '[]';
 
+		CREATE TABLE IF NOT EXISTS deb_metadata (
+			id              BIGSERIAL PRIMARY KEY,
+			repo_name       TEXT NOT NULL,
+			file_path       TEXT NOT NULL,
+			content_hash    TEXT NOT NULL,
+			name            TEXT NOT NULL,
+			version         TEXT NOT NULL,
+			architecture    TEXT NOT NULL,
+			control         TEXT NOT NULL,
+			size            BIGINT DEFAULT 0,
+			md5             TEXT DEFAULT '',
+			sha256          TEXT DEFAULT '',
+			created_at      TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE(repo_name, file_path)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_deb_metadata_repo ON deb_metadata(repo_name);
+
 		CREATE TABLE IF NOT EXISTS github_rpm_sync_state (
 			remote_name        TEXT PRIMARY KEY,
 			etag               TEXT DEFAULT '',

@@ -47,6 +47,9 @@ func (f *fakeStore) DeleteRPMMetadata(_ context.Context, _, filePath string) err
 	return nil
 }
 
+func (f *fakeStore) InsertDebMetadata(context.Context, *provider.DebMetadata) error { return nil }
+func (f *fakeStore) DeleteDebMetadata(context.Context, string, string) error        { return nil }
+
 func (f *fakeStore) ListRPMMetadataEntries(ctx context.Context, _ string) ([]provider.RPMMetadata, error) {
 	// Mirror pgx: a canceled/expired context fails the read. This is what
 	// poisons the repodata response if the read runs on the inbound request.

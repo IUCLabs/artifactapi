@@ -11,6 +11,7 @@ const (
 	PackagePyPI      PackageType = "pypi"
 	PackageNPM       PackageType = "npm"
 	PackageRPM       PackageType = "rpm"
+	PackageDeb       PackageType = "deb"
 	PackageAlpine    PackageType = "alpine"
 	PackagePuppet    PackageType = "puppet"
 	PackageTerraform PackageType = "terraform"
@@ -25,6 +26,7 @@ var validPackageTypes = map[PackageType]bool{
 	PackagePyPI:      true,
 	PackageNPM:       true,
 	PackageRPM:       true,
+	PackageDeb:       true,
 	PackageAlpine:    true,
 	PackagePuppet:    true,
 	PackageTerraform: true,

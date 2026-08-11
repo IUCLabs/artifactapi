@@ -21,6 +21,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/gc"
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/alpine"
+	_ "github.com/IUCLabs/artifactapi/internal/provider/deb"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/docker"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/generic"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/goproxy"

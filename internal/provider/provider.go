@@ -61,6 +61,7 @@ type PostDeleteHook interface {
 
 type MetadataStore interface {
 	InsertRPMMetadata(ctx context.Context, meta *RPMMetadata) error
+	InsertDebMetadata(ctx context.Context, meta *DebMetadata) error
 }
 
 // RemoteServer lets a remote provider fully answer a request itself instead of
@@ -83,10 +84,35 @@ type RemoteMetadataStore interface {
 
 type MetadataDeleter interface {
 	DeleteRPMMetadata(ctx context.Context, repoName, filePath string) error
+	DeleteDebMetadata(ctx context.Context, repoName, filePath string) error
 }
 
 type RPMMetadataReader interface {
 	ListRPMMetadataEntries(ctx context.Context, repoName string) ([]RPMMetadata, error)
+}
+
+// DebMetadataReader is the read surface the deb LocalIndexer needs to
+// regenerate a flat apt repository (Packages/Release) from stored rows.
+// *database.DB satisfies it; ServeLocalIndex type-asserts the FileStore to it,
+// mirroring how the rpm provider reaches its RPMMetadataReader.
+type DebMetadataReader interface {
+	ListDebMetadataEntries(ctx context.Context, repoName string) ([]DebMetadata, error)
+}
+
+// DebMetadata is the derived per-package metadata for a Debian .deb, carrying
+// the full raw control stanza so the Packages index can be regenerated
+// faithfully alongside the computed size/md5/sha256 apt requires.
+type DebMetadata struct {
+	RepoName     string
+	FilePath     string
+	ContentHash  string
+	Name         string
+	Version      string
+	Architecture string
+	Control      string
+	Size         int64
+	MD5          string
+	SHA256       string
 }
 
 type RPMMetadata struct {

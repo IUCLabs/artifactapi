@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
@@ -185,6 +186,9 @@ type RPMMetadata struct {
 	Obsoletes     []RPMDep
 	Files         []RPMFile
 	Changelogs    []RPMChangelog
+	// CreatedAt is the persisted upload timestamp; used as a stable, replica-independent
+	// value for the repodata <time>/<revision> fields so generated indexes are deterministic.
+	CreatedAt time.Time
 }
 
 type RPMDep struct {

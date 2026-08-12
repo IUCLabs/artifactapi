@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
 )
@@ -65,6 +66,7 @@ type RPMMetadataRow struct {
 	Obsoletes     json.RawMessage
 	Files         json.RawMessage
 	Changelogs    json.RawMessage
+	CreatedAt     time.Time
 }
 
 func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]provider.RPMMetadata, error) {
@@ -94,6 +96,7 @@ func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]pr
 			SourceRPM:     r.SourceRPM,
 			URL:           r.URL,
 			Packager:      r.Packager,
+			CreatedAt:     r.CreatedAt,
 		}
 		json.Unmarshal(r.Requires, &meta.Requires)
 		json.Unmarshal(r.Provides, &meta.Provides)
@@ -112,10 +115,11 @@ func (db *DB) ListRPMMetadata(ctx context.Context, repoName string) ([]RPMMetada
 			name, epoch, version, release, arch,
 			summary, description, rpm_size, installed_size,
 			license, vendor, build_group, build_host, source_rpm, url, packager,
-			requires, provides, conflicts, obsoletes, files, changelogs
+			requires, provides, conflicts, obsoletes, files, changelogs,
+			created_at
 		FROM rpm_metadata
 		WHERE repo_name = $1
-		ORDER BY name, epoch, version, release, arch
+		ORDER BY name, epoch, version, release, arch, file_path
 	`, repoName)
 	if err != nil {
 		return nil, err
@@ -131,6 +135,7 @@ func (db *DB) ListRPMMetadata(ctx context.Context, repoName string) ([]RPMMetada
 			&r.Summary, &r.Description, &r.RPMSize, &r.InstalledSize,
 			&r.License, &r.Vendor, &r.Group, &r.BuildHost, &r.SourceRPM, &r.URL, &r.Packager,
 			&r.Requires, &r.Provides, &r.Conflicts, &r.Obsoletes, &r.Files, &r.Changelogs,
+			&r.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

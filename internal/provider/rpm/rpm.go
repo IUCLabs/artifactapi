@@ -275,7 +275,7 @@ func (p *Provider) serveRepomd(w http.ResponseWriter, r *http.Request, reader pr
 	filelistsHash := sha256Hex(filelists)
 	otherHash := sha256Hex(other)
 
-	repomd := generateRepomd(primaryHash, len(primary), filelistsHash, len(filelists), otherHash, len(other))
+	repomd := generateRepomd(repomdRevision(metas), primaryHash, len(primary), filelistsHash, len(filelists), otherHash, len(other))
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
@@ -315,8 +315,32 @@ func (p *Provider) serveOther(w http.ResponseWriter, r *http.Request, reader pro
 	w.Write(generateOtherXMLGZ(metas))
 }
 
-func generateRepomd(primaryHash string, primarySize int, filelistsHash string, filelistsSize int, otherHash string, otherSize int) []byte {
-	ts := fmt.Sprintf("%d", time.Now().Unix())
+// stableUnix maps a persisted timestamp to a fixed integer for repodata's
+// informational <time>/<timestamp> fields. Zero times (unset) collapse to 0 so
+// output stays byte-identical across replicas and requests. dnf does not
+// validate these values.
+func stableUnix(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+// repomdRevision derives repomd.xml's <revision>/<timestamp> from persisted
+// state: the newest package upload time in the repo. It changes only when the
+// repo's package set does, and is identical on every replica reading the same
+// rows, so repomd.xml is byte-stable.
+func repomdRevision(metas []provider.RPMMetadata) string {
+	var max int64
+	for _, m := range metas {
+		if u := stableUnix(m.CreatedAt); u > max {
+			max = u
+		}
+	}
+	return fmt.Sprintf("%d", max)
+}
+
+func generateRepomd(ts string, primaryHash string, primarySize int, filelistsHash string, filelistsSize int, otherHash string, otherSize int) []byte {
 	var b bytes.Buffer
 	b.WriteString(xml.Header)
 	b.WriteString(`<repomd xmlns="http://linux.duke.edu/metadata/repo" xmlns:rpm="http://linux.duke.edu/metadata/rpm">` + "\n")
@@ -359,7 +383,7 @@ func generatePrimaryXMLGZ(metas []provider.RPMMetadata) []byte {
 		if m.URL != "" {
 			fmt.Fprintf(&xmlBuf, "  <url>%s</url>\n", xmlEscape(m.URL))
 		}
-		fmt.Fprintf(&xmlBuf, "  <time file=\"%d\" build=\"0\"/>\n", time.Now().Unix())
+		fmt.Fprintf(&xmlBuf, "  <time file=\"%d\" build=\"0\"/>\n", stableUnix(m.CreatedAt))
 		fmt.Fprintf(&xmlBuf, "  <size package=\"%d\" installed=\"%d\" archive=\"0\"/>\n", m.RPMSize, m.InstalledSize)
 		fmt.Fprintf(&xmlBuf, "  <location href=\"%s\"/>\n", xmlEscape(m.FilePath))
 		fmt.Fprintf(&xmlBuf, "  <format>\n")
@@ -484,6 +508,9 @@ func xmlEscape(s string) string {
 func gzipBytes(data []byte) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
+	// Pin every header field so the compressed bytes (and their sha256) depend
+	// only on the payload, never on wall-clock time or the Go version's gzip defaults.
+	gz.Header = gzip.Header{OS: 255}
 	gz.Write(data)
 	gz.Close()
 	return buf.Bytes()

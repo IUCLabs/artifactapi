@@ -5,35 +5,37 @@ import "fmt"
 type PackageType string
 
 const (
-	PackageGeneric   PackageType = "generic"
-	PackageDocker    PackageType = "docker"
-	PackageHelm      PackageType = "helm"
-	PackagePyPI      PackageType = "pypi"
-	PackageNPM       PackageType = "npm"
-	PackageRPM       PackageType = "rpm"
-	PackageDeb       PackageType = "deb"
-	PackageAlpine    PackageType = "alpine"
-	PackagePuppet    PackageType = "puppet"
-	PackageTerraform PackageType = "terraform"
-	PackageGoProxy   PackageType = "goproxy"
-	PackageGitHubRPM PackageType = "github_rpm"
-	PackageGitHubDeb PackageType = "github_deb"
+	PackageGeneric      PackageType = "generic"
+	PackageDocker       PackageType = "docker"
+	PackageHelm         PackageType = "helm"
+	PackagePyPI         PackageType = "pypi"
+	PackageNPM          PackageType = "npm"
+	PackageRPM          PackageType = "rpm"
+	PackageDeb          PackageType = "deb"
+	PackageAlpine       PackageType = "alpine"
+	PackagePuppet       PackageType = "puppet"
+	PackageTerraform    PackageType = "terraform"
+	PackageGoProxy      PackageType = "goproxy"
+	PackageGitHubRPM    PackageType = "github_rpm"
+	PackageGitHubDeb    PackageType = "github_deb"
+	PackageGitHubAlpine PackageType = "github_alpine"
 )
 
 var validPackageTypes = map[PackageType]bool{
-	PackageGeneric:   true,
-	PackageDocker:    true,
-	PackageHelm:      true,
-	PackagePyPI:      true,
-	PackageNPM:       true,
-	PackageRPM:       true,
-	PackageDeb:       true,
-	PackageAlpine:    true,
-	PackagePuppet:    true,
-	PackageTerraform: true,
-	PackageGoProxy:   true,
-	PackageGitHubRPM: true,
-	PackageGitHubDeb: true,
+	PackageGeneric:      true,
+	PackageDocker:       true,
+	PackageHelm:         true,
+	PackagePyPI:         true,
+	PackageNPM:          true,
+	PackageRPM:          true,
+	PackageDeb:          true,
+	PackageAlpine:       true,
+	PackagePuppet:       true,
+	PackageTerraform:    true,
+	PackageGoProxy:      true,
+	PackageGitHubRPM:    true,
+	PackageGitHubDeb:    true,
+	PackageGitHubAlpine: true,
 }
 
 func (p PackageType) Valid() bool {

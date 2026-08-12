@@ -19,6 +19,8 @@ func TestPackageTypeValid(t *testing.T) {
 		models.PackageTerraform,
 		models.PackageGoProxy,
 		models.PackageGitHubRPM,
+		models.PackageGitHubDeb,
+		models.PackageGitHubAlpine,
 	}
 	for _, pt := range valid {
 		if !pt.Valid() {

@@ -20,7 +20,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/gc"
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
-	_ "github.com/IUCLabs/artifactapi/internal/provider/alpine"
+	"github.com/IUCLabs/artifactapi/internal/provider/alpine"
 	"github.com/IUCLabs/artifactapi/internal/provider/deb"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/docker"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/generic"
@@ -52,6 +52,7 @@ type Server struct {
 	gc           *gc.Collector
 	syncer       *rpm.Syncer
 	debSyncer    *deb.Syncer
+	alpineSyncer *alpine.Syncer
 }
 
 func New(cfg *config.Config, version string) (*Server, error) {
@@ -105,6 +106,12 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		Workers:      cfg.GitHubSyncWorkers,
 		PollInterval: time.Duration(cfg.GitHubSyncPollInterval) * time.Second,
 	})
+	alpineSyncer := alpine.NewSyncer(db, alpine.SyncConfig{
+		RatePerSec:   cfg.GitHubSyncRatePerSec,
+		Burst:        cfg.GitHubSyncBurst,
+		Workers:      cfg.GitHubSyncWorkers,
+		PollInterval: time.Duration(cfg.GitHubSyncPollInterval) * time.Second,
+	})
 
 	// The terraform registry signs with a GPG key. A configured file wins (BYO
 	// key); otherwise artifactapi generates one on first start and persists it in
@@ -138,6 +145,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		gc:           collector,
 		syncer:       syncer,
 		debSyncer:    debSyncer,
+		alpineSyncer: alpineSyncer,
 	}
 
 	s.router = s.routes()
@@ -168,8 +176,9 @@ func (s *Server) routes() chi.Router {
 	r.Mount("/v2", proxyHandler.DockerV2Routes())
 
 	remotesHandler := v2.NewRemotesHandler(s.db, map[models.PackageType]v2.Primer{
-		models.PackageGitHubRPM: s.syncer,
-		models.PackageGitHubDeb: s.debSyncer,
+		models.PackageGitHubRPM:    s.syncer,
+		models.PackageGitHubDeb:    s.debSyncer,
+		models.PackageGitHubAlpine: s.alpineSyncer,
 	})
 	virtualsHandler := v2.NewVirtualsHandler(s.db)
 	healthHandler := v2.NewHealthHandler(s.db, s.cache, s.store)
@@ -239,6 +248,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.gc.Run(ctx)
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
+	go s.alpineSyncer.Run(ctx)
 
 	httpServer := s.newHTTPServer()
 
@@ -261,6 +271,7 @@ func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 	go s.gc.Run(ctx)
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
+	go s.alpineSyncer.Run(ctx)
 
 	httpServer := s.newHTTPServer()
 

@@ -3,7 +3,10 @@
 package e2edocker
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -134,5 +137,57 @@ func TestLocalDebRepo(t *testing.T) {
 	}
 	if !bytes.Equal(body, deb) {
 		t.Fatalf("deb content mismatch")
+	}
+}
+
+// TestLocalAlpineIndex uploads an .apk to an alpine local repo and validates
+// that a per-arch APKINDEX.tar.gz is generated automatically from the parsed
+// .PKGINFO (the apk-local analog of rpm repodata / deb Packages generation).
+func TestLocalAlpineIndex(t *testing.T) {
+	createRepo(t, `{"name":"local-alpine","package_type":"alpine","repo_type":"local"}`)
+	defer deleteRepo(t, "local-alpine")
+
+	apk := testsupport.MinimalApk("e2e-testpkg", "1.0-r0", "x86_64")
+	uploadFile(t, "local-alpine", "x86_64/e2e-testpkg-1.0-r0.apk", apk, "application/vnd.android.package-archive")
+
+	// The index is generated asynchronously after upload; poll for it.
+	resp, body := getEventually(t, api("/api/v1/local/local-alpine/x86_64/APKINDEX.tar.gz"), 15*time.Second)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("APKINDEX: status %d: %s", resp.StatusCode, body)
+	}
+
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("APKINDEX not gzip: %v", err)
+	}
+	tarBytes, _ := io.ReadAll(zr)
+	tr := tar.NewReader(bytes.NewReader(tarBytes))
+	var index string
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("APKINDEX not tar: %v", err)
+		}
+		if hdr.Name == "APKINDEX" {
+			b, _ := io.ReadAll(tr)
+			index = string(b)
+		}
+	}
+	for _, want := range []string{"P:e2e-testpkg", "V:1.0-r0", "A:x86_64", "C:Q1", "S:", "I:"} {
+		if !strings.Contains(index, want) {
+			t.Fatalf("APKINDEX missing %q:\n%s", want, index)
+		}
+	}
+
+	// The .apk downloads back byte-identical from its arch path.
+	resp, body = doRequest(t, http.MethodGet, api("/api/v1/local/local-alpine/x86_64/e2e-testpkg-1.0-r0.apk"), nil, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("download apk: status %d: %s", resp.StatusCode, body)
+	}
+	if !bytes.Equal(body, apk) {
+		t.Fatalf("apk content mismatch")
 	}
 }

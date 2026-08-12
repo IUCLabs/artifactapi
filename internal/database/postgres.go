@@ -182,6 +182,35 @@ func (db *DB) migrate() error {
 
 		CREATE INDEX IF NOT EXISTS idx_deb_metadata_repo ON deb_metadata(repo_name);
 
+		CREATE TABLE IF NOT EXISTS alpine_metadata (
+			id                BIGSERIAL PRIMARY KEY,
+			repo_name         TEXT NOT NULL,
+			file_path         TEXT NOT NULL,
+			content_hash      TEXT NOT NULL,
+			checksum          TEXT NOT NULL,
+			name              TEXT NOT NULL,
+			version           TEXT NOT NULL,
+			arch              TEXT NOT NULL,
+			download_size     BIGINT DEFAULT 0,
+			installed_size    BIGINT DEFAULT 0,
+			description       TEXT DEFAULT '',
+			url               TEXT DEFAULT '',
+			license           TEXT DEFAULT '',
+			origin            TEXT DEFAULT '',
+			maintainer        TEXT DEFAULT '',
+			build_time        BIGINT DEFAULT 0,
+			commit_hash       TEXT DEFAULT '',
+			provider_priority TEXT DEFAULT '',
+			depends           TEXT DEFAULT '',
+			provides          TEXT DEFAULT '',
+			install_if        TEXT DEFAULT '',
+			created_at        TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE(repo_name, file_path)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_alpine_metadata_repo ON alpine_metadata(repo_name);
+		CREATE INDEX IF NOT EXISTS idx_alpine_metadata_repo_arch ON alpine_metadata(repo_name, arch);
+
 		CREATE TABLE IF NOT EXISTS github_rpm_sync_state (
 			remote_name        TEXT PRIMARY KEY,
 			etag               TEXT DEFAULT '',

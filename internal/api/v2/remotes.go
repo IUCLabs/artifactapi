@@ -1,8 +1,10 @@
 package v2
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -17,15 +19,23 @@ type Primer interface {
 	EnqueuePrime(remote models.Remote)
 }
 
+// MetadataFlusher purges a remote's cached mutable metadata (repodata / Release
+// / APKINDEX freshness keys). *cache.Redis satisfies it.
+type MetadataFlusher interface {
+	FlushRemote(ctx context.Context, remote string) error
+}
+
 type RemotesHandler struct {
 	db      *database.DB
+	cache   MetadataFlusher
 	primers map[models.PackageType]Primer
 }
 
-// NewRemotesHandler wires the handler to the per-type metadata primers. primers
-// may be nil; a package type with no registered primer simply skips priming.
-func NewRemotesHandler(db *database.DB, primers map[models.PackageType]Primer) *RemotesHandler {
-	return &RemotesHandler{db: db, primers: primers}
+// NewRemotesHandler wires the handler to the metadata cache and per-type
+// primers. cache may be nil (flush-on-backend-change is skipped); primers may
+// be nil (a package type with no registered primer simply skips priming).
+func NewRemotesHandler(db *database.DB, cache MetadataFlusher, primers map[models.PackageType]Primer) *RemotesHandler {
+	return &RemotesHandler{db: db, cache: cache, primers: primers}
 }
 
 func (h *RemotesHandler) Routes() chi.Router {
@@ -106,9 +116,29 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Capture the current backend before the update so we can tell whether the
+	// remote's base_url (its upstream) changed. A read failure just means we
+	// skip the freshness flush; it must not block the update.
+	oldBaseURL, oldKnown := "", false
+	if existing, err := h.db.GetRemote(r.Context(), name); err == nil {
+		oldBaseURL, oldKnown = existing.BaseURL, true
+	}
 	if err := h.db.UpdateRemote(r.Context(), &remote); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Changing the backend invalidates any cached mutable metadata (repodata /
+	// Release / APKINDEX): purge it so the next request re-fetches from the new
+	// upstream instead of serving stale data until TTL expiry. A flush failure
+	// is logged but does not fail the request — the DB update already landed.
+	if oldKnown && oldBaseURL != remote.BaseURL && h.cache != nil {
+		if err := h.cache.FlushRemote(r.Context(), name); err != nil {
+			slog.Warn("flush cached metadata after base_url change failed",
+				"remote", name, "error", err)
+		} else {
+			slog.Info("flushed cached metadata after base_url change",
+				"remote", name, "old_base_url", oldBaseURL, "new_base_url", remote.BaseURL)
+		}
 	}
 	writeJSON(w, http.StatusOK, remote)
 }

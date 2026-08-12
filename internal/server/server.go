@@ -175,7 +175,7 @@ func (s *Server) routes() chi.Router {
 	r.Mount("/api/v1", proxyHandler.Routes())
 	r.Mount("/v2", proxyHandler.DockerV2Routes())
 
-	remotesHandler := v2.NewRemotesHandler(s.db, map[models.PackageType]v2.Primer{
+	remotesHandler := v2.NewRemotesHandler(s.db, s.cache, map[models.PackageType]v2.Primer{
 		models.PackageGitHubRPM:    s.syncer,
 		models.PackageGitHubDeb:    s.debSyncer,
 		models.PackageGitHubAlpine: s.alpineSyncer,

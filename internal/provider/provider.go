@@ -114,6 +114,10 @@ type DebMetadata struct {
 	Size         int64
 	MD5          string
 	SHA256       string
+	// CreatedAt is the persisted insert time; the Release Date: is derived from
+	// the newest value so the index is byte-identical across replicas and
+	// regenerations (issue #117) rather than stamped from wall clock.
+	CreatedAt time.Time
 }
 
 // AlpineMetadataStore / AlpineMetadataDeleter / AlpineMetadataReader are the

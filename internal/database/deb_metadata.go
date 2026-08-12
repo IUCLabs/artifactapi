@@ -31,10 +31,10 @@ func (db *DB) ListDebMetadataEntries(ctx context.Context, repoName string) ([]pr
 	rows, err := db.Pool.Query(ctx, `
 		SELECT repo_name, file_path, content_hash,
 			name, version, architecture, control,
-			size, md5, sha256
+			size, md5, sha256, created_at
 		FROM deb_metadata
 		WHERE repo_name = $1
-		ORDER BY name, version, architecture
+		ORDER BY name, version, architecture, file_path
 	`, repoName)
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func (db *DB) ListDebMetadataEntries(ctx context.Context, repoName string) ([]pr
 		if err := rows.Scan(
 			&m.RepoName, &m.FilePath, &m.ContentHash,
 			&m.Name, &m.Version, &m.Architecture, &m.Control,
-			&m.Size, &m.MD5, &m.SHA256,
+			&m.Size, &m.MD5, &m.SHA256, &m.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

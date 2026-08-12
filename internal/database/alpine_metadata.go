@@ -41,7 +41,7 @@ func (db *DB) ListAlpineMetadataEntries(ctx context.Context, repoName string) ([
 			depends, provides, install_if
 		FROM alpine_metadata
 		WHERE repo_name = $1
-		ORDER BY name, version, arch
+		ORDER BY name, version, arch, file_path
 	`, repoName)
 	if err != nil {
 		return nil, err

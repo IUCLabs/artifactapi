@@ -15,6 +15,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"archive/tar"
 
@@ -376,7 +377,10 @@ func generateAPKIndex(metas []provider.AlpineMetadata) []byte {
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
 	body := idx.Bytes()
-	tw.WriteHeader(&tar.Header{Name: "APKINDEX", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg})
+	// ModTime is pinned to the Unix epoch (never wall clock) so APKINDEX.tar.gz
+	// is byte-identical across replicas and regenerations (issue #117); apk
+	// clients ignore the tar mtime.
+	tw.WriteHeader(&tar.Header{Name: "APKINDEX", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg, ModTime: time.Unix(0, 0)})
 	tw.Write(body)
 	tw.Close()
 

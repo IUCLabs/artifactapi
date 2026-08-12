@@ -395,7 +395,7 @@ func generateRelease(metas []provider.DebMetadata) []byte {
 	arches := uniqueArches(metas)
 
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "Date: %s\n", time.Now().UTC().Format(time.RFC1123Z))
+	fmt.Fprintf(&b, "Date: %s\n", releaseDate(metas).Format(time.RFC1123Z))
 	fmt.Fprintf(&b, "Architectures: %s\n", strings.Join(arches, " "))
 	b.WriteString("Acquire-By-Hash: no\n")
 
@@ -408,6 +408,21 @@ func generateRelease(metas []provider.DebMetadata) []byte {
 	writeReleaseEntry(&b, sha256Hex(packagesGz), len(packagesGz), "Packages.gz")
 
 	return b.Bytes()
+}
+
+// releaseDate derives the Release Date: from the newest package's persisted
+// created_at (in UTC) so the file is byte-identical across the no-affinity
+// replicas and across regenerations (issue #117); an empty repo falls back to
+// the Unix epoch. This never uses wall clock, which also keeps Date: from
+// running ahead of any Valid-Until logic.
+func releaseDate(metas []provider.DebMetadata) time.Time {
+	newest := time.Unix(0, 0)
+	for _, m := range metas {
+		if m.CreatedAt.After(newest) {
+			newest = m.CreatedAt
+		}
+	}
+	return newest.UTC()
 }
 
 func writeReleaseEntry(b *bytes.Buffer, hash string, size int, name string) {

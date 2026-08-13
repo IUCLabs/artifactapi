@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/cache"
@@ -35,6 +37,10 @@ type Engine struct {
 	cas       *storage.CAS
 	circuit   *CircuitBreaker
 	accessLog chan database.AccessLogEntry
+	// rrCounters holds a per-remote round-robin cursor (remoteName ->
+	// *atomic.Uint64) used to rotate the starting mirror across upstream base
+	// URLs. Distribution is per-replica and approximate, which is fine.
+	rrCounters sync.Map
 }
 
 func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
@@ -222,7 +228,30 @@ func (e *Engine) Head(ctx context.Context, remote models.Remote, path string, pr
 	return e.headUpstream(ctx, remote, path, prov)
 }
 
+// headUpstream issues an upstream HEAD, load-balancing across the remote's base
+// URLs and failing over to the next mirror on a network error or 5xx.
 func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider) (*HeadResult, error) {
+	order := e.baseURLAttemptOrder(remote)
+	if len(order) == 0 {
+		return nil, &ProxyError{Status: http.StatusBadGateway, Message: "no upstream base_url configured"}
+	}
+	var lastErr error
+	for i, url := range order {
+		result, err := e.headUpstreamOnce(ctx, withBaseURL(remote, url), path, prov)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if i < len(order)-1 && shouldFailover(err) {
+			slog.Warn("upstream HEAD failed, failing over", "remote", remote.Name, "base_url", url, "error", err)
+			continue
+		}
+		return nil, err
+	}
+	return nil, lastErr
+}
+
+func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider) (*HeadResult, error) {
 	url := prov.UpstreamURL(remote, path)
 
 	authHeaders, err := prov.AuthHeaders(ctx, remote)
@@ -277,7 +306,31 @@ func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path st
 	return &HeadResult{ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
 }
 
+// fetchFromUpstream fetches an artifact from upstream, load-balancing across the
+// remote's base URLs and failing over to the next mirror on a network error or
+// 5xx before returning an error.
 func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
+	order := e.baseURLAttemptOrder(remote)
+	if len(order) == 0 {
+		return nil, &ProxyError{Status: http.StatusBadGateway, Message: "no upstream base_url configured"}
+	}
+	var lastErr error
+	for i, url := range order {
+		result, err := e.fetchFromUpstreamOnce(ctx, withBaseURL(remote, url), path, prov, class, ttl, clientHeaders)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if i < len(order)-1 && shouldFailover(err) {
+			slog.Warn("upstream fetch failed, failing over", "remote", remote.Name, "base_url", url, "error", err)
+			continue
+		}
+		return nil, err
+	}
+	return nil, lastErr
+}
+
+func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
 	url := prov.UpstreamURL(remote, path)
 
 	authHeaders, err := prov.AuthHeaders(ctx, remote)
@@ -454,7 +507,31 @@ func (e *Engine) serveFromStore(ctx context.Context, remote models.Remote, path 
 	}, nil
 }
 
+// checkUpstream issues a conditional upstream HEAD (If-None-Match), load
+// balancing across the remote's base URLs and failing over to the next mirror on
+// a network error or 5xx.
 func (e *Engine) checkUpstream(ctx context.Context, remote models.Remote, path, etag string, prov provider.Provider) (bool, error) {
+	order := e.baseURLAttemptOrder(remote)
+	if len(order) == 0 {
+		return false, &ProxyError{Status: http.StatusBadGateway, Message: "no upstream base_url configured"}
+	}
+	var lastErr error
+	for i, url := range order {
+		notModified, err := e.checkUpstreamOnce(ctx, withBaseURL(remote, url), path, etag, prov)
+		if err == nil {
+			return notModified, nil
+		}
+		lastErr = err
+		if i < len(order)-1 && shouldFailover(err) {
+			slog.Warn("upstream revalidation failed, failing over", "remote", remote.Name, "base_url", url, "error", err)
+			continue
+		}
+		return false, err
+	}
+	return false, lastErr
+}
+
+func (e *Engine) checkUpstreamOnce(ctx context.Context, remote models.Remote, path, etag string, prov provider.Provider) (bool, error) {
 	url := prov.UpstreamURL(remote, path)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
@@ -648,4 +725,46 @@ func (e *UpstreamError) Unwrap() error { return e.Err }
 func isNetworkError(err error) bool {
 	var ue *UpstreamError
 	return errors.As(err, &ue)
+}
+
+// baseURLAttemptOrder returns the ordered upstream base URLs to try for a single
+// request, drawn from the remote's pool ([base_url] + mirrorlist). A multi-mirror
+// remote starts at the next round-robin position and advances linearly for
+// failover; a remote with no mirrorlist yields exactly [base_url], preserving the
+// original single-attempt behavior.
+func (e *Engine) baseURLAttemptOrder(remote models.Remote) []string {
+	urls := remote.UpstreamPool()
+	if len(urls) <= 1 {
+		return urls
+	}
+	v, _ := e.rrCounters.LoadOrStore(remote.Name, new(atomic.Uint64))
+	start := int(v.(*atomic.Uint64).Add(1) - 1)
+	ordered := make([]string, len(urls))
+	for i := range urls {
+		ordered[i] = urls[(start+i)%len(urls)]
+	}
+	return ordered
+}
+
+// withBaseURL narrows a remote's active BaseURL to a single selected mirror so
+// providers (UpstreamURL/AuthHeaders/RewriteResponse) operate on exactly that
+// upstream for this attempt.
+func withBaseURL(remote models.Remote, url string) models.Remote {
+	remote.BaseURL = url
+	remote.Mirrorlist = nil
+	return remote
+}
+
+// shouldFailover reports whether an upstream attempt error is worth retrying
+// against the next mirror: network errors/timeouts and upstream 5xx responses.
+// Definitive statuses (404/403/401/...) are returned to the caller unchanged.
+func shouldFailover(err error) bool {
+	if isNetworkError(err) {
+		return true
+	}
+	var pe *ProxyError
+	if errors.As(err, &pe) {
+		return pe.Status >= 500
+	}
+	return false
 }

@@ -17,8 +17,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> building and starting stack (postgres, redis, minio, mockupstream, artifactapi)"
-"${COMPOSE[@]}" up -d --build postgres redis minio mockupstream artifactapi
+echo "==> building and starting stack (postgres, redis, minio, mockupstream(s), artifactapi)"
+"${COMPOSE[@]}" up -d --build postgres redis minio mockupstream mockupstreama mockupstreamb artifactapi
 
 echo "==> waiting for artifactapi health at ${API_URL}"
 for i in $(seq 1 60); do
@@ -34,7 +34,17 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "==> running dockerised e2e suite"
+# Resolve the compose network the artifactapi container is attached to, so the
+# real-package-manager test can launch a stock distro container on the same
+# network and reach artifactapi by service name.
+API_CID="$("${COMPOSE[@]}" ps -q artifactapi)"
+COMPOSE_NETWORK="$(docker inspect -f '{{range $k,$_ := .NetworkSettings.Networks}}{{$k}}{{end}}' "${API_CID}" 2>/dev/null || true)"
+
+echo "==> running dockerised e2e suite (compose network: ${COMPOSE_NETWORK:-unknown})"
 ARTIFACTAPI_URL="${API_URL}" \
 MOCK_UPSTREAM_INTERNAL="${MOCK_UPSTREAM_INTERNAL:-http://mockupstream}" \
+MOCK_UPSTREAM_A_INTERNAL="${MOCK_UPSTREAM_A_INTERNAL:-http://mockupstreama}" \
+MOCK_UPSTREAM_B_INTERNAL="${MOCK_UPSTREAM_B_INTERNAL:-http://mockupstreamb}" \
+ARTIFACTAPI_INTERNAL="${ARTIFACTAPI_INTERNAL:-http://artifactapi:8000}" \
+COMPOSE_NETWORK="${COMPOSE_NETWORK}" \
   go test -tags=dockere2e -count=1 -timeout=10m -v ./e2e-docker/...

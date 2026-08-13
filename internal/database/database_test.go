@@ -99,6 +99,39 @@ func TestRemotesCRUD(t *testing.T) {
 	}
 }
 
+func TestRemoteMirrorlistRoundTrip(t *testing.T) {
+	requireDB(t)
+	mirrors := []string{"https://b.example", "https://c.example"}
+	if err := testDB.CreateRemote(ctx(), &models.Remote{
+		Name: "r-mirror", PackageType: models.PackageRPM, RepoType: models.RepoTypeRemote,
+		BaseURL: "https://a.example", Mirrorlist: mirrors, MutableTTL: 3600,
+	}); err != nil {
+		t.Fatalf("create mirrorlist remote: %v", err)
+	}
+	defer testDB.DeleteRemote(ctx(), "r-mirror")
+
+	got, err := testDB.GetRemote(ctx(), "r-mirror")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.BaseURL != "https://a.example" {
+		t.Fatalf("BaseURL = %q, want https://a.example", got.BaseURL)
+	}
+	if len(got.Mirrorlist) != 2 || got.Mirrorlist[0] != mirrors[0] || got.Mirrorlist[1] != mirrors[1] {
+		t.Fatalf("Mirrorlist round-trip = %v, want %v", got.Mirrorlist, mirrors)
+	}
+
+	// Clearing the mirrorlist on update persists an empty list.
+	got.Mirrorlist = nil
+	if err := testDB.UpdateRemote(ctx(), got); err != nil {
+		t.Fatalf("update clearing mirrorlist: %v", err)
+	}
+	got, _ = testDB.GetRemote(ctx(), "r-mirror")
+	if len(got.Mirrorlist) != 0 {
+		t.Fatalf("mirrorlist after clear = %v, want empty", got.Mirrorlist)
+	}
+}
+
 func TestArtifactsAndBlobs(t *testing.T) {
 	requireDB(t)
 	seedRemote(t, "r-art")

@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"time"
 )
@@ -39,9 +40,13 @@ type Remote struct {
 	PackageType PackageType `json:"package_type"`
 	RepoType    RepoType    `json:"repo_type"`
 	BaseURL     string      `json:"base_url"`
-	Description string      `json:"description,omitempty"`
-	Username    string      `json:"-"`
-	Password    string      `json:"-"`
+	// Mirrorlist holds additional upstream mirror base URLs. The effective
+	// upstream pool is [base_url] + mirrorlist, load-balanced round-robin with
+	// failover by the proxy engine. Only valid on remote rpm/deb/apk repos.
+	Mirrorlist  []string `json:"mirrorlist,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Username    string   `json:"-"`
+	Password    string   `json:"-"`
 
 	ImmutableTTL int  `json:"immutable_ttl"`
 	MutableTTL   int  `json:"mutable_ttl"`
@@ -70,6 +75,51 @@ type Remote struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// mirrorlistPackageTypes are the package types for which a mirrorlist is
+// allowed: OS package repos (rpm, deb, apk/alpine) that fetch many small files
+// and benefit most from mirror load-balancing and failover.
+var mirrorlistPackageTypes = map[PackageType]bool{
+	PackageRPM:    true,
+	PackageDeb:    true,
+	PackageAlpine: true,
+}
+
+// UpstreamPool returns the ordered upstream base URLs for this remote: the
+// primary base_url first, followed by any mirrorlist entries. The proxy engine
+// load-balances round-robin across the pool and fails over between them.
+func (r Remote) UpstreamPool() []string {
+	pool := make([]string, 0, 1+len(r.Mirrorlist))
+	if r.BaseURL != "" {
+		pool = append(pool, r.BaseURL)
+	}
+	pool = append(pool, r.Mirrorlist...)
+	return pool
+}
+
+// ValidateMirrorlist enforces that a mirrorlist is only configured on remote
+// rpm/deb/apk repositories and that every entry is a parseable http/https URL.
+func (r *Remote) ValidateMirrorlist() error {
+	if len(r.Mirrorlist) == 0 {
+		return nil
+	}
+	if r.RepoType != RepoTypeRemote {
+		return fmt.Errorf("mirrorlist is only allowed on remote repositories")
+	}
+	if !mirrorlistPackageTypes[r.PackageType] {
+		return fmt.Errorf("mirrorlist is only allowed for rpm, deb and alpine package types, not %q", r.PackageType)
+	}
+	for _, u := range r.Mirrorlist {
+		parsed, err := url.ParseRequestURI(u)
+		if err != nil {
+			return fmt.Errorf("invalid mirrorlist url %q: %w", u, err)
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("mirrorlist url %q must be http or https", u)
+		}
+	}
+	return nil
 }
 
 // ValidatePatterns ensures every configured regex compiles. Storing an

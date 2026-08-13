@@ -44,6 +44,7 @@ func (db *DB) migrate() error {
 			package_type    TEXT NOT NULL,
 			repo_type       TEXT DEFAULT 'remote',
 			base_url        TEXT NOT NULL DEFAULT '',
+			mirrorlist      TEXT[] DEFAULT '{}',
 			description     TEXT DEFAULT '',
 			username        TEXT DEFAULT '',
 			password        TEXT DEFAULT '',
@@ -124,6 +125,7 @@ func (db *DB) migrate() error {
 		CREATE INDEX IF NOT EXISTS idx_access_log_remote_time ON access_log(remote_name, created_at);
 
 		ALTER TABLE remotes ADD COLUMN IF NOT EXISTS repo_type TEXT DEFAULT 'remote';
+		ALTER TABLE remotes ADD COLUMN IF NOT EXISTS mirrorlist TEXT[] DEFAULT '{}';
 		ALTER TABLE remotes ADD COLUMN IF NOT EXISTS upstream_dial_timeout INTEGER DEFAULT 0;
 		ALTER TABLE remotes ADD COLUMN IF NOT EXISTS upstream_tls_timeout INTEGER DEFAULT 0;
 		ALTER TABLE remotes ADD COLUMN IF NOT EXISTS upstream_response_header_timeout INTEGER DEFAULT 0;

@@ -30,6 +30,12 @@ already-running stack.
   index), rpm (real package + **automatic repodata** generation).
 - **Virtual repositories** — pypi simple-index merge and helm `index.yaml` merge
   across two members.
+- **Mirrorlist** — an rpm remote with a `mirrorlist` of extra upstream mirrors
+  (pool = `base_url` + `mirrorlist`): round-robin distribution across both mirrors
+  (constant-body `mockupstreama` / `mockupstreamb`), failover past a dead primary,
+  no-mirrorlist regression, and a real `dnf` (stock `rockylinux:9` container)
+  `makecache` + `install` through a two-mirror rpm remote whose `base_url` is dead
+  — a dead mirror must not break the client.
 
 ## Fixtures
 

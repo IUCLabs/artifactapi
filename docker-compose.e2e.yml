@@ -9,10 +9,26 @@ services:
     # No host port needed: only the artifactapi container talks to it, and the
     # tests compare served bytes against the on-disk fixtures.
 
+  # Two constant-body upstreams for the multi-base_url suite: each returns a
+  # distinct, upstream-identifying body for any path, so round-robin
+  # distribution across a two-mirror remote is directly observable.
+  mockupstreama:
+    image: nginx:alpine
+    volumes:
+      - ./e2e-docker/mirror-conf/a.conf:/etc/nginx/conf.d/default.conf:ro,z
+  mockupstreamb:
+    image: nginx:alpine
+    volumes:
+      - ./e2e-docker/mirror-conf/b.conf:/etc/nginx/conf.d/default.conf:ro,z
+
   artifactapi:
     # The host port is set via ARTIFACTAPI_PORT (see scripts/docker-e2e.sh),
     # defaulting to 8000; the e2e run uses 8001 to avoid colliding with a
     # locally-running instance.
     depends_on:
       mockupstream:
+        condition: service_started
+      mockupstreama:
+        condition: service_started
+      mockupstreamb:
         condition: service_started

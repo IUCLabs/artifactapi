@@ -36,6 +36,12 @@ already-running stack.
   no-mirrorlist regression, and a real `dnf` (stock `rockylinux:9` container)
   `makecache` + `install` through a two-mirror rpm remote whose `base_url` is dead
   — a dead mirror must not break the client.
+- **Mirror strategy (`least_conn`)** — a `mirror_strategy: least_conn` rpm remote
+  over the two constant-body mirrors exercises the least-connections selection
+  path end-to-end (both mirrors serve, all requests succeed), plus a real `dnf`
+  install through a `least_conn` remote with a dead primary (failover unchanged).
+  The precise least-loaded pick is asserted deterministically in the proxy unit
+  test, since an in-flight-skew assertion over HTTP is timing-sensitive.
 
 ## Fixtures
 

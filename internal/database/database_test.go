@@ -120,6 +120,20 @@ func TestRemoteMirrorlistRoundTrip(t *testing.T) {
 	if len(got.Mirrorlist) != 2 || got.Mirrorlist[0] != mirrors[0] || got.Mirrorlist[1] != mirrors[1] {
 		t.Fatalf("Mirrorlist round-trip = %v, want %v", got.Mirrorlist, mirrors)
 	}
+	// An unset strategy is stored as the round_robin default.
+	if got.MirrorStrategy != models.MirrorStrategyRoundRobin {
+		t.Fatalf("MirrorStrategy default = %q, want %q", got.MirrorStrategy, models.MirrorStrategyRoundRobin)
+	}
+
+	// Updating to least_conn round-trips.
+	got.MirrorStrategy = models.MirrorStrategyLeastConn
+	if err := testDB.UpdateRemote(ctx(), got); err != nil {
+		t.Fatalf("update to least_conn: %v", err)
+	}
+	got, _ = testDB.GetRemote(ctx(), "r-mirror")
+	if got.MirrorStrategy != models.MirrorStrategyLeastConn {
+		t.Fatalf("MirrorStrategy after update = %q, want least_conn", got.MirrorStrategy)
+	}
 
 	// Clearing the mirrorlist on update persists an empty list.
 	got.Mirrorlist = nil

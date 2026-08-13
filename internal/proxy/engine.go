@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +42,11 @@ type Engine struct {
 	// *atomic.Uint64) used to rotate the starting mirror across upstream base
 	// URLs. Distribution is per-replica and approximate, which is fine.
 	rrCounters sync.Map
+	// inflight holds a per-remote, per-upstream-URL in-flight request gauge
+	// (key "remoteName\x00baseURL" -> *atomic.Int64) used by the least_conn
+	// mirror strategy to prefer the mirror currently handling the fewest
+	// requests. Per-replica and approximate, which is fine.
+	inflight sync.Map
 }
 
 func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
@@ -237,7 +243,9 @@ func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path st
 	}
 	var lastErr error
 	for i, url := range order {
+		ctr := e.beginAttempt(remote, url)
 		result, err := e.headUpstreamOnce(ctx, withBaseURL(remote, url), path, prov)
+		endAttempt(ctr)
 		if err == nil {
 			return result, nil
 		}
@@ -316,7 +324,9 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 	}
 	var lastErr error
 	for i, url := range order {
+		ctr := e.beginAttempt(remote, url)
 		result, err := e.fetchFromUpstreamOnce(ctx, withBaseURL(remote, url), path, prov, class, ttl, clientHeaders)
+		endAttempt(ctr)
 		if err == nil {
 			return result, nil
 		}
@@ -517,7 +527,9 @@ func (e *Engine) checkUpstream(ctx context.Context, remote models.Remote, path, 
 	}
 	var lastErr error
 	for i, url := range order {
+		ctr := e.beginAttempt(remote, url)
 		notModified, err := e.checkUpstreamOnce(ctx, withBaseURL(remote, url), path, etag, prov)
+		endAttempt(ctr)
 		if err == nil {
 			return notModified, nil
 		}
@@ -729,21 +741,59 @@ func isNetworkError(err error) bool {
 
 // baseURLAttemptOrder returns the ordered upstream base URLs to try for a single
 // request, drawn from the remote's pool ([base_url] + mirrorlist). A multi-mirror
-// remote starts at the next round-robin position and advances linearly for
+// remote starts at a strategy-chosen position and advances linearly for
 // failover; a remote with no mirrorlist yields exactly [base_url], preserving the
-// original single-attempt behavior.
+// original single-attempt behavior. The default (round_robin) rotates the
+// starting mirror; least_conn starts with the mirror handling the fewest
+// in-flight requests. Failover order after the first pick is unchanged.
 func (e *Engine) baseURLAttemptOrder(remote models.Remote) []string {
 	urls := remote.UpstreamPool()
 	if len(urls) <= 1 {
 		return urls
 	}
+	// Rotate by the round-robin cursor first so equal-load mirrors still spread
+	// evenly; least_conn then stable-sorts this rotation by in-flight count.
 	v, _ := e.rrCounters.LoadOrStore(remote.Name, new(atomic.Uint64))
 	start := int(v.(*atomic.Uint64).Add(1) - 1)
 	ordered := make([]string, len(urls))
 	for i := range urls {
 		ordered[i] = urls[(start+i)%len(urls)]
 	}
+	if remote.MirrorStrategy == models.MirrorStrategyLeastConn {
+		sort.SliceStable(ordered, func(a, b int) bool {
+			return e.inflightCounter(remote.Name, ordered[a]).Load() < e.inflightCounter(remote.Name, ordered[b]).Load()
+		})
+	}
 	return ordered
+}
+
+// inflightCounter returns the shared in-flight request gauge for a given
+// (remote, upstream URL), creating it on first use.
+func (e *Engine) inflightCounter(remoteName, url string) *atomic.Int64 {
+	v, _ := e.inflight.LoadOrStore(remoteName+"\x00"+url, new(atomic.Int64))
+	return v.(*atomic.Int64)
+}
+
+// beginAttempt increments the in-flight gauge for a least_conn multi-mirror
+// remote before an upstream call and returns the counter to release; it is a
+// no-op (returns nil) for round-robin remotes and single-URL pools.
+func (e *Engine) beginAttempt(remote models.Remote, url string) *atomic.Int64 {
+	if remote.MirrorStrategy != models.MirrorStrategyLeastConn {
+		return nil
+	}
+	if len(remote.UpstreamPool()) <= 1 {
+		return nil
+	}
+	ctr := e.inflightCounter(remote.Name, url)
+	ctr.Add(1)
+	return ctr
+}
+
+// endAttempt decrements a gauge returned by beginAttempt, tolerating nil.
+func endAttempt(ctr *atomic.Int64) {
+	if ctr != nil {
+		ctr.Add(-1)
+	}
 }
 
 // withBaseURL narrows a remote's active BaseURL to a single selected mirror so

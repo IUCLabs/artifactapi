@@ -74,6 +74,30 @@ func TestUpstreamPool(t *testing.T) {
 	}
 }
 
+func TestValidateMirrorStrategy(t *testing.T) {
+	ml := []string{"https://m.example"}
+	cases := []struct {
+		name    string
+		remote  Remote
+		wantErr bool
+	}{
+		{"empty defaults ok", Remote{Mirrorlist: ml}, false},
+		{"explicit round_robin ok", Remote{MirrorStrategy: MirrorStrategyRoundRobin, Mirrorlist: ml}, false},
+		{"round_robin without mirrorlist ok", Remote{MirrorStrategy: MirrorStrategyRoundRobin}, false},
+		{"least_conn with mirrorlist ok", Remote{MirrorStrategy: MirrorStrategyLeastConn, Mirrorlist: ml}, false},
+		{"least_conn without mirrorlist rejected", Remote{MirrorStrategy: MirrorStrategyLeastConn}, true},
+		{"unknown strategy rejected", Remote{MirrorStrategy: "random", Mirrorlist: ml}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.remote.ValidateMirrorStrategy()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateMirrorStrategy() err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateMirrorlist(t *testing.T) {
 	cases := []struct {
 		name    string

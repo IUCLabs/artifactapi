@@ -43,10 +43,14 @@ type Remote struct {
 	// Mirrorlist holds additional upstream mirror base URLs. The effective
 	// upstream pool is [base_url] + mirrorlist, load-balanced round-robin with
 	// failover by the proxy engine. Only valid on remote rpm/deb/apk repos.
-	Mirrorlist  []string `json:"mirrorlist,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Username    string   `json:"-"`
-	Password    string   `json:"-"`
+	Mirrorlist []string `json:"mirrorlist,omitempty"`
+	// MirrorStrategy selects how the proxy engine picks the starting upstream
+	// from the pool: round_robin (default/empty) rotates, least_conn favors the
+	// mirror with the fewest in-flight requests. Failover order is unchanged.
+	MirrorStrategy string `json:"mirror_strategy,omitempty"`
+	Description    string `json:"description,omitempty"`
+	Username       string `json:"-"`
+	Password       string `json:"-"`
 
 	ImmutableTTL int  `json:"immutable_ttl"`
 	MutableTTL   int  `json:"mutable_ttl"`
@@ -76,6 +80,13 @@ type Remote struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// Mirror balancing strategies for MirrorStrategy. An empty value is treated as
+// round_robin, so existing remotes keep their current behavior.
+const (
+	MirrorStrategyRoundRobin = "round_robin"
+	MirrorStrategyLeastConn  = "least_conn"
+)
 
 // mirrorlistPackageTypes are the package types for which a mirrorlist is
 // allowed: OS package repos (rpm, deb, apk/alpine) that fetch many small files
@@ -118,6 +129,22 @@ func (r *Remote) ValidateMirrorlist() error {
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
 			return fmt.Errorf("mirrorlist url %q must be http or https", u)
 		}
+	}
+	return nil
+}
+
+// ValidateMirrorStrategy enforces that mirror_strategy is one of the allowed
+// values and that a non-default strategy (least_conn) is only set alongside a
+// non-empty mirrorlist, where balancing is meaningful. An empty strategy is
+// accepted and behaves as round_robin.
+func (r *Remote) ValidateMirrorStrategy() error {
+	switch r.MirrorStrategy {
+	case "", MirrorStrategyRoundRobin, MirrorStrategyLeastConn:
+	default:
+		return fmt.Errorf("invalid mirror_strategy %q: must be %q or %q", r.MirrorStrategy, MirrorStrategyRoundRobin, MirrorStrategyLeastConn)
+	}
+	if r.MirrorStrategy == MirrorStrategyLeastConn && len(r.Mirrorlist) == 0 {
+		return fmt.Errorf("mirror_strategy %q requires a non-empty mirrorlist", r.MirrorStrategy)
 	}
 	return nil
 }

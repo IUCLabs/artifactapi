@@ -760,11 +760,39 @@ func (e *Engine) baseURLAttemptOrder(remote models.Remote) []string {
 		ordered[i] = urls[(start+i)%len(urls)]
 	}
 	if remote.MirrorStrategy == models.MirrorStrategyLeastConn {
-		sort.SliceStable(ordered, func(a, b int) bool {
-			return e.inflightCounter(remote.Name, ordered[a]).Load() < e.inflightCounter(remote.Name, ordered[b]).Load()
+		// Snapshot each mirror's in-flight count once, then sort the snapshot.
+		// Reading the gauge inside the comparator would repeat an allocating
+		// sync.Map lookup on every comparison (O(n log n) lookups); this is O(n).
+		snap := make([]inflightSnapshot, len(ordered))
+		for i, url := range ordered {
+			snap[i] = inflightSnapshot{url: url, count: e.inflightCount(remote.Name, url)}
+		}
+		sort.SliceStable(snap, func(a, b int) bool {
+			return snap[a].count < snap[b].count
 		})
+		for i := range snap {
+			ordered[i] = snap[i].url
+		}
 	}
 	return ordered
+}
+
+// inflightSnapshot pairs a mirror URL with its sampled in-flight count so the
+// least_conn sort compares plain ints instead of re-reading the gauge.
+type inflightSnapshot struct {
+	url   string
+	count int64
+}
+
+// inflightCount reads the in-flight request gauge for a given (remote, upstream
+// URL) without creating it, returning 0 when the counter is absent. This keeps
+// the selection read path allocation-free (plain Load, no LoadOrStore).
+func (e *Engine) inflightCount(remoteName, url string) int64 {
+	v, ok := e.inflight.Load(remoteName + "\x00" + url)
+	if !ok {
+		return 0
+	}
+	return v.(*atomic.Int64).Load()
 }
 
 // inflightCounter returns the shared in-flight request gauge for a given

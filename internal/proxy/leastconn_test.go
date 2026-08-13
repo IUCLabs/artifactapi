@@ -40,6 +40,51 @@ func TestLeastConnPicksLeastLoaded(t *testing.T) {
 	}
 }
 
+// TestLeastConnStableTieBreak asserts that when every mirror carries equal
+// in-flight load, least_conn falls back to the round-robin rotation: the
+// snapshot sort is stable, so tied mirrors keep the RR-rotated order and the
+// starting pick advances across the whole pool on successive calls.
+func TestLeastConnStableTieBreak(t *testing.T) {
+	e := &Engine{}
+	r := models.Remote{
+		Name:           "lc-tie",
+		BaseURL:        "https://a.example",
+		Mirrorlist:     []string{"https://b.example", "https://c.example"},
+		MirrorStrategy: models.MirrorStrategyLeastConn,
+	}
+	pool := r.UpstreamPool()
+
+	// Equal (zero) load on every mirror: order must equal the RR rotation.
+	starts := map[string]int{}
+	for i := 0; i < len(pool); i++ {
+		order := e.baseURLAttemptOrder(r)
+		if len(order) != len(pool) {
+			t.Fatalf("attempt %d: order len = %d, want %d", i, len(order), len(pool))
+		}
+		// A stable sort of an all-tied slice is a pure RR rotation: for the
+		// call whose cursor selects start s, order must be pool rotated by s.
+		start := indexOf(pool, order[0])
+		for j := range order {
+			if want := pool[(start+j)%len(pool)]; order[j] != want {
+				t.Fatalf("attempt %d: order[%d] = %q, want RR-rotated %q", i, j, order[j], want)
+			}
+		}
+		starts[order[0]]++
+	}
+	if len(starts) != len(pool) {
+		t.Fatalf("tied least_conn did not rotate across the whole pool: %v", starts)
+	}
+}
+
+func indexOf(s []string, v string) int {
+	for i := range s {
+		if s[i] == v {
+			return i
+		}
+	}
+	return -1
+}
+
 // TestRoundRobinDefaultUnchanged asserts an unset strategy still rotates the
 // starting mirror across the pool and ignores the in-flight gauge.
 func TestRoundRobinDefaultUnchanged(t *testing.T) {

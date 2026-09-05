@@ -321,6 +321,28 @@ S3/MinIO    ─── content-addressable blob storage (blobs/sha256/{hash})
 
 S3 client supports MinIO, Ceph RGW, and AWS S3 (via minio-go).
 
+### Schema migrations
+
+The SQL schema lives in `migrations/` as numbered `.sql` files, embedded into
+the binary and applied at startup before the server listens, so there is no
+mirrored copy of the schema in the deployment to drift out of sync.
+
+The runner is [`golib/pg`](https://github.com/IUCLabs/golib)'s `pg.NewMigrated`
+— artifactapi owns the SQL, the shared library owns the mechanics.
+
+Each start takes `pg_advisory_lock` on a fixed key (FNV-1a/64 of the lock name
+`artifactapi-migrations`), creates `schema_migrations` (`version`, `applied_at`)
+if missing, and applies every embedded file whose filename is not yet recorded —
+in lexical (version) order, each file's SQL and its tracking row in one
+transaction — then unlocks. Replicas starting together queue on the lock and
+then find nothing to do.
+
+A file absent from `schema_migrations` is re-run even when the database already
+has the schema, which is how a database migrated by the old untracked inline DDL
+picks `0001_init.sql` up: the statements are `IF NOT EXISTS`-guarded, so the
+re-run is a no-op that only lands the tracking row. New migrations must stay
+additive and idempotent for the same reason; a test enforces it.
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -331,6 +353,7 @@ S3 client supports MinIO, Ceph RGW, and AWS S3 (via minio-go).
 | `DBUSER` | `artifacts` | PostgreSQL user |
 | `DBPASS` | | PostgreSQL password |
 | `DBNAME` | `artifacts` | PostgreSQL database |
+| `DBSSL` | `disable` | PostgreSQL `sslmode` |
 | `REDIS_URL` | `redis://localhost:6379` | Redis URL |
 | `MINIO_ENDPOINT` | `localhost:9000` | S3 endpoint |
 | `MINIO_ACCESS_KEY` | | S3 access key |
@@ -357,6 +380,22 @@ make e2e         # E2E tests (needs Docker)
 make lint        # golangci-lint + go vet
 make fmt         # gofmt + goimports
 ```
+
+### `GOPRIVATE`
+
+artifactapi depends on `github.com/IUCLabs/golib`, which is served by Gitea and
+is unknown to `proxy.golang.org` / `sum.golang.org`. Module resolution therefore
+needs:
+
+```
+export GOPRIVATE=git.example.com
+```
+
+The `Makefile` exports it for every target, and the `Dockerfile` and the
+woodpecker Go steps set it themselves, so `make build|test|lint` and CI work on
+a clean checkout. Only bare `go` commands run outside `make` need it in your
+shell — set it there (or in your shell profile) rather than with `go env -w`,
+which is machine state this repo cannot carry.
 
 ### TUI
 

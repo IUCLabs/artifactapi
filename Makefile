@@ -6,6 +6,11 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0
 GO_VERSION_REQUIRED := 1.23
 GO_VERSION_ACTUAL := $(shell go version | sed 's/go version go\([0-9]*\.[0-9]*\).*/\1/')
 
+# git.example.com modules (golib) are fetched straight from Gitea, never via the
+# public proxy or sum db, which have no view of them. Exported here rather than
+# written with `go env -w`, so a fresh checkout needs no machine-local setup.
+export GOPRIVATE := git.example.com
+
 check-go:
 	@if [ "$$(printf '%s\n%s' "$(GO_VERSION_REQUIRED)" "$(GO_VERSION_ACTUAL)" | sort -V | head -1)" != "$(GO_VERSION_REQUIRED)" ]; then \
 		echo "ERROR: Go >= $(GO_VERSION_REQUIRED) required, found $(GO_VERSION_ACTUAL)"; exit 1; \

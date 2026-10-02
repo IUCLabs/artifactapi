@@ -4,15 +4,14 @@ when:
 steps:
   - name: test
     # gobuilder trusts the internal CA, which the S3 build cache endpoint needs.
-    image: registry.example.com/example/almalinux9-gobuilder:20260606
+    # go-cache-plugin is baked into the image; S3 errors degrade to cache misses.
+    image: "artifactapi.example.com/docker-internal/gobuilder:0.1.2-alma9"
     commands:
-      # Best-effort S3 build cache: if the plugin cannot be fetched, GOCACHEPROG
-      # stays unset and the compile runs as before. S3 errors degrade to misses.
-      - "curl -fsSLo /tmp/gocacheprog https://git.example.com/example/go-cache-plugin/releases/download/v0.1.0/go-cache-plugin-linux-amd64 && echo '0eb23d06a0dcf395559cb6447864579c220e60148fdcd6a6f841c2b17169b9b8  /tmp/gocacheprog' | sha256sum -c - && chmod +x /tmp/gocacheprog && export GOCACHEPROG=\"/tmp/gocacheprog --cache-dir=/tmp/gocache\" || echo 'go build cache unavailable, compiling without it'"
       - go test -race -count=1 ./pkg/... ./internal/...
     environment:
       # golib lives on Gitea; skip the public proxy/sum db.
       GOPRIVATE: git.example.com
+      GOCACHEPROG: "go-cache-plugin --cache-dir=/tmp/gocache"
       GOCACHE_S3_BUCKET: gocache
       # Explicit region skips a GetBucketLocation probe RGW handles poorly.
       GOCACHE_S3_REGION: us-east-1

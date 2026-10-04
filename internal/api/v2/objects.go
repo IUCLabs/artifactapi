@@ -62,7 +62,7 @@ func (h *ObjectsHandler) list(w http.ResponseWriter, r *http.Request) {
 	remoteName := chi.URLParam(r, "name")
 	limit, offset := pageBounds(r)
 
-	artifacts, err := h.db.ListArtifacts(r.Context(), remoteName, limit, offset)
+	artifacts, err := h.db.ListArtifacts(r.Context(), remoteName, r.URL.Query().Get("prefix"), limit, offset)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

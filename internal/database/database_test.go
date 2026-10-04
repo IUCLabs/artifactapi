@@ -168,9 +168,16 @@ func TestArtifactsAndBlobs(t *testing.T) {
 	if err := testDB.TouchArtifactAccess(ctx(), "r-art", "path/a.txt"); err != nil {
 		t.Fatal(err)
 	}
-	arts, err := testDB.ListArtifacts(ctx(), "r-art", 10, 0)
-	if err != nil || len(arts) != 1 {
+	if err := testDB.UpsertArtifact(ctx(), "r-art", "other/b.txt", hash, ""); err != nil {
+		t.Fatal(err)
+	}
+	arts, err := testDB.ListArtifacts(ctx(), "r-art", "", 10, 0)
+	if err != nil || len(arts) != 2 {
 		t.Fatalf("list artifacts: %v %v", len(arts), err)
+	}
+	arts, err = testDB.ListArtifacts(ctx(), "r-art", "path/", 10, 0)
+	if err != nil || len(arts) != 1 || arts[0].Path != "path/a.txt" {
+		t.Fatalf("list artifacts with prefix: %+v %v", arts, err)
 	}
 	if err := testDB.InsertAccessLog(ctx(), "r-art", "path/a.txt", true, 10, 5, "1.2.3.4"); err != nil {
 		t.Fatal(err)
@@ -185,6 +192,45 @@ func TestArtifactsAndBlobs(t *testing.T) {
 	}
 	if err := testDB.DeleteArtifact(ctx(), "r-art", "path/a.txt"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestListArtifactsPrefix(t *testing.T) {
+	requireDB(t)
+	seedRemote(t, "r-prefix")
+	seedBlob(t, "prefixhash")
+	for _, p := range []string{"a%b/y", "a1b/y", "a_b/x", "aXb/x", "pkg/1", "pkg/2", "pkg/3", "pkgx/4"} {
+		if err := testDB.UpsertArtifact(ctx(), "r-prefix", p, "sha256:prefixhash", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paths := func(prefix string, limit, offset int) []string {
+		t.Helper()
+		arts, err := testDB.ListArtifacts(ctx(), "r-prefix", prefix, limit, offset)
+		if err != nil {
+			t.Fatalf("list %q: %v", prefix, err)
+		}
+		out := make([]string, len(arts))
+		for i, a := range arts {
+			out[i] = a.Path
+		}
+		return out
+	}
+
+	// LIKE wildcards in the prefix must match literally.
+	if got := paths("a_b/", 10, 0); len(got) != 1 || got[0] != "a_b/x" {
+		t.Fatalf("prefix a_b/ = %v, want [a_b/x]", got)
+	}
+	if got := paths("a%", 10, 0); len(got) != 1 || got[0] != "a%b/y" {
+		t.Fatalf("prefix a%% = %v, want [a%%b/y]", got)
+	}
+
+	// limit/offset page the filtered set, not the whole remote.
+	if got := paths("pkg/", 2, 0); len(got) != 2 || got[0] != "pkg/1" || got[1] != "pkg/2" {
+		t.Fatalf("prefix pkg/ page 1 = %v, want [pkg/1 pkg/2]", got)
+	}
+	if got := paths("pkg/", 2, 2); len(got) != 1 || got[0] != "pkg/3" {
+		t.Fatalf("prefix pkg/ page 2 = %v, want [pkg/3]", got)
 	}
 }
 
@@ -320,7 +366,7 @@ func TestDatabaseErrorPaths(t *testing.T) {
 	if _, err := bad.ListVirtuals(ctx); err == nil {
 		t.Error("ListVirtuals should error")
 	}
-	if _, err := bad.ListArtifacts(ctx, "r", 10, 0); err == nil {
+	if _, err := bad.ListArtifacts(ctx, "r", "", 10, 0); err == nil {
 		t.Error("ListArtifacts should error")
 	}
 	if _, err := bad.ListLocalFiles(ctx, "r", 10, 0); err == nil {

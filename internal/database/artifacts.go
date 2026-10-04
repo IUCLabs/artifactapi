@@ -65,7 +65,8 @@ func (db *DB) TouchArtifactAccess(ctx context.Context, remoteName, path string) 
 	return err
 }
 
-func (db *DB) ListArtifacts(ctx context.Context, remoteName string, limit, offset int) ([]models.Artifact, error) {
+// ListArtifacts pages a remote's artifacts whose path starts with prefix ("" lists all).
+func (db *DB) ListArtifacts(ctx context.Context, remoteName, prefix string, limit, offset int) ([]models.Artifact, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT a.id, a.remote_name, a.path, a.content_hash, a.upstream_etag,
 			a.upstream_last_modified, a.first_seen_at, a.last_fetched_at,
@@ -73,10 +74,10 @@ func (db *DB) ListArtifacts(ctx context.Context, remoteName string, limit, offse
 			b.size_bytes, b.content_type
 		FROM artifacts a
 		JOIN blobs b ON a.content_hash = b.content_hash
-		WHERE a.remote_name = $1
+		WHERE a.remote_name = $1 AND left(a.path, length($2)) = $2
 		ORDER BY a.path
-		LIMIT $2 OFFSET $3
-	`, remoteName, limit, offset)
+		LIMIT $3 OFFSET $4
+	`, remoteName, prefix, limit, offset)
 	if err != nil {
 		return nil, err
 	}

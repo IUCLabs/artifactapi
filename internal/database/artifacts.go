@@ -103,6 +103,13 @@ func (db *DB) DeleteArtifact(ctx context.Context, remoteName, path string) error
 	return err
 }
 
+// DeleteArtifactsByPrefix removes every artifact row of a remote whose path
+// starts with prefix.
+func (db *DB) DeleteArtifactsByPrefix(ctx context.Context, remoteName, prefix string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM artifacts WHERE remote_name = $1 AND left(path, length($2)) = $2`, remoteName, prefix)
+	return err
+}
+
 func (db *DB) InsertAccessLog(ctx context.Context, remoteName, path string, cacheHit bool, sizeBytes int64, upstreamMS int, clientIP string) error {
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO access_log (remote_name, path, cache_hit, size_bytes, upstream_ms, client_ip)

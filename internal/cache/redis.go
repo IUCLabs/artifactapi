@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -115,3 +116,27 @@ func (r *Redis) FlushRemote(ctx context.Context, remote string) error {
 	}
 	return iter.Err()
 }
+
+// ForgetPath drops the freshness and ETag keys of one cached path.
+func (r *Redis) ForgetPath(ctx context.Context, remote, path string) error {
+	return r.client.Del(ctx, fmt.Sprintf("ttl:%s:%s", remote, path), fmt.Sprintf("etag:%s:%s", remote, path)).Err()
+}
+
+// ForgetPrefix drops the freshness and ETag keys of every cached path under prefix.
+func (r *Redis) ForgetPrefix(ctx context.Context, remote, prefix string) error {
+	glob := globEscaper.Replace(remote + ":" + prefix)
+	for _, kind := range []string{"ttl:", "etag:"} {
+		iter := r.client.Scan(ctx, 0, kind+glob+"*", 100).Iterator()
+		for iter.Next(ctx) {
+			if err := r.client.Del(ctx, iter.Val()).Err(); err != nil {
+				return err
+			}
+		}
+		if err := iter.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var globEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`, `]`, `\]`)

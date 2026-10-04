@@ -1,6 +1,8 @@
 package v2
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -8,7 +10,13 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/IUCLabs/artifactapi/internal/database"
+	"github.com/IUCLabs/artifactapi/internal/proxy"
 )
+
+// Evictor drops a remote path from every cache layer.
+type Evictor interface {
+	Evict(ctx context.Context, remoteName, path string) error
+}
 
 type ObjectsHandler struct {
 	db *database.DB
@@ -18,10 +26,13 @@ func NewObjectsHandler(db *database.DB) *ObjectsHandler {
 	return &ObjectsHandler{db: db}
 }
 
-func (h *ObjectsHandler) Routes() chi.Router {
+// Routes lists and evicts objects for remote repos; evictor serves the DELETE.
+func (h *ObjectsHandler) Routes(evictor Evictor) chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.list)
-	r.Delete("/*", h.evict)
+	r.Delete("/*", func(w http.ResponseWriter, r *http.Request) {
+		evict(w, r, evictor)
+	})
 	return r
 }
 
@@ -82,11 +93,16 @@ func (h *ObjectsHandler) evictLocal(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *ObjectsHandler) evict(w http.ResponseWriter, r *http.Request) {
+func evict(w http.ResponseWriter, r *http.Request, evictor Evictor) {
 	remoteName := chi.URLParam(r, "name")
 	path := chi.URLParam(r, "*")
 
-	if err := h.db.DeleteArtifact(r.Context(), remoteName, path); err != nil {
+	if err := evictor.Evict(r.Context(), remoteName, path); err != nil {
+		var proxyErr *proxy.ProxyError
+		if errors.As(err, &proxyErr) {
+			http.Error(w, proxyErr.Message, proxyErr.Status)
+			return
+		}
 		http.Error(w, fmt.Sprintf("evict failed: %v", err), http.StatusInternalServerError)
 		return
 	}

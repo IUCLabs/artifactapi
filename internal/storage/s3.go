@@ -99,6 +99,30 @@ func (s *S3) Stat(ctx context.Context, key string) (*minio.ObjectInfo, error) {
 	return &info, nil
 }
 
+// DeletePrefix removes every object whose key starts with prefix. It lists
+// first so a failed list returns its error instead of deleting nothing.
+func (s *S3) DeletePrefix(ctx context.Context, prefix string) error {
+	var objs []minio.ObjectInfo
+	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+		if obj.Err != nil {
+			return obj.Err
+		}
+		objs = append(objs, obj)
+	}
+	ch := make(chan minio.ObjectInfo, len(objs))
+	for _, obj := range objs {
+		ch <- obj
+	}
+	close(ch)
+	var err error
+	for res := range s.client.RemoveObjects(ctx, s.bucket, ch, minio.RemoveObjectsOptions{}) {
+		if res.Err != nil && err == nil {
+			err = res.Err
+		}
+	}
+	return err
+}
+
 // ListStaleObjects returns keys under prefix last modified before cutoff. Used
 // by the GC to reap abandoned staging objects (e.g. cancelled docker pushes).
 func (s *S3) ListStaleObjects(ctx context.Context, prefix string, cutoff time.Time) ([]string, error) {

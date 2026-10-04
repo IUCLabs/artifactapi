@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/minio/minio-go/v7"
 
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
 )
@@ -156,5 +160,28 @@ func TestCASStore(t *testing.T) {
 	reader.Close()
 	if string(got) != content {
 		t.Errorf("stored content mismatch: %q", got)
+	}
+}
+
+// The fake endpoint fails every list but accepts every delete, as an S3 that
+// tolerates deleting an empty key would.
+func TestDeletePrefixReturnsListError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = io.WriteString(w, `<DeleteResult></DeleteResult>`)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `<Error><Code>InternalError</Code><Message>list failed</Message></Error>`)
+	}))
+	defer srv.Close()
+	client, err := minio.New(strings.TrimPrefix(srv.URL, "http://"), &minio.Options{Region: "us-east-1", MaxRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &S3{client: client, bucket: "bucket"}
+	err = s.DeletePrefix(context.Background(), "indexes/r/")
+	if err == nil {
+		t.Fatal("DeletePrefix on a failing list returned nil")
 	}
 }

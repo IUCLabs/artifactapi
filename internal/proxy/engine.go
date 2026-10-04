@@ -16,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/IUCLabs/artifactapi/internal/cache"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/provider"
@@ -47,6 +49,8 @@ type Engine struct {
 	// mirror strategy to prefer the mirror currently handling the fewest
 	// requests. Per-replica and approximate, which is fine.
 	inflight sync.Map
+	// evictLockWait bounds how long Evict waits on a held fetch lock.
+	evictLockWait time.Duration
 }
 
 func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
@@ -57,6 +61,8 @@ func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
 		cas:       storage.NewCAS(s),
 		circuit:   NewCircuitBreaker(c),
 		accessLog: make(chan database.AccessLogEntry, accessLogBufferSize),
+
+		evictLockWait: fetchLockTTL,
 	}
 	go e.runAccessLogWriter()
 	return e
@@ -206,6 +212,71 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	e.circuit.RecordSuccess(ctx, remote.Name)
 	e.logAccess(remote.Name, path, false, result.Size, upstreamMS)
 	return result, nil
+}
+
+// Evict drops path from every cache layer (artifact row, index object, Redis
+// freshness and ETag keys) so the next request refetches from upstream. A
+// trailing "/*" evicts every path under that directory.
+func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
+	prefix, wildcard := strings.CutSuffix(path, "*")
+	if wildcard && !strings.HasSuffix(prefix, "/") {
+		return &ProxyError{Status: http.StatusBadRequest, Message: "wildcard evict must be <dir>/*"}
+	}
+	if _, err := e.db.GetRemote(ctx, remoteName); errors.Is(err, pgx.ErrNoRows) {
+		return &ProxyError{Status: http.StatusNotFound, Message: fmt.Sprintf("remote %q not found", remoteName)}
+	} else if err != nil {
+		return fmt.Errorf("get remote: %w", err)
+	}
+	if !wildcard {
+		if err := e.waitForLock(ctx, remoteName, path); err != nil {
+			return err
+		}
+		defer func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remoteName, path) }()
+		if err := e.db.DeleteArtifact(ctx, remoteName, path); err != nil {
+			return fmt.Errorf("delete artifact: %w", err)
+		}
+		if err := e.store.Delete(ctx, storage.IndexKey(remoteName, path)); err != nil {
+			return fmt.Errorf("delete index: %w", err)
+		}
+		return e.cache.ForgetPath(ctx, remoteName, path)
+	}
+	// ponytail: no lock for wildcards; a Fetch already in flight under the
+	// prefix can re-cache its path after the evict. Per-path locks over a
+	// directory would close it if that ever matters.
+	if err := e.db.DeleteArtifactsByPrefix(ctx, remoteName, prefix); err != nil {
+		return fmt.Errorf("delete artifacts: %w", err)
+	}
+	if err := e.store.DeletePrefix(ctx, storage.IndexKey(remoteName, prefix)); err != nil {
+		return fmt.Errorf("delete indexes: %w", err)
+	}
+	return e.cache.ForgetPrefix(ctx, remoteName, prefix)
+}
+
+// waitForLock takes the per-path fetch lock so an in-flight Fetch cannot
+// re-set TTL/ETag keys after an evict. It fails with a 503 when the lock
+// cannot be taken within evictLockWait or Redis errors.
+func (e *Engine) waitForLock(ctx context.Context, remoteName, path string) error {
+	deadline := time.Now().Add(e.evictLockWait)
+	for {
+		ok, err := e.cache.AcquireLock(ctx, remoteName, path, fetchLockTTL)
+		if ok {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err != nil {
+			return &ProxyError{Status: http.StatusServiceUnavailable, Message: fmt.Sprintf("fetch lock: %v", err)}
+		}
+		if time.Now().After(deadline) {
+			return &ProxyError{Status: http.StatusServiceUnavailable, Message: "fetch in progress, retry evict"}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // HeadResult carries artifact metadata for a HEAD request. There is no body.

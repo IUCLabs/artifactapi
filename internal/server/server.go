@@ -196,8 +196,8 @@ func (s *Server) routes() chi.Router {
 
 		r.Route("/remotes/{name}/objects", func(r chi.Router) {
 			objHandler := v2.NewObjectsHandler(s.db)
-			r.Get("/", objHandler.Routes().ServeHTTP)
-			r.Delete("/*", objHandler.Routes().ServeHTTP)
+			r.Get("/", objHandler.Routes(s.engine).ServeHTTP)
+			r.Delete("/*", objHandler.Routes(s.engine).ServeHTTP)
 		})
 
 		r.Route("/locals/{name}/objects", func(r chi.Router) {

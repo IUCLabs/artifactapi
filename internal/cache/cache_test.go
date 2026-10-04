@@ -131,3 +131,72 @@ func TestFlushRemote(t *testing.T) {
 		t.Error("expected keys flushed")
 	}
 }
+
+func setPathKeys(t *testing.T, remote string, paths ...string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, p := range paths {
+		if err := testRedis.SetTTL(ctx, remote, p, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		if err := testRedis.SetETag(ctx, remote, p, `"e"`, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func pathKeysExist(t *testing.T, remote, path string) (ttl, etag bool) {
+	t.Helper()
+	ctx := context.Background()
+	ttl, _ = testRedis.CheckTTL(ctx, remote, path)
+	e, _ := testRedis.GetETag(ctx, remote, path)
+	return ttl, e != ""
+}
+
+func TestForgetPath(t *testing.T) {
+	requireRedis(t)
+	const meta = `repo/a*b?[c]\d.xml`
+	setPathKeys(t, "fp", meta, "repo/aXb.xml")
+	setPathKeys(t, "fp-other", meta)
+
+	if err := testRedis.ForgetPath(context.Background(), "fp", meta); err != nil {
+		t.Fatal(err)
+	}
+	if ttl, etag := pathKeysExist(t, "fp", meta); ttl || etag {
+		t.Errorf("forgotten path keys remain: ttl=%v etag=%v", ttl, etag)
+	}
+	for _, k := range [][2]string{{"fp", "repo/aXb.xml"}, {"fp-other", meta}} {
+		if ttl, etag := pathKeysExist(t, k[0], k[1]); !ttl || !etag {
+			t.Errorf("%s:%s lost keys: ttl=%v etag=%v", k[0], k[1], ttl, etag)
+		}
+	}
+}
+
+func TestForgetPrefix(t *testing.T) {
+	requireRedis(t)
+	const prefix = `r*[1]?\/`
+	under := []string{prefix + "repomd.xml", prefix + "sub/x.rpm"}
+	// Each would match the prefix if its glob metacharacters were left unescaped.
+	globMatches := []string{`rX11/repomd.xml`, `r[1]?\/x`, `r*1Z/x`}
+	setPathKeys(t, "fx", append(under, globMatches...)...)
+	setPathKeys(t, "fx-other", under...)
+
+	if err := testRedis.ForgetPrefix(context.Background(), "fx", prefix); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range under {
+		if ttl, etag := pathKeysExist(t, "fx", p); ttl || etag {
+			t.Errorf("%s keys remain: ttl=%v etag=%v", p, ttl, etag)
+		}
+	}
+	for _, p := range globMatches {
+		if ttl, etag := pathKeysExist(t, "fx", p); !ttl || !etag {
+			t.Errorf("%s outside prefix lost keys: ttl=%v etag=%v", p, ttl, etag)
+		}
+	}
+	for _, p := range under {
+		if ttl, etag := pathKeysExist(t, "fx-other", p); !ttl || !etag {
+			t.Errorf("other remote %s lost keys: ttl=%v etag=%v", p, ttl, etag)
+		}
+	}
+}

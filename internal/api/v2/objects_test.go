@@ -43,7 +43,7 @@ func TestObjectsListPrefix(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	router.Mount("/remotes/{name}/objects", NewObjectsHandler(db).Routes())
+	router.Mount("/remotes/{name}/objects", NewObjectsHandler(db).Routes(&fakeEvictor{}))
 
 	list := func(query string) []models.Artifact {
 		t.Helper()

@@ -23,7 +23,7 @@ already-running stack.
 
 - **Repository lifecycle** — add / change / delete for remote, local and virtual repos.
 - **Caching** — one immutable artifact per remote package type (generic, docker,
-  helm, pypi, npm, rpm, alpine, puppet, terraform, goproxy) proxied through the
+  helm, pypi, npm, rpm, alpine, puppet, terraform, goproxy, cargo) proxied through the
   mock upstream: first fetch `X-Artifact-Source: remote`, second `cache`, bytes
   verified against the origin fixture.
 - **Local uploads** — generic (upload/download), pypi (wheel + generated `simple/`

@@ -17,6 +17,7 @@ const typeColors: Record<string, 'blue' | 'green' | 'yellow' | 'red' | 'default'
   puppet: 'yellow',
   terraform: 'blue',
   goproxy: 'green',
+  cargo: 'yellow',
 };
 
 export function Locals() {

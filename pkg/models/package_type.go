@@ -16,6 +16,7 @@ const (
 	PackagePuppet       PackageType = "puppet"
 	PackageTerraform    PackageType = "terraform"
 	PackageGoProxy      PackageType = "goproxy"
+	PackageCargo        PackageType = "cargo"
 	PackageGitHubRPM    PackageType = "github_rpm"
 	PackageGitHubDeb    PackageType = "github_deb"
 	PackageGitHubAlpine PackageType = "github_alpine"
@@ -33,6 +34,7 @@ var validPackageTypes = map[PackageType]bool{
 	PackagePuppet:       true,
 	PackageTerraform:    true,
 	PackageGoProxy:      true,
+	PackageCargo:        true,
 	PackageGitHubRPM:    true,
 	PackageGitHubDeb:    true,
 	PackageGitHubAlpine: true,

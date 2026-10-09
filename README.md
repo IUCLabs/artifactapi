@@ -1,6 +1,6 @@
 # ArtifactAPI
 
-Caching proxy for package repositories. Single Go binary, 10 package types, content-addressable storage, managed by Terraform.
+Caching proxy for package repositories. Single Go binary, 11 package types, content-addressable storage, managed by Terraform.
 
 ## Quick Start
 
@@ -32,6 +32,7 @@ API: `http://localhost:8000` | Frontend: `http://localhost:5173`
 | `puppet` | `v3/modules/*`, `v3/releases*` | `.tar.gz` |
 | `terraform` | `*/versions` | `*/download/*/*` |
 | `goproxy` | `@v/list`, `@latest` | `.info`, `.mod`, `.zip` |
+| `cargo` | sparse index files (`config.json` synthesized) | `crates/*/*.crate` |
 | `github_rpm` | `repodata/*` (synthesized) | `.rpm` (redirected) |
 
 Providers classify paths automatically. Users only configure what to proxy and TTLs.

@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -44,7 +45,7 @@ func TestGitHubDebSyncLease(t *testing.T) {
 		t.Fatal("replica-2 claimed while replica-1 holds the lease")
 	}
 
-	if err := testDB.ReleaseGitHubDebSyncLease(ctx(), name, "replica-1", `"etag-1"`, time.Now()); err != nil {
+	if err := testDB.ReleaseGitHubDebSyncLease(ctx(), name, "replica-1", provider.SyncResult{Etag: `"etag-1"`}); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 

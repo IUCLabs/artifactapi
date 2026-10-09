@@ -78,6 +78,7 @@ type githubFixture struct {
 	notModHit   int               // releases-list requests answered 304
 	releaseAuth string            // Authorization header seen on the last releases request
 	assetAuth   string            // Authorization header seen on the last asset request
+	failStatus  int               // when set, the releases list answers this status (rate-limit style)
 	mu          sync.Mutex
 }
 
@@ -100,6 +101,14 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 		f.mu.Lock()
 		f.releasesHit++
 		f.releaseAuth = r.Header.Get("Authorization")
+		if f.failStatus != 0 {
+			status := f.failStatus
+			f.mu.Unlock()
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(30*time.Second).Unix(), 10))
+			http.Error(w, "API rate limit exceeded", status)
+			return
+		}
 		etag := f.etag
 		if etag != "" && r.Header.Get("If-None-Match") == etag {
 			f.notModHit++

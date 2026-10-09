@@ -2,11 +2,9 @@ package database
 
 import (
 	"context"
-	"errors"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
+	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -30,41 +28,14 @@ func (db *DB) ListGitHubDebRemotes(ctx context.Context) ([]models.Remote, error)
 	return remotes, rows.Err()
 }
 
-// ClaimGitHubDebSyncLease atomically claims the per-remote sync lease. It
-// succeeds only when the remote is due (never synced, or synced longer than
-// freshness ago) and no live lease is held by another replica. A zero freshness
-// (prime scans) ignores the recency gate. The returned etag is the stored
-// releases-list ETag, shared across replicas.
+// ClaimGitHubDebSyncLease atomically claims the per-remote github_deb sync
+// lease. See claimSyncLease.
 func (db *DB) ClaimGitHubDebSyncLease(ctx context.Context, remoteName, owner string, freshness, lease time.Duration) (bool, string, error) {
-	row := db.Pool.QueryRow(ctx, `
-		INSERT INTO github_deb_sync_state AS s (remote_name, sync_lease_owner, sync_lease_expires)
-		VALUES ($1, $2, now() + make_interval(secs => $4))
-		ON CONFLICT (remote_name) DO UPDATE
-			SET sync_lease_owner   = $2,
-			    sync_lease_expires = now() + make_interval(secs => $4)
-			WHERE (s.last_synced_at IS NULL OR s.last_synced_at < now() - make_interval(secs => $3))
-			  AND (s.sync_lease_expires IS NULL OR s.sync_lease_expires < now())
-		RETURNING s.etag
-	`, remoteName, owner, freshness.Seconds(), lease.Seconds())
-
-	var etag string
-	if err := row.Scan(&etag); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, "", nil
-		}
-		return false, "", err
-	}
-	return true, etag, nil
+	return db.claimSyncLease(ctx, "github_deb_sync_state", remoteName, owner, freshness, lease)
 }
 
-// ReleaseGitHubDebSyncLease records the completed scan and frees the lease. Only
-// the owning replica may release; last_synced_at advances so the next poll waits
-// a full freshness window, and etag is persisted for the next conditional request.
-func (db *DB) ReleaseGitHubDebSyncLease(ctx context.Context, remoteName, owner, etag string, syncedAt time.Time) error {
-	_, err := db.Pool.Exec(ctx, `
-		UPDATE github_deb_sync_state
-		   SET last_synced_at = $3, etag = $4, sync_lease_owner = '', sync_lease_expires = NULL
-		 WHERE remote_name = $1 AND sync_lease_owner = $2
-	`, remoteName, owner, syncedAt, etag)
-	return err
+// ReleaseGitHubDebSyncLease records a github_deb scan outcome and frees the
+// lease. See releaseSyncLease.
+func (db *DB) ReleaseGitHubDebSyncLease(ctx context.Context, remoteName, owner string, res provider.SyncResult) error {
+	return db.releaseSyncLease(ctx, "github_deb_sync_state", remoteName, owner, res)
 }

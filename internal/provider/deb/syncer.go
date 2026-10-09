@@ -28,7 +28,7 @@ type SyncStore interface {
 	provider.RemoteMetadataStore
 	ListGitHubDebRemotes(ctx context.Context) ([]models.Remote, error)
 	ClaimGitHubDebSyncLease(ctx context.Context, remoteName, owner string, freshness, lease time.Duration) (claimed bool, etag string, err error)
-	ReleaseGitHubDebSyncLease(ctx context.Context, remoteName, owner, etag string, syncedAt time.Time) error
+	ReleaseGitHubDebSyncLease(ctx context.Context, remoteName, owner string, res provider.SyncResult) error
 }
 
 // SyncConfig tunes the shared syncer. Zero values fall back to safe defaults.
@@ -189,10 +189,11 @@ func (s *Syncer) process(ctx context.Context, job syncJob) {
 		s.mu.Unlock()
 	}()
 
-	freshness := time.Duration(job.remote.MutableTTL) * time.Second
-	if freshness <= 0 {
-		freshness = defaultSyncFreshness
+	ttl := time.Duration(job.remote.MutableTTL) * time.Second
+	if ttl <= 0 {
+		ttl = defaultSyncFreshness
 	}
+	freshness := ttl
 	if job.prime {
 		freshness = 0
 	}
@@ -210,16 +211,13 @@ func (s *Syncer) process(ctx context.Context, job syncJob) {
 	defer cancel()
 
 	newEtag, changed, scanErr := s.prov.scanWithState(scanCtx, job.remote, s.store, etag)
-	releaseEtag := etag
-	if scanErr == nil {
-		releaseEtag = newEtag
-	} else {
+	if scanErr != nil {
 		slog.Error("github_deb syncer: scan failed", "remote", job.remote.Name, "error", scanErr)
 	}
 
 	relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer relCancel()
-	if err := s.store.ReleaseGitHubDebSyncLease(relCtx, job.remote.Name, s.owner, releaseEtag, time.Now()); err != nil {
+	if err := s.store.ReleaseGitHubDebSyncLease(relCtx, job.remote.Name, s.owner, provider.NewSyncResult(newEtag, scanErr, ttl)); err != nil {
 		slog.Warn("github_deb syncer: release lease", "remote", job.remote.Name, "error", err)
 	}
 

@@ -27,6 +27,8 @@ type fakeSyncStore struct {
 	leaseExp   map[string]time.Time
 	lastSynced map[string]time.Time
 	etags      map[string]string
+	retryAt    map[string]time.Time
+	lastResult provider.SyncResult
 }
 
 func newFakeSyncStore() *fakeSyncStore {
@@ -36,6 +38,7 @@ func newFakeSyncStore() *fakeSyncStore {
 		leaseExp:   map[string]time.Time{},
 		lastSynced: map[string]time.Time{},
 		etags:      map[string]string{},
+		retryAt:    map[string]time.Time{},
 	}
 }
 
@@ -52,6 +55,9 @@ func (f *fakeSyncStore) ClaimGitHubSyncLease(_ context.Context, name, owner stri
 	ls, hasLS := f.lastSynced[name]
 	exp, hasExp := f.leaseExp[name]
 	freshOK := !hasLS || now.Sub(ls) >= freshness
+	if ra, pending := f.retryAt[name]; pending {
+		freshOK = !now.Before(ra)
+	}
 	leaseOK := !hasExp || exp.Before(now)
 	if freshOK && leaseOK {
 		f.leaseOwner[name] = owner
@@ -61,14 +67,20 @@ func (f *fakeSyncStore) ClaimGitHubSyncLease(_ context.Context, name, owner stri
 	return false, "", nil
 }
 
-func (f *fakeSyncStore) ReleaseGitHubSyncLease(_ context.Context, name, owner, etag string, syncedAt time.Time) error {
+func (f *fakeSyncStore) ReleaseGitHubSyncLease(_ context.Context, name, owner string, res provider.SyncResult) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.leaseOwner[name] != owner {
 		return nil
 	}
-	f.lastSynced[name] = syncedAt
-	f.etags[name] = etag
+	f.lastResult = res
+	if res.Failed {
+		f.retryAt[name] = time.Now().Add(res.Backoff)
+	} else {
+		f.lastSynced[name] = time.Now()
+		f.etags[name] = res.Etag
+		delete(f.retryAt, name)
+	}
 	delete(f.leaseOwner, name)
 	delete(f.leaseExp, name)
 	return nil
@@ -308,5 +320,82 @@ func TestSyncerPrimeBypassesRecencyPeriodicDoesNot(t *testing.T) {
 	s.process(context.Background(), syncJob{remote: remote, prime: false})
 	if fx.releasesHit != releasesAfterPrime {
 		t.Fatalf("periodic scan ran inside recency window: %d -> %d releases calls", releasesAfterPrime, fx.releasesHit)
+	}
+}
+
+// A rate-limited scan is not recorded as a sync: the last good repodata keeps
+// serving, the retry honours the upstream reset hint and backoff, and once the
+// upstream recovers the next poll after the backoff re-syncs without waiting
+// out mutable_ttl.
+func TestSyncerFailedScanRetriesAfterBackoff(t *testing.T) {
+	fx := newGitHubFixture(t, true)
+	fx.etag = `"v1"`
+	store := newFakeSyncStore()
+	p := newTestProvider()
+	s := newSyncer(store, p, testSyncConfig())
+	remote := fx.remote()
+	bg := context.Background()
+
+	s.process(bg, syncJob{remote: remote, prime: true})
+	if rows, _ := store.ListRPMMetadataEntries(bg, remote.Name); len(rows) != 1 {
+		t.Fatalf("prime did not derive: %d rows", len(rows))
+	}
+
+	// mutable_ttl elapses while GitHub is rate-limiting.
+	fx.mu.Lock()
+	fx.failStatus = http.StatusForbidden
+	fx.etag = `"v2"`
+	fx.mu.Unlock()
+	store.mu.Lock()
+	store.lastSynced[remote.Name] = time.Now().Add(-2 * time.Hour)
+	store.mu.Unlock()
+
+	s.process(bg, syncJob{remote: remote})
+	res := store.lastResult
+	if !res.Failed {
+		t.Fatal("403 scan was recorded as a successful sync")
+	}
+	if until := time.Until(res.RetryAt); until < 20*time.Second || until > 40*time.Second {
+		t.Fatalf("retry hint from X-RateLimit-Reset not carried: retry in %v", until)
+	}
+	if res.Backoff != time.Minute || res.MaxBackoff >= time.Duration(remote.MutableTTL)*time.Second {
+		t.Fatalf("backoff %v cap %v, want 1m first retry capped below mutable_ttl", res.Backoff, res.MaxBackoff)
+	}
+	if store.etags[remote.Name] != `"v1"` {
+		t.Fatalf("failed scan replaced the etag: %q", store.etags[remote.Name])
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/remote/acme-rpm/repodata/repomd.xml", nil)
+	p.ServeRemote(rec, req, remote, "repodata/repomd.xml", "https://x", store)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("last good repodata not served during failure: %d %s", rec.Code, rec.Body.String())
+	}
+	if rows, _ := store.ListRPMMetadataEntries(bg, remote.Name); len(rows) != 1 {
+		t.Fatalf("failed scan dropped cached metadata: %d rows", len(rows))
+	}
+
+	// Inside the backoff nothing is retried.
+	hits := fx.releasesHit
+	s.process(bg, syncJob{remote: remote})
+	if fx.releasesHit != hits {
+		t.Fatal("scan retried inside the backoff window")
+	}
+
+	// Upstream recovers and the backoff elapses: the next poll re-syncs.
+	fx.mu.Lock()
+	fx.failStatus = 0
+	fx.rpmBytes["other-9-9.aarch64.rpm"] = testsupport.MinimalRPM("other", "9", "9", "aarch64")
+	fx.mu.Unlock()
+	store.mu.Lock()
+	store.retryAt[remote.Name] = time.Now().Add(-time.Second)
+	store.mu.Unlock()
+
+	s.process(bg, syncJob{remote: remote})
+	if store.lastResult.Failed || store.etags[remote.Name] != `"v2"` {
+		t.Fatalf("recovery scan not recorded: failed=%v etag=%q", store.lastResult.Failed, store.etags[remote.Name])
+	}
+	if rows, _ := store.ListRPMMetadataEntries(bg, remote.Name); len(rows) != 2 {
+		t.Fatalf("recovery did not refresh metadata: %d rows", len(rows))
 	}
 }

@@ -27,6 +27,7 @@ type fakeSyncStore struct {
 	leaseExp   map[string]time.Time
 	lastSynced map[string]time.Time
 	etags      map[string]string
+	retryAt    map[string]time.Time
 }
 
 func newFakeSyncStore() *fakeSyncStore {
@@ -36,6 +37,7 @@ func newFakeSyncStore() *fakeSyncStore {
 		leaseExp:   map[string]time.Time{},
 		lastSynced: map[string]time.Time{},
 		etags:      map[string]string{},
+		retryAt:    map[string]time.Time{},
 	}
 }
 
@@ -52,6 +54,9 @@ func (f *fakeSyncStore) ClaimGitHubDebSyncLease(_ context.Context, name, owner s
 	ls, hasLS := f.lastSynced[name]
 	exp, hasExp := f.leaseExp[name]
 	freshOK := !hasLS || now.Sub(ls) >= freshness
+	if ra, pending := f.retryAt[name]; pending {
+		freshOK = !now.Before(ra)
+	}
 	leaseOK := !hasExp || exp.Before(now)
 	if freshOK && leaseOK {
 		f.leaseOwner[name] = owner
@@ -61,14 +66,19 @@ func (f *fakeSyncStore) ClaimGitHubDebSyncLease(_ context.Context, name, owner s
 	return false, "", nil
 }
 
-func (f *fakeSyncStore) ReleaseGitHubDebSyncLease(_ context.Context, name, owner, etag string, syncedAt time.Time) error {
+func (f *fakeSyncStore) ReleaseGitHubDebSyncLease(_ context.Context, name, owner string, res provider.SyncResult) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.leaseOwner[name] != owner {
 		return nil
 	}
-	f.lastSynced[name] = syncedAt
-	f.etags[name] = etag
+	if res.Failed {
+		f.retryAt[name] = time.Now().Add(res.Backoff)
+	} else {
+		f.lastSynced[name] = time.Now()
+		f.etags[name] = res.Etag
+		delete(f.retryAt, name)
+	}
 	delete(f.leaseOwner, name)
 	delete(f.leaseExp, name)
 	return nil

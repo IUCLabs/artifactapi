@@ -35,7 +35,7 @@ type SyncStore interface {
 	provider.RemoteMetadataStore
 	ListGitHubRPMRemotes(ctx context.Context) ([]models.Remote, error)
 	ClaimGitHubSyncLease(ctx context.Context, remoteName, owner string, freshness, lease time.Duration) (claimed bool, etag string, err error)
-	ReleaseGitHubSyncLease(ctx context.Context, remoteName, owner, etag string, syncedAt time.Time) error
+	ReleaseGitHubSyncLease(ctx context.Context, remoteName, owner string, res provider.SyncResult) error
 }
 
 // SyncConfig tunes the shared syncer. Zero values fall back to safe defaults.
@@ -205,10 +205,11 @@ func (s *Syncer) process(ctx context.Context, job syncJob) {
 		s.mu.Unlock()
 	}()
 
-	freshness := time.Duration(job.remote.MutableTTL) * time.Second
-	if freshness <= 0 {
-		freshness = defaultSyncFreshness
+	ttl := time.Duration(job.remote.MutableTTL) * time.Second
+	if ttl <= 0 {
+		ttl = defaultSyncFreshness
 	}
+	freshness := ttl
 	if job.prime {
 		freshness = 0 // prime ignores the recency gate but still respects a live lease
 	}
@@ -226,18 +227,15 @@ func (s *Syncer) process(ctx context.Context, job syncJob) {
 	defer cancel()
 
 	newEtag, changed, scanErr := s.prov.scanWithState(scanCtx, job.remote, s.store, etag)
-	releaseEtag := etag
-	if scanErr == nil {
-		releaseEtag = newEtag
-	} else {
+	if scanErr != nil {
 		slog.Error("github_rpm syncer: scan failed", "remote", job.remote.Name, "error", scanErr)
 	}
 
 	// Release on a detached context so a clean shutdown mid-scan still frees the
-	// lease and advances last_synced_at (otherwise it simply expires).
+	// lease and records the outcome (otherwise the lease simply expires).
 	relCtx, relCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer relCancel()
-	if err := s.store.ReleaseGitHubSyncLease(relCtx, job.remote.Name, s.owner, releaseEtag, time.Now()); err != nil {
+	if err := s.store.ReleaseGitHubSyncLease(relCtx, job.remote.Name, s.owner, provider.NewSyncResult(newEtag, scanErr, ttl)); err != nil {
 		slog.Warn("github_rpm syncer: release lease", "remote", job.remote.Name, "error", err)
 	}
 

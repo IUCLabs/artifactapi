@@ -431,7 +431,7 @@ func (p *GitHubProvider) fetchReleases(ctx context.Context, remote models.Remote
 			return nil, "", false, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, "", false, fmt.Errorf("github releases API %s: status %d", u, resp.StatusCode)
+			return nil, "", false, provider.NewUpstreamStatusError("github releases API "+u, resp)
 		}
 		if page == 1 {
 			newEtag = respEtag

@@ -162,7 +162,21 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 
 	proxyBaseURL := fmt.Sprintf("%s://%s", scheme(r), r.Host)
 
+	loc, ok, err := h.virtualEngine.MemberRedirect(r.Context(), *virt, path, r.URL.RawQuery, proxyBaseURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if ok {
+		http.Redirect(w, r, loc, http.StatusFound)
+		return
+	}
+
 	body, contentType, err := h.virtualEngine.Fetch(r.Context(), *virt, path, proxyBaseURL)
+	if errors.Is(err, virtual.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
 	if err != nil {
 		slog.Error("virtual fetch failed", "virtual", virtualName, "path", path, "error", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)

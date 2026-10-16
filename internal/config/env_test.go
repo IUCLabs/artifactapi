@@ -64,3 +64,20 @@ func TestLoadInvalidPort(t *testing.T) {
 		t.Error("expected error for invalid DBPORT")
 	}
 }
+
+func TestLoadOIDC(t *testing.T) {
+	t.Setenv("ARTIFACTAPI_OIDC_ISSUER", "https://vault.example/v1/identity/oidc")
+	t.Setenv("ARTIFACTAPI_OIDC_AUDIENCE", " a, ,b ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.OIDCAudiences) != 2 || cfg.OIDCAudiences[0] != "a" || cfg.OIDCAudiences[1] != "b" {
+		t.Errorf("audiences = %q", cfg.OIDCAudiences)
+	}
+
+	t.Setenv("ARTIFACTAPI_OIDC_AUDIENCE", "")
+	if _, err := Load(); err == nil {
+		t.Error("expected error for issuer without audience")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -56,6 +57,10 @@ type Config struct {
 	GitHubAppInstallationID string
 	GitHubAppPrivateKey     string
 	GitHubAppPrivateKeyPath string
+
+	// Bearer-JWT auth on configuration writes; empty issuer disables it.
+	OIDCIssuer    string
+	OIDCAudiences []string
 }
 
 func (c *Config) DatabaseDSN() string {
@@ -88,6 +93,17 @@ func Load() (*Config, error) {
 	syncPoll, err := strconv.Atoi(getenv("GITHUB_SYNC_POLL_INTERVAL", "60"))
 	if err != nil {
 		return nil, fmt.Errorf("invalid GITHUB_SYNC_POLL_INTERVAL: %w", err)
+	}
+
+	oidcIssuer := getenv("ARTIFACTAPI_OIDC_ISSUER", "")
+	var oidcAudiences []string
+	for _, a := range strings.Split(getenv("ARTIFACTAPI_OIDC_AUDIENCE", ""), ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			oidcAudiences = append(oidcAudiences, a)
+		}
+	}
+	if oidcIssuer != "" && len(oidcAudiences) == 0 {
+		return nil, fmt.Errorf("ARTIFACTAPI_OIDC_AUDIENCE is required when ARTIFACTAPI_OIDC_ISSUER is set")
 	}
 
 	cfg := &Config{
@@ -123,6 +139,9 @@ func Load() (*Config, error) {
 		GitHubAppInstallationID: getenv("GITHUB_APP_INSTALLATION_ID", ""),
 		GitHubAppPrivateKey:     getenv("GITHUB_APP_PRIVATE_KEY", ""),
 		GitHubAppPrivateKeyPath: getenv("GITHUB_APP_PRIVATE_KEY_PATH", ""),
+
+		OIDCIssuer:    oidcIssuer,
+		OIDCAudiences: oidcAudiences,
 	}
 
 	return cfg, nil

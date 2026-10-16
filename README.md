@@ -371,6 +371,8 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
+| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com:8200/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals` and `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` require `Authorization: Bearer <jwt>` verified against the issuer's JWKS. Uploads, object/file deletes, probe, reads and `/v2` stay open. Unset = no auth |
+| `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
 
 ## Development
 

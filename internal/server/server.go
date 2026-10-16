@@ -15,6 +15,7 @@ import (
 	tfregistry "github.com/IUCLabs/artifactapi/internal/api/terraform"
 	v1 "github.com/IUCLabs/artifactapi/internal/api/v1"
 	v2 "github.com/IUCLabs/artifactapi/internal/api/v2"
+	"github.com/IUCLabs/artifactapi/internal/auth"
 	"github.com/IUCLabs/artifactapi/internal/cache"
 	"github.com/IUCLabs/artifactapi/internal/config"
 	"github.com/IUCLabs/artifactapi/internal/database"
@@ -186,10 +187,11 @@ func (s *Server) routes() chi.Router {
 	statsHandler := v2.NewStatsHandler(s.db)
 	eventsHandler := v2.NewEventsHandler()
 	probeHandler := v2.NewProbeHandler(s.engine, s.db)
+	writeAuth := auth.NewBearerOIDC(s.cfg.OIDCIssuer, s.cfg.OIDCAudiences)
 
 	r.Route("/api/v2", func(r chi.Router) {
-		r.Mount("/remotes", remotesHandler.Routes())
-		r.Mount("/virtuals", virtualsHandler.Routes())
+		r.Mount("/remotes", writeAuth.RequireWrites(remotesHandler.Routes()))
+		r.Mount("/virtuals", writeAuth.RequireWrites(virtualsHandler.Routes()))
 		r.Mount("/health", healthHandler.Routes())
 		r.Mount("/stats", statsHandler.Routes())
 		r.Mount("/events", eventsHandler.Routes())

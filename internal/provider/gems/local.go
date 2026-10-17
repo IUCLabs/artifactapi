@@ -445,10 +445,11 @@ func (m *rbMarshal) requirement(r Requirement) {
 
 // time writes a UTC Time with day resolution, as Time#_dump lays it out.
 func (m *rbMarshal) time(t time.Time) {
-	if t.IsZero() {
-		t = time.Unix(0, 0)
-	}
 	t = t.UTC()
+	// Time#_dump holds year-1900 in 16 bits.
+	if t.IsZero() || t.Year() < 1900 || t.Year() > 1900+0xffff {
+		t = time.Unix(0, 0).UTC()
+	}
 	p := uint32(1)<<31 | uint32(1)<<30 | uint32(t.Year()-1900)<<14 | uint32(t.Month()-1)<<10 | uint32(t.Day())<<5 | uint32(t.Hour())
 	s := uint32(t.Minute())<<26 | uint32(t.Second())<<20
 	m.WriteString("Iu")

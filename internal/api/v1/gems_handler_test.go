@@ -4,14 +4,18 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/IUCLabs/artifactapi/internal/cache"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -134,8 +138,26 @@ func TestGemsPushIndexYank(t *testing.T) {
 	if code, _ := npmDo(t, http.MethodGet, base+"gems/hello_gem-0.2.0-java.gem", ""); code != http.StatusNotFound {
 		t.Fatalf("yanked download = %d, want 404", code)
 	}
-	if code, _ := npmDo(t, http.MethodPost, base+"api/v1/gems", string(gj)); code != http.StatusOK {
-		t.Fatalf("push after yank = %d", code)
+	if _, v := npmDo(t, http.MethodGet, base+"versions", ""); strings.Contains(v, "java") || !strings.Contains(v, "hello_gem 0.1.0,0.2.0 ") {
+		t.Fatalf("versions after yank = %q", v)
+	}
+	for _, g := range []string{string(gj), string(gj) + "x"} {
+		if code, body := npmDo(t, http.MethodPost, base+"api/v1/gems", g); code != http.StatusConflict || !strings.Contains(body, "yanked") {
+			t.Fatalf("push after yank = %d %q, want 409", code, body)
+		}
+	}
+	if _, info := npmDo(t, http.MethodGet, base+"info/hello_gem", ""); strings.Contains(info, "java") {
+		t.Fatalf("info after rejected re-push = %q", info)
+	}
+
+	if c := yank("gem_name=hello-gem&version=1.0.0"); c != http.StatusOK {
+		t.Fatalf("yank last version = %d", c)
+	}
+	if code, _ := npmDo(t, http.MethodGet, base+"info/hello-gem", ""); code != http.StatusNotFound {
+		t.Fatalf("info for fully yanked gem = %d, want 404", code)
+	}
+	if _, names := npmDo(t, http.MethodGet, base+"names", ""); names != "---\nhello_gem\n" {
+		t.Fatalf("names after yanking every version = %q", names)
 	}
 }
 
@@ -155,5 +177,77 @@ func TestGemsPushRejects(t *testing.T) {
 	defer func() { gemsMaxPushBytes = old }()
 	if code, _ := npmDo(t, http.MethodPost, srv.URL+"/api/v1/local/"+repo+"/api/v1/gems", g); code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized push = %d, want 413", code)
+	}
+}
+
+func TestGemsPushYankSerialised(t *testing.T) {
+	h, srv := npmTestServer(t)
+	repo := npmRepo(t, h, models.PackageGems)
+	base := srv.URL + "/api/v1/local/" + repo + "/"
+	g := string(testGemFile(t, "race", "1.0.0", "ruby"))
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if code, body := npmDo(t, http.MethodPost, base+"api/v1/gems", g); code != http.StatusOK && code != http.StatusConflict {
+				t.Errorf("push = %d: %s", code, body)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if code, body := npmDo(t, http.MethodDelete, base+"api/v1/gems/yank?gem_name=race&version=1.0.0", ""); code != http.StatusOK && code != http.StatusNotFound {
+				t.Errorf("yank = %d: %s", code, body)
+			}
+		}()
+	}
+	wg.Wait()
+
+	present := func(p string) bool {
+		f, err := h.db.GetLocalFile(context.Background(), repo, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f != nil
+	}
+	live := []string{"_index/race/race-1.0.0", "gems/race-1.0.0.gem", "quick/Marshal.4.8/race-1.0.0.gemspec.rz"}
+	tomb := present("_yanked/race/race-1.0.0")
+	for _, p := range live {
+		if present(p) == tomb {
+			t.Errorf("tombstoned=%v but %s present=%v", tomb, p, !tomb)
+		}
+	}
+	_, info := npmDo(t, http.MethodGet, base+"info/race", "")
+	if strings.Contains(info, "1.0.0") == tomb {
+		t.Errorf("tombstoned=%v but info = %q", tomb, info)
+	}
+}
+
+func TestGemsLockTimeoutIs503(t *testing.T) {
+	h, srv := npmTestServer(t)
+	repo := npmRepo(t, h, models.PackageGems)
+	base := srv.URL + "/api/v1/local/" + repo + "/"
+	redis, err := cache.NewRedis(testRedis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := redis.AcquireLock(context.Background(), repo, "_gemlock/busy-1.0.0", time.Minute); !ok || err != nil {
+		t.Fatalf("hold lock = %v %v", ok, err)
+	}
+	prev := gemsLockWait
+	gemsLockWait = 100 * time.Millisecond
+	t.Cleanup(func() { gemsLockWait = prev })
+
+	if code, _ := npmDo(t, http.MethodPost, base+"api/v1/gems", string(testGemFile(t, "busy", "1.0.0", "ruby"))); code != http.StatusServiceUnavailable {
+		t.Fatalf("push under held lock = %d, want 503", code)
+	}
+	if code, _ := npmDo(t, http.MethodDelete, base+"api/v1/gems/yank?gem_name=busy&version=1.0.0", ""); code != http.StatusServiceUnavailable {
+		t.Fatalf("yank under held lock = %d, want 503", code)
+	}
+	if err := redis.ReleaseLock(context.Background(), repo, "_gemlock/busy-1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := npmDo(t, http.MethodPost, base+"api/v1/gems", string(testGemFile(t, "busy", "1.0.0", "ruby"))); code != http.StatusOK {
+		t.Fatalf("push after release = %d: %s", code, body)
 	}
 }

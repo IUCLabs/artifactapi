@@ -26,10 +26,17 @@ import (
 //   gems/<full>.gem                         package (immutable)
 //   quick/Marshal.4.8/<full>.gemspec.rz     marshalled spec (immutable)
 //   _index/<name>/<full>                    compact index /info line; gates visibility
+//   _yanked/<name>/<full>                   yank tombstone; blocks re-push of the version
 
-var gemsMaxPushBytes int64 = 256 << 20
+var (
+	gemsMaxPushBytes int64 = 256 << 20
+	gemsLockWait           = 30 * time.Second
+)
 
-const gemsIndexPrefix = "_index/"
+const (
+	gemsIndexPrefix  = "_index/"
+	gemsYankedPrefix = "_yanked/"
+)
 
 func gemsText(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -44,6 +51,16 @@ func (h *ProxyHandler) localGemsRemote(w http.ResponseWriter, r *http.Request) (
 		return nil, false
 	}
 	return remote, true
+}
+
+// lockGemVersion serialises push and yank of one gem version across replicas.
+func (h *ProxyHandler) lockGemVersion(w http.ResponseWriter, r *http.Request, repo, full string) (func(), bool) {
+	unlock, err := h.engine.Lock(r.Context(), repo, "_gemlock/"+full, gemsLockWait, 5*time.Minute)
+	if err != nil {
+		gemsText(w, http.StatusServiceUnavailable, full+" is being pushed or yanked, retry")
+		return nil, false
+	}
+	return unlock, true
 }
 
 func (h *ProxyHandler) handleLocalPost(w http.ResponseWriter, r *http.Request) {
@@ -72,34 +89,61 @@ func (h *ProxyHandler) handleLocalPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	full := spec.FullName()
+	unlock, ok := h.lockGemVersion(w, r, remote.Name, full)
+	if !ok {
+		return
+	}
+	defer unlock()
 	conflict := func() {
 		gemsText(w, http.StatusConflict, fmt.Sprintf("%s already exists; overwrites are not allowed", full))
+	}
+	index := gemsIndexPrefix + spec.Name + "/" + full
+	for _, p := range []string{gemsYankedPrefix + spec.Name + "/" + full, index} {
+		f, err := h.db.GetLocalFile(r.Context(), remote.Name, p)
+		if err != nil {
+			gemsText(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if f != nil && p == index {
+			conflict()
+			return
+		}
+		if f != nil {
+			gemsText(w, http.StatusConflict, fmt.Sprintf("%s was yanked; re-pushing a yanked version is not allowed", full))
+			return
+		}
+	}
+	// The version is not live, so on failure every path is an invisible leftover and safe to drop.
+	paths := []string{"gems/" + full + ".gem", "quick/Marshal.4.8/" + full + ".gemspec.rz", index}
+	fail := func(status int, msg string) {
+		for _, p := range paths {
+			if err := h.db.DeleteLocalFile(context.WithoutCancel(r.Context()), remote.Name, p); err != nil {
+				slog.Error("gem push cleanup failed", "repo", remote.Name, "path", p, "error", err)
+			}
+		}
+		gemsText(w, status, msg)
 	}
 	// The index line gates visibility, so it is written last.
 	for _, f := range []struct {
 		path string
 		data []byte
 	}{
-		{"gems/" + full + ".gem", gem},
-		{"quick/Marshal.4.8/" + full + ".gemspec.rz", quick},
+		{paths[0], gem},
+		{paths[1], quick},
 	} {
 		ok, err := h.npmStoreImmutable(r.Context(), remote.Name, f.path, f.data, "application/octet-stream")
 		if err != nil {
-			gemsText(w, http.StatusInternalServerError, err.Error())
+			fail(http.StatusInternalServerError, err.Error())
 			return
 		}
 		if !ok {
-			conflict()
+			fail(http.StatusConflict, fmt.Sprintf("%s already exists; overwrites are not allowed", full))
 			return
 		}
 	}
 	line := gems.InfoLine(spec, gem)
-	if _, err := h.npmStore(r.Context(), remote.Name, gemsIndexPrefix+spec.Name+"/"+full, []byte(line), "text/plain", false); err != nil {
-		if errors.Is(err, database.ErrAlreadyExists) {
-			conflict()
-			return
-		}
-		gemsText(w, http.StatusInternalServerError, err.Error())
+	if _, err := h.npmStore(r.Context(), remote.Name, index, []byte(line), "text/plain", false); err != nil {
+		fail(http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -141,6 +185,11 @@ func (h *ProxyHandler) handleLocalDelete(w http.ResponseWriter, r *http.Request)
 	}
 
 	full := spec.FullName()
+	unlock, ok := h.lockGemVersion(w, r, remote.Name, full)
+	if !ok {
+		return
+	}
+	defer unlock()
 	index := gemsIndexPrefix + spec.Name + "/" + full
 	existing, err := h.db.GetLocalFile(r.Context(), remote.Name, index)
 	if err != nil {
@@ -151,8 +200,18 @@ func (h *ProxyHandler) handleLocalDelete(w http.ResponseWriter, r *http.Request)
 		gemsText(w, http.StatusNotFound, "The version "+spec.Version+" does not exist")
 		return
 	}
+	// The tombstone keeps the yanked line and is written before any delete.
+	line, err := h.readLocalBlob(r.Context(), existing.ContentHash)
+	if err != nil {
+		gemsText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := h.npmStore(r.Context(), remote.Name, gemsYankedPrefix+spec.Name+"/"+full, line, "text/plain", false); err != nil && !errors.Is(err, database.ErrAlreadyExists) {
+		gemsText(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	for _, p := range []string{index, "gems/" + full + ".gem", "quick/Marshal.4.8/" + full + ".gemspec.rz"} {
-		if err := h.db.DeleteLocalFile(r.Context(), remote.Name, p); err != nil {
+		if err := h.db.DeleteLocalFile(context.WithoutCancel(r.Context()), remote.Name, p); err != nil {
 			gemsText(w, http.StatusInternalServerError, err.Error())
 			return
 		}

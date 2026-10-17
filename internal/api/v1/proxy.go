@@ -263,9 +263,15 @@ func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if remote.PackageType == models.PackageGems && isGemsIndexPath(path) {
-		h.serveLocalGemsIndex(w, r, remote, path)
-		return
+	if remote.PackageType == models.PackageGems {
+		if isGemsIndexPath(path) {
+			h.serveLocalGemsIndex(w, r, remote, path)
+			return
+		}
+		if strings.HasPrefix(path, gemsIndexPrefix) || strings.HasPrefix(path, gemsYankedPrefix) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 	}
 
 	prov, _ := provider.Get(remote.PackageType)

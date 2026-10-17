@@ -175,6 +175,15 @@ func TestRubyMarshalEncoding(t *testing.T) {
 	if want := "Iu:\x09Time\x0d\x20\xa6\x1f\xc0\x00\x00\x00\x00\x06:\x09zoneI\"\x08UTC\x06:\x06EF"; m.String() != want {
 		t.Errorf("time = %q, want %q", m.String(), want)
 	}
+	var epoch rbMarshal
+	epoch.time(time.Time{})
+	for _, y := range []int{1, 1899, 1900 + 0x10000} {
+		m.Reset()
+		m.time(time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC))
+		if m.String() != epoch.String() {
+			t.Errorf("time(year %d) = %q, want the epoch encoding %q", y, m.String(), epoch.String())
+		}
+	}
 }
 
 func TestQuickSpec(t *testing.T) {

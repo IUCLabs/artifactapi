@@ -15,7 +15,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/IUCLabs/artifactapi/internal/cache"
 	"github.com/IUCLabs/artifactapi/internal/database"
+	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
 	"github.com/IUCLabs/artifactapi/internal/virtual"
@@ -25,6 +27,7 @@ import (
 var (
 	testDSN   string
 	testMinio testsupport.MinioConn
+	testRedis string
 )
 
 func TestMain(m *testing.M) {
@@ -38,8 +41,15 @@ func TestMain(m *testing.M) {
 		termPG()
 		os.Exit(m.Run())
 	}
-	testDSN, testMinio = dsn, conn
+	redisURL, termRedis, err := testsupport.StartRedis(ctx)
+	if err != nil {
+		termMinio()
+		termPG()
+		os.Exit(m.Run())
+	}
+	testDSN, testMinio, testRedis = dsn, conn, redisURL
 	code := m.Run()
+	termRedis()
 	termMinio()
 	termPG()
 	os.Exit(code)
@@ -65,7 +75,11 @@ func npmTestServer(t *testing.T) (*ProxyHandler, *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewProxyHandler(nil, nil, db, store, nil)
+	redis, err := cache.NewRedis(testRedis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewProxyHandler(proxy.NewEngine(db, redis, store), nil, db, store, nil)
 	r := chi.NewRouter()
 	r.Mount("/api/v1", h.Routes())
 	srv := httptest.NewServer(r)

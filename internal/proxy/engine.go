@@ -228,10 +228,11 @@ func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 		return fmt.Errorf("get remote: %w", err)
 	}
 	if !wildcard {
-		if err := e.waitForLock(ctx, remoteName, path); err != nil {
+		release, err := e.Lock(ctx, remoteName, path, e.evictLockWait, fetchLockTTL)
+		if err != nil {
 			return err
 		}
-		defer func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remoteName, path) }()
+		defer release()
 		if err := e.db.DeleteArtifact(ctx, remoteName, path); err != nil {
 			return fmt.Errorf("delete artifact: %w", err)
 		}
@@ -252,13 +253,20 @@ func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 	return e.cache.ForgetPrefix(ctx, remoteName, prefix)
 }
 
-// waitForLock takes the per-path fetch lock so an in-flight Fetch cannot
-// re-set TTL/ETag keys after an evict. It fails with a 503 when the lock
-// cannot be taken within evictLockWait or Redis errors.
-func (e *Engine) waitForLock(ctx context.Context, remoteName, path string) error {
-	deadline := time.Now().Add(e.evictLockWait)
+// Lock takes the per-path Redis lock (the one Fetch holds) and returns its
+// release. It fails with a 503 when the lock cannot be taken within wait or
+// Redis errors.
+func (e *Engine) Lock(ctx context.Context, remoteName, path string, wait, ttl time.Duration) (func(), error) {
+	if err := e.waitForLock(ctx, remoteName, path, wait, ttl); err != nil {
+		return nil, err
+	}
+	return func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remoteName, path) }, nil
+}
+
+func (e *Engine) waitForLock(ctx context.Context, remoteName, path string, wait, ttl time.Duration) error {
+	deadline := time.Now().Add(wait)
 	for {
-		ok, err := e.cache.AcquireLock(ctx, remoteName, path, fetchLockTTL)
+		ok, err := e.cache.AcquireLock(ctx, remoteName, path, ttl)
 		if ok {
 			return nil
 		}

@@ -353,7 +353,7 @@ func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, pat
 				req.Header.Set(k, v)
 			}
 		}
-		return http.DefaultClient.Do(req)
+		return clientForRemote(remote).Do(req)
 	}
 
 	resp, err := doHead(nil)

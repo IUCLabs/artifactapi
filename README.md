@@ -31,6 +31,7 @@ Each type's paths, Terraform examples and local/virtual behaviour are in `docs/<
 - `deb`: [remote](docs/deb/remote.md), [remote-github](docs/deb/remote-github.md)
 - `docker`: [remote](docs/docker/remote.md), [local](docs/docker/local.md)
 - `generic`: [remote](docs/generic/remote.md)
+- `gems`: [remote](docs/gems/remote.md)
 - `goproxy`: [remote](docs/goproxy/remote.md)
 - `helm`: [remote](docs/helm/remote.md), [local](docs/helm/local.md), [virtual](docs/helm/virtual.md)
 - `npm`: [remote](docs/npm/remote.md), [local](docs/npm/local.md)

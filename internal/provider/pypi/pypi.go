@@ -52,6 +52,8 @@ func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
 	return strings.TrimRight(remote.BaseURL, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
+func (p *Provider) RewritesResponse() {}
+
 func (p *Provider) RewriteResponse(body []byte, remote models.Remote, proxyBaseURL string) ([]byte, error) {
 	if proxyBaseURL == "" {
 		return nil, nil

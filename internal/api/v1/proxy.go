@@ -42,6 +42,7 @@ func NewProxyHandler(engine *proxy.Engine, virtualEngine *virtual.Engine, db *da
 func (h *ProxyHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/remote/{remoteName}/*", h.handleProxy)
+	r.Head("/remote/{remoteName}/*", h.handleProxyHead)
 	r.Get("/local/{localName}/*", h.handleLocal)
 	r.Put("/local/{localName}/*", h.handleLocalPut)
 	r.Get("/virtual/{virtualName}/*", h.handleVirtual)
@@ -70,31 +71,43 @@ func (h *ProxyHandler) handleDockerPing(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusOK)
 }
 
-func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
+// remoteFor resolves the remote and provider named in the request, writing the
+// error response itself when either is missing.
+func (h *ProxyHandler) remoteFor(w http.ResponseWriter, r *http.Request) (*models.Remote, provider.Provider, bool) {
 	remoteName := chi.URLParam(r, "remoteName")
-	path := chi.URLParam(r, "*")
-
 	remote, err := h.db.GetRemote(r.Context(), remoteName)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("remote %q not found", remoteName), http.StatusNotFound)
-		return
+		return nil, nil, false
 	}
-
 	prov, err := provider.Get(remote.PackageType)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("no provider for %q", remote.PackageType), http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return remote, prov, true
+}
+
+// serveRemote lets metadata-only remotes (e.g. github_rpm) synthesize their own
+// responses and redirect package downloads instead of proxying bytes.
+func (h *ProxyHandler) serveRemote(w http.ResponseWriter, r *http.Request, remote *models.Remote, prov provider.Provider, path string) bool {
+	rs, ok := prov.(provider.RemoteServer)
+	return ok && rs.ServeRemote(w, r, *remote, path, fmt.Sprintf("%s://%s", scheme(r), r.Host), h.db)
+}
+
+func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
+	remote, prov, ok := h.remoteFor(w, r)
+	if !ok {
 		return
 	}
-
-	// Metadata-only remotes (e.g. github_rpm) synthesize their own responses and
-	// redirect package downloads to a backend remote instead of proxying bytes.
-	if rs, ok := prov.(provider.RemoteServer); ok {
-		proxyBaseURL := fmt.Sprintf("%s://%s", scheme(r), r.Host)
-		if rs.ServeRemote(w, r, *remote, path, proxyBaseURL, h.db) {
-			return
-		}
+	path := chi.URLParam(r, "*")
+	if h.serveRemote(w, r, remote, prov, path) {
+		return
 	}
+	h.serveFetch(w, r, remote, prov, path)
+}
 
+func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote *models.Remote, prov provider.Provider, path string) {
 	result, err := h.engine.Fetch(r.Context(), *remote, path, prov, r.Header)
 	if err != nil {
 		var proxyErr *proxy.ProxyError
@@ -102,7 +115,7 @@ func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, proxyErr.Message, proxyErr.Status)
 			return
 		}
-		slog.Error("proxy fetch failed", "remote", remoteName, "path", path, "error", err)
+		slog.Error("proxy fetch failed", "remote", remote.Name, "path", path, "error", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
@@ -122,25 +135,33 @@ func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", result.ContentType)
 	w.Header().Set("X-Artifact-Source", result.Source)
 	if result.Size > 0 {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", result.Size))
 		w.Header().Set("X-Artifact-Size", fmt.Sprintf("%d", result.Size))
 	}
 	w.WriteHeader(http.StatusOK)
 	io.Copy(w, body)
 }
 
-func (h *ProxyHandler) handleProxyHead(w http.ResponseWriter, r *http.Request) {
-	remoteName := chi.URLParam(r, "remoteName")
-	path := chi.URLParam(r, "*")
+func rewritesMutable(prov provider.Provider, path string) bool {
+	_, sr := prov.(provider.ServeRewriter)
+	_, rr := prov.(provider.ResponseRewriter)
+	return (sr || rr) && prov.Classify(path) == provider.Mutable
+}
 
-	remote, err := h.db.GetRemote(r.Context(), remoteName)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("remote %q not found", remoteName), http.StatusNotFound)
+// handleProxyHead answers HEAD like GET without a body. Responses a provider
+// synthesizes or rewrites per request go through the GET path so their headers
+// match; everything else is answered from store metadata or an upstream HEAD.
+func (h *ProxyHandler) handleProxyHead(w http.ResponseWriter, r *http.Request) {
+	remote, prov, ok := h.remoteFor(w, r)
+	if !ok {
 		return
 	}
-
-	prov, err := provider.Get(remote.PackageType)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("no provider for %q", remote.PackageType), http.StatusInternalServerError)
+	path := chi.URLParam(r, "*")
+	if h.serveRemote(w, r, remote, prov, path) {
+		return
+	}
+	if rewritesMutable(prov, path) {
+		h.serveFetch(w, r, remote, prov, path)
 		return
 	}
 
@@ -151,7 +172,7 @@ func (h *ProxyHandler) handleProxyHead(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, proxyErr.Message, proxyErr.Status)
 			return
 		}
-		slog.Error("proxy head failed", "remote", remoteName, "path", path, "error", err)
+		slog.Error("proxy head failed", "remote", remote.Name, "path", path, "error", err)
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}

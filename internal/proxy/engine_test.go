@@ -219,6 +219,20 @@ func TestHead(t *testing.T) {
 	}
 }
 
+func TestHeadUpstreamUsesRemoteTimeout(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(3 * time.Second)
+	}))
+	defer slow.Close()
+	r := models.Remote{Name: "slow-head", PackageType: models.PackageGeneric, BaseURL: slow.URL, UpstreamResponseHeaderTimeout: 1}
+
+	start := time.Now()
+	_, err := (&Engine{}).headUpstreamOnce(context.Background(), r, "blob.bin", prov(t, models.PackageGeneric))
+	if err == nil || time.Since(start) > 2*time.Second {
+		t.Fatalf("HEAD ignored the remote's response header timeout: err=%v after %s", err, time.Since(start))
+	}
+}
+
 func TestStaleOnError(t *testing.T) {
 	requireStack(t)
 	ctx := context.Background()

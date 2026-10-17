@@ -2,10 +2,14 @@ package virtual
 
 import (
 	"fmt"
+	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -16,22 +20,17 @@ func init() {
 type HelmMerger struct{}
 
 type helmIndex struct {
-	APIVersion string                        `yaml:"apiVersion"`
-	Entries    map[string][]helmChartVersion `yaml:"entries"`
-	Generated  string                        `yaml:"generated,omitempty"`
+	APIVersion string                            `yaml:"apiVersion"`
+	Entries    map[string][]map[string]yaml.Node `yaml:"entries"`
+	Generated  string                            `yaml:"generated,omitempty"`
 }
 
-type helmChartVersion struct {
-	Name    string   `yaml:"name"`
-	Version string   `yaml:"version"`
-	URLs    []string `yaml:"urls"`
-	rest    map[string]any
-}
-
+// MergeIndexes keeps each chart version's fields as raw nodes so digest,
+// apiVersion and the rest survive the merge untouched; only urls are rewritten.
 func (m *HelmMerger) MergeIndexes(members []MemberIndex, proxyBaseURL string) ([]byte, error) {
 	merged := &helmIndex{
 		APIVersion: "v1",
-		Entries:    make(map[string][]helmChartVersion),
+		Entries:    make(map[string][]map[string]yaml.Node),
 	}
 
 	seen := map[string]map[string]bool{}
@@ -42,52 +41,71 @@ func (m *HelmMerger) MergeIndexes(members []MemberIndex, proxyBaseURL string) ([
 			continue
 		}
 
-		for chart, versions := range idx.Entries {
+		budget := provider.MaxAliasExpandedNodes
+		for _, chart := range slices.Sorted(maps.Keys(idx.Entries)) {
+			versions := idx.Entries[chart]
 			if seen[chart] == nil {
 				seen[chart] = map[string]bool{}
 			}
-			for _, ver := range versions {
-				key := chart + ":" + ver.Version
-				if seen[chart][ver.Version] {
+			for _, raw := range versions {
+				ver, err := provider.ExpandYAMLAliases(raw, &budget)
+				if err != nil {
+					slog.Warn("helm merge: dropping chart entry", "member", member.RemoteName, "chart", chart, "error", err)
 					continue
 				}
-				seen[chart][ver.Version] = true
+				version := ver["version"].Value
+				if seen[chart][version] {
+					continue
+				}
+				seen[chart][version] = true
 
-				if proxyBaseURL != "" {
-					routePrefix := "remote"
-					if member.RepoType == "local" {
-						routePrefix = "local"
+				if urlsNode, ok := ver["urls"]; ok && proxyBaseURL != "" {
+					var urls []string
+					if err := urlsNode.Decode(&urls); err != nil {
+						continue
 					}
-					baseHost := extractHost(member.BaseURL)
-
-					for i, u := range ver.URLs {
-						if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
-							if baseHost != "" && extractHost(u) != baseHost {
-								continue
-							}
-							relPath := extractPathRelativeToBase(u, member.BaseURL)
-							ver.URLs[i] = fmt.Sprintf("%s/api/v1/%s/%s/%s",
-								strings.TrimRight(proxyBaseURL, "/"),
-								routePrefix,
-								member.RemoteName,
-								relPath)
-						} else {
-							ver.URLs[i] = fmt.Sprintf("%s/api/v1/%s/%s/%s",
-								strings.TrimRight(proxyBaseURL, "/"),
-								routePrefix,
-								member.RemoteName,
-								u)
-						}
+					rewriteHelmURLs(urls, member, proxyBaseURL)
+					var n yaml.Node
+					if err := n.Encode(urls); err != nil {
+						return nil, err
 					}
+					ver["urls"] = n
 				}
 
 				merged.Entries[chart] = append(merged.Entries[chart], ver)
-				_ = key
 			}
 		}
 	}
 
 	return yaml.Marshal(merged)
+}
+
+func rewriteHelmURLs(urls []string, member MemberIndex, proxyBaseURL string) {
+	routePrefix := "remote"
+	if member.RepoType == "local" {
+		routePrefix = "local"
+	}
+	baseHost := extractHost(member.BaseURL)
+
+	for i, u := range urls {
+		if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+			if baseHost != "" && extractHost(u) != baseHost {
+				continue
+			}
+			relPath := extractPathRelativeToBase(u, member.BaseURL)
+			urls[i] = fmt.Sprintf("%s/api/v1/%s/%s/%s",
+				strings.TrimRight(proxyBaseURL, "/"),
+				routePrefix,
+				member.RemoteName,
+				relPath)
+		} else {
+			urls[i] = fmt.Sprintf("%s/api/v1/%s/%s/%s",
+				strings.TrimRight(proxyBaseURL, "/"),
+				routePrefix,
+				member.RemoteName,
+				u)
+		}
+	}
 }
 
 func extractHost(rawURL string) string {

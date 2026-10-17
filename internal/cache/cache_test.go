@@ -86,6 +86,12 @@ func TestETagAndToken(t *testing.T) {
 	if v, _ := testRedis.GetETag(ctx, "r", "p"); v != `"abc"` {
 		t.Errorf("etag = %q", v)
 	}
+	if err := testRedis.SetETag(ctx, "r", "p", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := testRedis.GetETag(ctx, "r", "p"); v != "" {
+		t.Errorf("empty etag should drop the stored one, got %q", v)
+	}
 
 	if v, _ := testRedis.GetToken(ctx, "missing"); v != "" {
 		t.Error("missing token should be empty")

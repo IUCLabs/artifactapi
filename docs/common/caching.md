@@ -12,8 +12,8 @@ Every proxied request on a remote is classified as **denied**, **immutable** or
 | `immutable_patterns` | Regexes forcing a path immutable. |
 | `mutable_patterns` | Regexes forcing a path mutable. |
 | `immutable_ttl` | Seconds an immutable path stays fresh. `0` = forever. |
-| `mutable_ttl` | Seconds a mutable path stays fresh. `0` also means never expires, and the API stores `0` when the field is omitted. |
-| `check_mutable` | Stores the upstream ETag and tries a conditional `HEAD` (`If-None-Match`) when a mutable path is fetched. The ETag expires with the `mutable_ttl` freshness key, so an expired mutable path is refetched in full, not revalidated. |
+| `mutable_ttl` | Seconds a mutable path stays fresh. `0` also means never expires. Omitted on create, it defaults to `3600`; omitted on update, the stored value is kept. |
+| `check_mutable` | When a mutable path's `mutable_ttl` expires, sends a conditional `HEAD` (`If-None-Match`) with the stored upstream ETag. A `304` re-arms the TTL and serves the stored copy; anything else refetches in full. The ETag is kept for `max(10 × mutable_ttl, 7 days)`, re-armed on each `304`, so idle paths age out. It is only stored when `check_mutable` is set and `mutable_ttl` is non-zero, and never for immutable paths. |
 | `stale_on_error` | On an upstream network error, serve the stored copy instead of failing. |
 | `quarantine_enabled` / `quarantine_days` | Stored on the remote but not enforced by the proxy yet. |
 | `mirrorlist` / `mirror_strategy` | rpm/deb/alpine only. Upstream pool is `[base_url] + mirrorlist`; `round_robin` (default) rotates the starting mirror, `least_conn` starts at the one with the fewest in-flight requests. Network errors and 5xx fail over to the next mirror; other statuses return as-is. |
@@ -46,7 +46,7 @@ So `blocklist` beats the allowlist, and `immutable_patterns` beats
 |---|---|---|
 | Stored as | content-addressed blob (sha256), streamed | per-path index object, buffered and rewritten by the provider |
 | Fresh for | `immutable_ttl` (`0` = forever) | `mutable_ttl` |
-| After expiry | refetched from upstream | refetched from upstream (the ETag expires with the TTL, so `check_mutable` does not revalidate it) |
+| After expiry | refetched from upstream | revalidated with `If-None-Match` when `check_mutable` is set and an ETag is stored, else refetched |
 | Upstream down | `stale_on_error` serves the stored copy and re-arms the TTL; an open circuit breaker always serves stale if a copy exists, else 503 | same |
 
 Concurrent misses on one path share a fetch lock. Waiters poll the store for
@@ -60,6 +60,7 @@ curl -X DELETE https://artifactapi.example.com/api/v2/remotes/<name>/objects/<di
 ```
 
 - Evict drops the artifact row, the index object and the Redis TTL and ETag keys, so the next request goes upstream whatever the class or TTL.
+- Deleting a remote drops its Redis TTL and ETag keys, so a re-created remote of the same name starts cold.
 - A single-path evict takes the fetch lock first, so an in-flight fetch can't re-cache the path. It returns 503 if the lock stays busy.
 - A wildcard must end in `<dir>/*` and takes no lock.
 - Returns 204, or 404 for an unknown remote.

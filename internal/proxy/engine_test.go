@@ -17,12 +17,14 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
 	"github.com/IUCLabs/artifactapi/pkg/models"
+	goredis "github.com/redis/go-redis/v9"
 )
 
 var (
 	testEngine *Engine
 	testCache  *cache.Redis
 	testDB     *database.DB
+	testRedis  string
 	upstream   *httptest.Server
 )
 
@@ -64,6 +66,7 @@ func TestMain(m *testing.M) {
 	}
 
 	testCache = redis
+	testRedis = redisURL
 	testDB = db
 	testEngine = NewEngine(db, redis, s3)
 	upstream = httptest.NewServer(http.HandlerFunc(mockUpstream))
@@ -260,30 +263,169 @@ func TestCircuitOpenServesStale(t *testing.T) {
 	res.Reader.Close()
 }
 
+// expire drops path's freshness key so the next fetch revalidates.
+func expire(t *testing.T, remote, path string) {
+	t.Helper()
+	if err := testCache.SetTTL(context.Background(), remote, path, time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+}
+
+func mutableFetch(t *testing.T, r models.Remote, path string) (string, string) {
+	t.Helper()
+	res, err := testEngine.Fetch(context.Background(), r, path, prov(t, models.PackageRPM))
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	return readAll(t, res), res.Source
+}
+
+const repomd = "8/Everything/x86_64/repodata/repomd.xml"
+
 func TestMutableRevalidation(t *testing.T) {
 	requireStack(t)
+	srv, rev, conditional := changingUpstream(t)
+	r := seed(t, models.Remote{Name: "eng-reval", PackageType: models.PackageRPM, RepoType: models.RepoTypeRemote, BaseURL: srv.URL, CheckMutable: true, MutableTTL: 60})
+
+	if body, _ := mutableFetch(t, r, repomd); body != "rev1:/"+repomd {
+		t.Fatalf("initial fetch = %q", body)
+	}
+	expire(t, r.Name, repomd)
+	if body, src := mutableFetch(t, r, repomd); body != "rev1:/"+repomd || src != "cache" {
+		t.Errorf("after expiry = %q from %s, want cached rev1", body, src)
+	}
+	if n := conditional.Load(); n != 1 {
+		t.Errorf("conditional requests = %d, want 1 revalidation", n)
+	}
+	if fresh, _ := testCache.CheckTTL(context.Background(), r.Name, repomd); !fresh {
+		t.Error("304 should re-arm the freshness key")
+	}
+
+	rev.Store("rev2")
+	expire(t, r.Name, repomd)
+	if body, src := mutableFetch(t, r, repomd); body != "rev2:/"+repomd || src != "remote" {
+		t.Errorf("after upstream change = %q from %s, want remote rev2", body, src)
+	}
+}
+
+func etagKeyTTL(t *testing.T, remote, path string) time.Duration {
+	t.Helper()
+	opts, err := goredis.ParseURL(testRedis)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := goredis.NewClient(opts)
+	defer func() { _ = c.Close() }()
+	d, err := c.PTTL(context.Background(), "etag:"+remote+":"+path).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+// The ETag is only kept when it can be used, and never without an expiry.
+func TestMutableETagStorage(t *testing.T) {
+	requireStack(t)
+	srv, _, _ := changingUpstream(t)
+	for _, tc := range []struct {
+		name  string
+		check bool
+		ttl   int
+		want  time.Duration
+	}{
+		{"eng-etag-off", false, 60, -2},
+		{"eng-etag-never", true, 0, -2},
+		{"eng-etag-short", true, 60, 7 * 24 * time.Hour},
+		{"eng-etag-long", true, 86400, 10 * 24 * time.Hour},
+	} {
+		r := seed(t, models.Remote{Name: tc.name, PackageType: models.PackageRPM, RepoType: models.RepoTypeRemote, BaseURL: srv.URL, CheckMutable: tc.check, MutableTTL: tc.ttl})
+		mutableFetch(t, r, repomd)
+		got := etagKeyTTL(t, tc.name, repomd)
+		if tc.want < 0 {
+			if got != tc.want {
+				t.Errorf("%s: etag key ttl = %v, want no key", tc.name, got)
+			}
+			continue
+		}
+		if got <= tc.want-time.Minute || got > tc.want {
+			t.Errorf("%s: etag key ttl = %v, want ~%v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Immutable paths are never revalidated, so their upstream ETag is not kept.
+func TestImmutableFetchStoresNoETag(t *testing.T) {
+	requireStack(t)
+	srv, _, _ := changingUpstream(t)
+	r := seed(t, models.Remote{Name: "eng-etag-imm", PackageType: models.PackageRPM, RepoType: models.RepoTypeRemote, BaseURL: srv.URL, CheckMutable: true, MutableTTL: 60})
+	const rpm = "Packages/e2e-1.0-1.noarch.rpm"
+	if body, src := mutableFetch(t, r, rpm); body != "rev1:/"+rpm || src != "remote" {
+		t.Fatalf("fetch = %q from %s", body, src)
+	}
+	if got := etagKeyTTL(t, r.Name, rpm); got != -2 {
+		t.Errorf("etag key ttl = %v, want no key", got)
+	}
+}
+
+// A 304 for a path whose S3 body is gone falls back to a full refetch.
+func TestNotModifiedWithEvictedBodyRefetches(t *testing.T) {
+	requireStack(t)
+	srv, _, conditional := changingUpstream(t)
+	r := seed(t, models.Remote{Name: "eng-304-gone", PackageType: models.PackageRPM, RepoType: models.RepoTypeRemote, BaseURL: srv.URL, CheckMutable: true, MutableTTL: 60})
+
+	mutableFetch(t, r, repomd)
+	if err := testEngine.store.Delete(context.Background(), storage.IndexKey(r.Name, repomd)); err != nil {
+		t.Fatal(err)
+	}
+	expire(t, r.Name, repomd)
+	if body, src := mutableFetch(t, r, repomd); body != "rev1:/"+repomd || src != "remote" {
+		t.Errorf("got %q from %s, want refetched rev1 from remote", body, src)
+	}
+	if n := conditional.Load(); n != 1 {
+		t.Errorf("conditional requests = %d, want the 304 HEAD first", n)
+	}
+}
+
+// A failing revalidation HEAD still serves the stored copy with stale_on_error.
+func TestStaleOnErrorWhenRevalidationFails(t *testing.T) {
+	requireStack(t)
+	srv, _, _ := changingUpstream(t)
+	r := seed(t, models.Remote{Name: "eng-stale-head", PackageType: models.PackageRPM, RepoType: models.RepoTypeRemote, BaseURL: srv.URL, CheckMutable: true, MutableTTL: 60, StaleOnError: true})
+
+	mutableFetch(t, r, repomd)
+	srv.Close()
+	expire(t, r.Name, repomd)
+	if body, src := mutableFetch(t, r, repomd); body != "rev1:/"+repomd || src != "cache" {
+		t.Errorf("got %q from %s, want stale rev1 from cache", body, src)
+	}
+}
+
+// After a remote is deleted and flushed, a re-created remote of the same name
+// fetches from its own upstream instead of revalidating the old ETag.
+func TestRecreatedRemoteHasNoStaleState(t *testing.T) {
+	requireStack(t)
 	ctx := context.Background()
-	r := seed(t, models.Remote{Name: "eng-npm", PackageType: models.PackageNPM, RepoType: models.RepoTypeRemote, BaseURL: upstream.URL, CheckMutable: true, MutableTTL: 3600, StaleOnError: true})
-	p := prov(t, models.PackageNPM)
+	oldSrv, _, _ := changingUpstream(t)
+	r := seed(t, models.Remote{Name: "eng-recreate", PackageType: models.PackageRPM, RepoType: models.RepoTypeRemote, BaseURL: oldSrv.URL, CheckMutable: true, MutableTTL: 60})
+	mutableFetch(t, r, repomd)
 
-	res, err := testEngine.Fetch(ctx, r, "pkg", p)
-	if err != nil {
-		t.Fatalf("initial mutable fetch: %v", err)
+	if err := testDB.DeleteRemote(ctx, r.Name); err != nil {
+		t.Fatal(err)
 	}
-	res.Reader.Close()
-
-	// Expire only the freshness marker; the ETag persists, forcing a
-	// conditional revalidation that the upstream answers with 304.
-	testCache.SetTTL(ctx, "eng-npm", "pkg", time.Millisecond)
-	time.Sleep(10 * time.Millisecond)
-	res, err = testEngine.Fetch(ctx, r, "pkg", p)
-	if err != nil {
-		t.Fatalf("revalidation fetch: %v", err)
+	if err := testCache.FlushRemote(ctx, r.Name); err != nil {
+		t.Fatal(err)
 	}
-	if res.Source != "cache" {
-		t.Errorf("revalidated response should come from cache, got %s", res.Source)
+	newSrv, rev, conditional := changingUpstream(t)
+	rev.Store("rev9")
+	r.BaseURL = newSrv.URL
+	seed(t, r)
+	if body, src := mutableFetch(t, r, repomd); body != "rev9:/"+repomd || src != "remote" {
+		t.Errorf("got %q from %s, want rev9 from the new upstream", body, src)
 	}
-	res.Reader.Close()
+	if n := conditional.Load(); n != 0 {
+		t.Errorf("conditional requests = %d, want none after flush", n)
+	}
 }
 
 func TestBearerTokenFlow(t *testing.T) {

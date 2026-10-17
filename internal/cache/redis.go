@@ -57,8 +57,12 @@ func (r *Redis) ReleaseLock(ctx context.Context, remote, path string) error {
 	return r.client.Del(ctx, key).Err()
 }
 
+// SetETag stores etag for path, or drops the stored one when etag is empty.
 func (r *Redis) SetETag(ctx context.Context, remote, path, etag string, ttl time.Duration) error {
 	key := fmt.Sprintf("etag:%s:%s", remote, path)
+	if etag == "" {
+		return r.client.Del(ctx, key).Err()
+	}
 	return r.client.Set(ctx, key, etag, ttl).Err()
 }
 

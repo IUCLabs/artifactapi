@@ -67,8 +67,12 @@ func (h *RemotesHandler) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, remote)
 }
 
+// defaultMutableTTL matches the remotes.mutable_ttl column default; a create
+// that omits mutable_ttl gets it, an explicit 0 still means never expire.
+const defaultMutableTTL = 3600
+
 func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
-	var remote models.Remote
+	remote := models.Remote{MutableTTL: defaultMutableTTL}
 	if err := json.NewDecoder(r.Body).Decode(&remote); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
@@ -114,7 +118,15 @@ func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
 
 func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
+	// Capture the current backend before the update so we can tell whether the
+	// remote's base_url (its upstream) changed. A read failure just means we
+	// skip the freshness flush; it must not block the update.
+	existing, err := h.db.GetRemote(r.Context(), name)
+	oldKnown := err == nil
 	var remote models.Remote
+	if oldKnown {
+		remote.MutableTTL = existing.MutableTTL
+	}
 	if err := json.NewDecoder(r.Body).Decode(&remote); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
@@ -132,13 +144,6 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Capture the current backend before the update so we can tell whether the
-	// remote's base_url (its upstream) changed. A read failure just means we
-	// skip the freshness flush; it must not block the update.
-	oldBaseURL, oldKnown := "", false
-	if existing, err := h.db.GetRemote(r.Context(), name); err == nil {
-		oldBaseURL, oldKnown = existing.BaseURL, true
-	}
 	if err := h.db.UpdateRemote(r.Context(), &remote); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -147,13 +152,13 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 	// Release / APKINDEX): purge it so the next request re-fetches from the new
 	// upstream instead of serving stale data until TTL expiry. A flush failure
 	// is logged but does not fail the request — the DB update already landed.
-	if oldKnown && oldBaseURL != remote.BaseURL && h.cache != nil {
+	if oldKnown && existing.BaseURL != remote.BaseURL && h.cache != nil {
 		if err := h.cache.FlushRemote(r.Context(), name); err != nil {
 			slog.Warn("flush cached metadata after base_url change failed",
 				"remote", name, "error", err)
 		} else {
 			slog.Info("flushed cached metadata after base_url change",
-				"remote", name, "old_base_url", oldBaseURL, "new_base_url", remote.BaseURL)
+				"remote", name, "old_base_url", existing.BaseURL, "new_base_url", remote.BaseURL)
 		}
 	}
 	writeJSON(w, http.StatusOK, remote)
@@ -164,6 +169,11 @@ func (h *RemotesHandler) del(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.DeleteRemote(r.Context(), name); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if h.cache != nil {
+		if err := h.cache.FlushRemote(r.Context(), name); err != nil {
+			slog.Warn("flush cached metadata after delete failed", "remote", name, "error", err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

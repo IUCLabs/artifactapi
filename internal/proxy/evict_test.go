@@ -59,7 +59,7 @@ type cached struct{ row, index, ttl, etag bool }
 // Mutable indexes live in the S3 index; immutable blobs get an artifact row.
 var (
 	indexCached = cached{index: true, ttl: true, etag: true}
-	blobCached  = cached{row: true, ttl: true, etag: true}
+	blobCached  = cached{row: true, ttl: true}
 )
 
 func layers(t *testing.T, remote, path string) cached {

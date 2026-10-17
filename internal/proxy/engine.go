@@ -160,7 +160,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 			notModified, err := e.checkUpstream(ctx, remote, path, etag, prov)
 			if err == nil && notModified {
 				_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
-				_ = e.cache.SetETag(ctx, remote.Name, path, etag, ttl)
+				_ = e.cache.SetETag(ctx, remote.Name, path, etag, etagTTL(ttl))
 				result, err := e.serveFromStore(ctx, remote, path)
 				if err == nil {
 					result.Source = "cache"
@@ -491,8 +491,9 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 		}
 
 		_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
-		if etag := resp.Header.Get("ETag"); etag != "" {
-			_ = e.cache.SetETag(ctx, remote.Name, path, etag, ttl)
+		// A zero TTL never expires, so it never needs revalidating.
+		if remote.CheckMutable && ttl > 0 {
+			_ = e.cache.SetETag(ctx, remote.Name, path, resp.Header.Get("ETag"), etagTTL(ttl))
 		}
 
 		return &FetchResult{
@@ -520,9 +521,6 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	}
 
 	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
-	if etag := resp.Header.Get("ETag"); etag != "" {
-		_ = e.cache.SetETag(ctx, remote.Name, path, etag, ttl)
-	}
 
 	reader, info, err := e.store.Download(ctx, casResult.S3Key)
 	if err != nil {
@@ -640,6 +638,12 @@ func (e *Engine) checkUpstreamOnce(ctx context.Context, remote models.Remote, pa
 	resp.Body.Close()
 
 	return resp.StatusCode == http.StatusNotModified, nil
+}
+
+// etagTTL keeps a mutable path's ETag well past its freshness key so an expired
+// path revalidates with a conditional HEAD, while idle paths still age out.
+func etagTTL(ttl time.Duration) time.Duration {
+	return max(10*ttl, 7*24*time.Hour)
 }
 
 func (e *Engine) ttlFor(remote models.Remote, class Classification) time.Duration {

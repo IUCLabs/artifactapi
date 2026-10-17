@@ -94,3 +94,28 @@ func TestUpdateFlushFailureStillSucceeds(t *testing.T) {
 		t.Fatalf("flush calls = %v, want exactly one attempted flush", ff.calls)
 	}
 }
+
+// Deleting a remote flushes its cached state so a re-created remote of the
+// same name starts cold; a flush error does not fail the delete.
+func TestDeleteFlushesCache(t *testing.T) {
+	if testDSN == "" {
+		t.Skip("Docker unavailable")
+	}
+	db, err := database.New(testDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, ff := range []*fakeFlusher{{}, {err: errors.New("redis down")}} {
+		const name = "rpm-flush-delete"
+		seedRemote(t, db, name, "https://example.com/repo")
+		h := NewRemotesHandler(db, ff, nil).Routes()
+		if c := do(t, h, "DELETE", "/"+name, ""); c != 204 {
+			t.Fatalf("delete = %d, want 204", c)
+		}
+		if len(ff.calls) != 1 || ff.calls[0] != name {
+			t.Fatalf("flush calls = %v, want exactly one flush of %q", ff.calls, name)
+		}
+	}
+}

@@ -333,6 +333,9 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 		return newEtag, false, err
 	}
 
+	// A transiently failed asset fails the scan so the ETag is not advanced and
+	// the retry re-derives it; an invalid package is skipped as no retry fixes it.
+	var failed []error
 	seen := map[string]bool{}
 	for _, rel := range releases {
 		if rel.Draft {
@@ -361,10 +364,14 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 			meta, err := p.deriveAsset(ctx, remote, asset, fp)
 			if err != nil {
 				slog.Warn("github_deb: derive asset failed", "remote", remote.Name, "asset", asset.Name, "error", err)
+				if !errors.Is(err, provider.ErrInvalidPackage) {
+					failed = append(failed, fmt.Errorf("%s: %w", asset.Name, err))
+				}
 				continue
 			}
 			if err := store.InsertDebMetadata(ctx, meta); err != nil {
 				slog.Error("github_deb: insert metadata failed", "remote", remote.Name, "asset", asset.Name, "error", err)
+				failed = append(failed, fmt.Errorf("%s: %w", asset.Name, err))
 				continue
 			}
 			slog.Info("github_deb: derived asset", "remote", remote.Name, "name", meta.Name, "version", meta.Version, "arch", meta.Architecture)
@@ -376,7 +383,7 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 			_ = store.DeleteDebMetadata(ctx, remote.Name, fp)
 		}
 	}
-	return newEtag, true, nil
+	return newEtag, true, errors.Join(failed...)
 }
 
 type ghRelease struct {
@@ -468,7 +475,7 @@ func (p *GitHubProvider) deriveAsset(ctx context.Context, remote models.Remote, 
 		Size:         asset.Size,
 	}
 	if meta.Name == "" {
-		return nil, errors.New("control missing Package field")
+		return nil, fmt.Errorf("%w: control missing Package field", provider.ErrInvalidPackage)
 	}
 
 	// The Packages SHA256 must be the sha256 of the whole .deb. Prefer GitHub's
@@ -503,13 +510,13 @@ func (p *GitHubProvider) fetchControl(ctx context.Context, remote models.Remote,
 		}
 		control, complete, perr := controlFromPrefix(body)
 		if perr != nil {
-			return "", fmt.Errorf("parse deb control: %w", perr)
+			return "", fmt.Errorf("%w: parse deb control: %w", provider.ErrInvalidPackage, perr)
 		}
 		if complete {
 			return control, nil
 		}
 		if full || n >= p.headerMax {
-			return "", fmt.Errorf("control.tar not found within %d bytes of %s", n, downloadURL)
+			return "", fmt.Errorf("%w: control.tar not found within %d bytes of %s", provider.ErrInvalidPackage, n, downloadURL)
 		}
 		n *= 2
 		if n > p.headerMax {
@@ -567,7 +574,7 @@ func controlFromPrefix(prefix []byte) (control string, complete bool, err error)
 }
 
 // rangeGet returns the first n bytes of downloadURL. full is true when the
-// response body was shorter than n (i.e. we already have the whole object).
+// response holds the whole object.
 func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, downloadURL string, n int64) ([]byte, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
@@ -589,15 +596,9 @@ func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, dow
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return nil, false, fmt.Errorf("range GET %s: status %d", downloadURL, resp.StatusCode)
+		return nil, false, fmt.Errorf("range GET: %w", provider.AssetStatusError(downloadURL, resp))
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, n))
-	if err != nil {
-		return nil, false, err
-	}
-	full := int64(len(body)) < n
-	return body, full, nil
+	return provider.ReadPrefix(resp, n)
 }
 
 func (p *GitHubProvider) computeSHA256(ctx context.Context, remote models.Remote, downloadURL string) (string, error) {
@@ -620,7 +621,7 @@ func (p *GitHubProvider) computeSHA256(ctx context.Context, remote models.Remote
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s: status %d", downloadURL, resp.StatusCode)
+		return "", fmt.Errorf("GET: %w", provider.AssetStatusError(downloadURL, resp))
 	}
 
 	h := sha256.New()

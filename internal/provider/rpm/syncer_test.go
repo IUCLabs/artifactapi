@@ -399,3 +399,74 @@ func TestSyncerFailedScanRetriesAfterBackoff(t *testing.T) {
 		t.Fatalf("recovery did not refresh metadata: %d rows", len(rows))
 	}
 }
+
+// A transiently failed asset fails the scan: the ETag is not advanced, a retry
+// is scheduled, and the retry against the unchanged release list derives it. An
+// invalid package is skipped instead, since no retry can fix it.
+func TestSyncerFailedAssetRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		corrupt   bool
+		failCode  int
+		short     bool
+		insert    bool
+		wantRetry bool
+	}{
+		{name: "transient", wantRetry: true},
+		{name: "rate limited", failCode: http.StatusForbidden, wantRetry: true},
+		{name: "short read", short: true, wantRetry: true},
+		{name: "insert failure", insert: true, wantRetry: true},
+		{name: "invalid package", corrupt: true},
+		{name: "asset not found", failCode: http.StatusNotFound},
+		{name: "asset gone", failCode: http.StatusGone},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const other = "other-9-9.aarch64.rpm"
+			fx := newGitHubFixture(t, true)
+			fx.etag = `"v1"`
+			fx.rpmBytes[other] = testsupport.MinimalRPM("other", "9", "9", "aarch64")
+			store := newFakeSyncStore()
+			switch {
+			case tc.corrupt:
+				fx.rpmBytes[other] = []byte("not a package")
+			case tc.short:
+				fx.shortRead[other] = 1
+			case tc.insert:
+				store.insertFail["other"] = 1
+			case tc.failCode != 0 && !tc.wantRetry:
+				fx.failCode, fx.assetFail[other] = tc.failCode, 1<<30
+			default:
+				fx.failCode, fx.assetFail[other] = tc.failCode, 1
+			}
+			s := newSyncer(store, newTestProvider(), testSyncConfig())
+			remote := fx.remote()
+			bg := context.Background()
+
+			s.process(bg, syncJob{remote: remote, prime: true})
+			_, pending := store.retryAt[remote.Name]
+			if pending != tc.wantRetry {
+				t.Fatalf("retry pending=%v, want %v", pending, tc.wantRetry)
+			}
+			if _, saved := store.etags[remote.Name]; saved == tc.wantRetry {
+				t.Fatalf("etag saved=%v after first scan", saved)
+			}
+			if rows, _ := store.ListRPMMetadataEntries(bg, remote.Name); len(rows) != 1 {
+				t.Fatalf("healthy asset not served: %d rows", len(rows))
+			}
+			if !tc.wantRetry {
+				return
+			}
+
+			store.mu.Lock()
+			store.retryAt[remote.Name] = time.Now().Add(-time.Second)
+			store.mu.Unlock()
+			s.process(bg, syncJob{remote: remote})
+			if _, pending := store.retryAt[remote.Name]; pending || store.etags[remote.Name] != `"v1"` {
+				t.Fatalf("retry not recorded: pending=%v etag=%q", pending, store.etags[remote.Name])
+			}
+			if rows, _ := store.ListRPMMetadataEntries(bg, remote.Name); len(rows) != 2 {
+				t.Fatalf("retry did not derive the failed asset: %d rows", len(rows))
+			}
+		})
+	}
+}

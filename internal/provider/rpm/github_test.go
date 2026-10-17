@@ -1,11 +1,13 @@
 package rpm
 
 import (
+	"cmp"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,15 +26,22 @@ import (
 // fakeStore is an in-memory provider.RemoteMetadataStore keyed by file_path,
 // mirroring the (repo_name, file_path) uniqueness of the real table.
 type fakeStore struct {
-	mu   sync.Mutex
-	rows map[string]provider.RPMMetadata
+	mu         sync.Mutex
+	rows       map[string]provider.RPMMetadata
+	insertFail map[string]int // package name -> inserts left to fail
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{rows: map[string]provider.RPMMetadata{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{rows: map[string]provider.RPMMetadata{}, insertFail: map[string]int{}}
+}
 
 func (f *fakeStore) InsertRPMMetadata(_ context.Context, m *provider.RPMMetadata) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.insertFail[m.Name] > 0 {
+		f.insertFail[m.Name]--
+		return errors.New("insert failed")
+	}
 	if _, ok := f.rows[m.FilePath]; ok {
 		return nil // ON CONFLICT DO NOTHING
 	}
@@ -79,15 +88,20 @@ type githubFixture struct {
 	releaseAuth string            // Authorization header seen on the last releases request
 	assetAuth   string            // Authorization header seen on the last asset request
 	failStatus  int               // when set, the releases list answers this status (rate-limit style)
+	assetFail   map[string]int    // asset filename -> downloads left to answer failCode
+	failCode    int               // status for assetFail downloads; 0 = 500
+	shortRead   map[string]int    // asset filename -> ranged GETs left to close early
 	mu          sync.Mutex
 }
 
 func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 	t.Helper()
 	f := &githubFixture{
-		rpmBytes: map[string][]byte{},
-		rangeHit: map[string]int{},
-		fullHit:  map[string]int{},
+		rpmBytes:  map[string][]byte{},
+		rangeHit:  map[string]int{},
+		fullHit:   map[string]int{},
+		assetFail: map[string]int{},
+		shortRead: map[string]int{},
 	}
 	f.rpmBytes["demo-1.2-3.x86_64.rpm"] = testsupport.MinimalRPM("demo", "1.2", "3", "x86_64")
 
@@ -145,6 +159,17 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 		}
 		rng := r.Header.Get("Range")
 		f.mu.Lock()
+		if f.assetFail[name] > 0 {
+			f.assetFail[name]--
+			code := cmp.Or(f.failCode, http.StatusInternalServerError)
+			f.mu.Unlock()
+			http.Error(w, "boom", code)
+			return
+		}
+		short := rng != "" && f.shortRead[name] > 0
+		if short {
+			f.shortRead[name]--
+		}
 		f.assetAuth = r.Header.Get("Authorization")
 		if rng != "" {
 			f.rangeHit[name]++
@@ -165,6 +190,9 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 			end = len(body) - 1
 		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", end, len(body)))
+		if short {
+			end /= 2
+		}
 		w.Header().Set("Content-Length", strconv.Itoa(end+1))
 		w.WriteHeader(http.StatusPartialContent)
 		w.Write(body[:end+1])

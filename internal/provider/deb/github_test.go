@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -81,15 +82,17 @@ type githubFixture struct {
 	notModHit   int
 	releaseAuth string
 	assetAuth   string
+	assetFail   map[string]int // asset filename -> downloads left to answer 500
 	mu          sync.Mutex
 }
 
 func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 	t.Helper()
 	f := &githubFixture{
-		debBytes: map[string][]byte{},
-		rangeHit: map[string]int{},
-		fullHit:  map[string]int{},
+		debBytes:  map[string][]byte{},
+		rangeHit:  map[string]int{},
+		fullHit:   map[string]int{},
+		assetFail: map[string]int{},
 	}
 	f.debBytes["demo_1.2-3_amd64.deb"] = testsupport.MinimalDeb("demo", "1.2-3", "amd64")
 
@@ -139,6 +142,12 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 		}
 		rng := r.Header.Get("Range")
 		f.mu.Lock()
+		if f.assetFail[name] > 0 {
+			f.assetFail[name]--
+			f.mu.Unlock()
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
 		f.assetAuth = r.Header.Get("Authorization")
 		if rng != "" {
 			f.rangeHit[name]++
@@ -458,5 +467,15 @@ func TestGitHubAssetPatternFilter(t *testing.T) {
 	rows, _ := store.ListDebMetadataEntries(context.Background(), "acme-deb")
 	if len(rows) != 1 || rows[0].Name != "demo" {
 		t.Fatalf("pattern filter failed, rows=%+v", rows)
+	}
+}
+
+func TestGitHubDeriveAssetMissingPackageIsInvalid(t *testing.T) {
+	fx := newGitHubFixture(t, true)
+	fx.debBytes["nameless_1_amd64.deb"] = testsupport.MinimalDeb("", "1", "amd64")
+	asset := ghAsset{BrowserDownloadURL: fx.srv.URL + "/acme/tools/releases/download/v1.2-3/nameless_1_amd64.deb", Digest: "sha256:00"}
+	_, err := newTestProvider().deriveAsset(context.Background(), fx.remote(), asset, "fp")
+	if !errors.Is(err, provider.ErrInvalidPackage) {
+		t.Fatalf("want ErrInvalidPackage, got %v", err)
 	}
 }

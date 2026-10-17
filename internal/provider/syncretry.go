@@ -3,8 +3,10 @@ package provider
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -41,6 +43,49 @@ func NewUpstreamStatusError(url string, resp *http.Response) *UpstreamStatusErro
 		}
 	}
 	return e
+}
+
+// ErrInvalidPackage marks an asset whose bytes are not a valid package. It is
+// permanent, so a scan skips the asset instead of failing and retrying.
+var ErrInvalidPackage = errors.New("invalid package")
+
+// AssetStatusError classifies a non-success asset download. A missing or
+// unsatisfiable asset is permanent; anything else (403/429 rate limits, 5xx) is
+// transient.
+func AssetStatusError(url string, resp *http.Response) error {
+	switch resp.StatusCode {
+	case http.StatusNotFound, http.StatusGone, http.StatusRequestedRangeNotSatisfiable:
+		return fmt.Errorf("%w: %s: status %d", ErrInvalidPackage, url, resp.StatusCode)
+	}
+	return NewUpstreamStatusError(url, resp)
+}
+
+// ReadPrefix reads up to n bytes of a 200 or 206 asset response. full reports
+// that the body is the whole object (per Content-Length or the Content-Range
+// total, or a clean EOF before n when the total is unknown); a body ending before n bytes that is not the whole object is a
+// transient short read.
+func ReadPrefix(resp *http.Response, n int64) (body []byte, full bool, err error) {
+	body, err = io.ReadAll(io.LimitReader(resp.Body, n))
+	if err != nil {
+		return nil, false, err
+	}
+	total := resp.ContentLength
+	unknown := resp.StatusCode == http.StatusOK && total == -1
+	if resp.StatusCode == http.StatusPartialContent {
+		total = -1
+		if _, t, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok {
+			if v, perr := strconv.ParseInt(t, 10, 64); perr == nil {
+				total = v
+			}
+			unknown = t == "*"
+		}
+	}
+	// net/http errors on a premature close, so a clean EOF before n with an unknown total is the whole object.
+	full = total == int64(len(body)) || (unknown && int64(len(body)) < n)
+	if !full && int64(len(body)) < n {
+		return nil, false, fmt.Errorf("short read: got %d of %d bytes", len(body), n)
+	}
+	return body, full, nil
 }
 
 // SyncResult is a background scan's outcome, recorded when its sync lease is

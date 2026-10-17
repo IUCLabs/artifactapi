@@ -372,6 +372,9 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 		return newEtag, false, err
 	}
 
+	// A transiently failed asset fails the scan so the ETag is not advanced and
+	// the retry re-derives it; an invalid package is skipped as no retry fixes it.
+	var failed []error
 	seen := map[string]bool{}
 	for _, rel := range releases {
 		if rel.Draft {
@@ -400,10 +403,14 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 			meta, err := p.deriveAsset(ctx, remote, asset, fp)
 			if err != nil {
 				slog.Warn("github_alpine: derive asset failed", "remote", remote.Name, "asset", asset.Name, "error", err)
+				if !errors.Is(err, provider.ErrInvalidPackage) {
+					failed = append(failed, fmt.Errorf("%s: %w", asset.Name, err))
+				}
 				continue
 			}
 			if err := inserter.InsertAlpineMetadata(ctx, meta); err != nil {
 				slog.Error("github_alpine: insert metadata failed", "remote", remote.Name, "asset", asset.Name, "error", err)
+				failed = append(failed, fmt.Errorf("%s: %w", asset.Name, err))
 				continue
 			}
 			slog.Info("github_alpine: derived asset", "remote", remote.Name, "name", meta.Name, "version", meta.Version, "arch", meta.Arch)
@@ -415,7 +422,7 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 			_ = deleter.DeleteAlpineMetadata(ctx, remote.Name, fp)
 		}
 	}
-	return newEtag, true, nil
+	return newEtag, true, errors.Join(failed...)
 }
 
 type ghRelease struct {
@@ -496,7 +503,7 @@ func (p *GitHubProvider) deriveAsset(ctx context.Context, remote models.Remote, 
 		return nil, err
 	}
 	if meta.Name == "" || meta.Arch == "" {
-		return nil, errors.New(".PKGINFO missing pkgname/arch")
+		return nil, fmt.Errorf("%w: .PKGINFO missing pkgname/arch", provider.ErrInvalidPackage)
 	}
 
 	meta.RepoName = remote.Name
@@ -526,13 +533,13 @@ func (p *GitHubProvider) fetchPkginfo(ctx context.Context, remote models.Remote,
 		}
 		meta, complete, perr := pkginfoFromPrefix(body)
 		if perr != nil {
-			return nil, fmt.Errorf("parse apk .PKGINFO: %w", perr)
+			return nil, fmt.Errorf("%w: parse apk .PKGINFO: %w", provider.ErrInvalidPackage, perr)
 		}
 		if complete {
 			return meta, nil
 		}
 		if full || n >= p.headerMax {
-			return nil, fmt.Errorf(".PKGINFO not found within %d bytes of %s", n, downloadURL)
+			return nil, fmt.Errorf("%w: .PKGINFO not found within %d bytes of %s", provider.ErrInvalidPackage, n, downloadURL)
 		}
 		n *= 2
 		if n > p.headerMax {
@@ -594,7 +601,7 @@ func pkginfoFromPrefix(prefix []byte) (meta *provider.AlpineMetadata, complete b
 }
 
 // rangeGet returns the first n bytes of downloadURL. full is true when the
-// response body was shorter than n (i.e. we already have the whole object).
+// response holds the whole object.
 func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, downloadURL string, n int64) ([]byte, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
@@ -616,15 +623,9 @@ func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, dow
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return nil, false, fmt.Errorf("range GET %s: status %d", downloadURL, resp.StatusCode)
+		return nil, false, fmt.Errorf("range GET: %w", provider.AssetStatusError(downloadURL, resp))
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, n))
-	if err != nil {
-		return nil, false, err
-	}
-	full := int64(len(body)) < n
-	return body, full, nil
+	return provider.ReadPrefix(resp, n)
 }
 
 // assetPath is the package's location relative to github.com — the path the

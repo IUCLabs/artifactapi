@@ -308,3 +308,58 @@ func TestSyncerPrimeBypassesRecencyPeriodicDoesNot(t *testing.T) {
 		t.Fatalf("periodic scan ran inside recency window: %d -> %d releases calls", releasesAfterPrime, fx.releasesHit)
 	}
 }
+
+// A transiently failed asset fails the scan: the ETag is not advanced, a retry
+// is scheduled, and the retry against the unchanged release list derives it. An
+// invalid package is skipped instead, since no retry can fix it.
+func TestSyncerFailedAssetRetry(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		corrupt   bool
+		wantRetry bool
+	}{
+		{name: "transient", wantRetry: true},
+		{name: "invalid package", corrupt: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newGitHubFixture(t, true)
+			fx.etag = `"v1"`
+			if tc.corrupt {
+				fx.debBytes["other_9-9_arm64.deb"] = []byte("not a package")
+			} else {
+				fx.debBytes["other_9-9_arm64.deb"] = testsupport.MinimalDeb("other", "9-9", "arm64")
+				fx.assetFail["other_9-9_arm64.deb"] = 1
+			}
+			store := newFakeSyncStore()
+			s := newSyncer(store, newTestProvider(), testSyncConfig())
+			remote := fx.remote()
+			bg := context.Background()
+
+			s.process(bg, syncJob{remote: remote, prime: true})
+			_, pending := store.retryAt[remote.Name]
+			if pending != tc.wantRetry {
+				t.Fatalf("retry pending=%v, want %v", pending, tc.wantRetry)
+			}
+			if _, saved := store.etags[remote.Name]; saved == tc.wantRetry {
+				t.Fatalf("etag saved=%v after first scan", saved)
+			}
+			if rows, _ := store.ListDebMetadataEntries(bg, remote.Name); len(rows) != 1 {
+				t.Fatalf("healthy asset not served: %d rows", len(rows))
+			}
+			if !tc.wantRetry {
+				return
+			}
+
+			store.mu.Lock()
+			store.retryAt[remote.Name] = time.Now().Add(-time.Second)
+			store.mu.Unlock()
+			s.process(bg, syncJob{remote: remote})
+			if _, pending := store.retryAt[remote.Name]; pending || store.etags[remote.Name] != `"v1"` {
+				t.Fatalf("retry not recorded: pending=%v etag=%q", pending, store.etags[remote.Name])
+			}
+			if rows, _ := store.ListDebMetadataEntries(bg, remote.Name); len(rows) != 2 {
+				t.Fatalf("retry did not derive the failed asset: %d rows", len(rows))
+			}
+		})
+	}
+}

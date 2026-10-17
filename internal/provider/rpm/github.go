@@ -343,6 +343,9 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 		return newEtag, false, err
 	}
 
+	// A transiently failed asset fails the scan so the ETag is not advanced and
+	// the retry re-derives it; an invalid package is skipped as no retry fixes it.
+	var failed []error
 	seen := map[string]bool{}
 	for _, rel := range releases {
 		if rel.Draft {
@@ -373,10 +376,14 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 			meta, err := p.deriveAsset(ctx, remote, asset, fp)
 			if err != nil {
 				slog.Warn("github_rpm: derive asset failed", "remote", remote.Name, "asset", asset.Name, "error", err)
+				if !errors.Is(err, provider.ErrInvalidPackage) {
+					failed = append(failed, fmt.Errorf("%s: %w", asset.Name, err))
+				}
 				continue
 			}
 			if err := store.InsertRPMMetadata(ctx, meta); err != nil {
 				slog.Error("github_rpm: insert metadata failed", "remote", remote.Name, "asset", asset.Name, "error", err)
+				failed = append(failed, fmt.Errorf("%s: %w", asset.Name, err))
 				continue
 			}
 			slog.Info("github_rpm: derived asset", "remote", remote.Name, "name", meta.Name, "version", meta.Version, "arch", meta.Arch)
@@ -388,7 +395,7 @@ func (p *GitHubProvider) scanWithState(ctx context.Context, remote models.Remote
 			_ = store.DeleteRPMMetadata(ctx, remote.Name, fp)
 		}
 	}
-	return newEtag, true, nil
+	return newEtag, true, errors.Join(failed...)
 }
 
 type ghRelease struct {
@@ -569,12 +576,12 @@ func (p *GitHubProvider) fetchHeader(ctx context.Context, remote models.Remote, 
 			}
 			continue
 		}
-		return nil, fmt.Errorf("parse rpm header: %w", perr)
+		return nil, fmt.Errorf("%w: parse rpm header: %w", provider.ErrInvalidPackage, perr)
 	}
 }
 
 // rangeGet returns the first n bytes of downloadURL. full is true when the
-// response body was shorter than n (i.e. we already have the whole object).
+// response holds the whole object.
 func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, downloadURL string, n int64) ([]byte, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
@@ -596,15 +603,9 @@ func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, dow
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return nil, false, fmt.Errorf("range GET %s: status %d", downloadURL, resp.StatusCode)
+		return nil, false, fmt.Errorf("range GET: %w", provider.AssetStatusError(downloadURL, resp))
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, n))
-	if err != nil {
-		return nil, false, err
-	}
-	full := int64(len(body)) < n
-	return body, full, nil
+	return provider.ReadPrefix(resp, n)
 }
 
 func (p *GitHubProvider) computeSHA256(ctx context.Context, remote models.Remote, downloadURL string) (string, error) {
@@ -627,7 +628,7 @@ func (p *GitHubProvider) computeSHA256(ctx context.Context, remote models.Remote
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s: status %d", downloadURL, resp.StatusCode)
+		return "", fmt.Errorf("GET: %w", provider.AssetStatusError(downloadURL, resp))
 	}
 
 	h := sha256.New()

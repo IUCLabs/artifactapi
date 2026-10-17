@@ -3,7 +3,9 @@ package provider
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
@@ -59,5 +61,78 @@ func TestNewSyncResult(t *testing.T) {
 	r = NewSyncResult("", fmt.Errorf("scan: %w", far), time.Hour)
 	if until := time.Until(r.RetryAt); until > time.Hour || until < 59*time.Minute {
 		t.Fatalf("wrapped hint not clamped to ttl: retry in %v", until)
+	}
+}
+
+func TestAssetStatusErrorClassification(t *testing.T) {
+	for status, permanent := range map[int]bool{
+		http.StatusNotFound: true, http.StatusGone: true, http.StatusRequestedRangeNotSatisfiable: true,
+		http.StatusForbidden: false, http.StatusTooManyRequests: false, http.StatusInternalServerError: false, http.StatusBadGateway: false,
+	} {
+		err := AssetStatusError("u", &http.Response{StatusCode: status, Header: http.Header{}})
+		if errors.Is(err, ErrInvalidPackage) != permanent {
+			t.Errorf("status %d: permanent=%v, want %v", status, !permanent, permanent)
+		}
+	}
+}
+
+func TestReadPrefix(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		cl       int64
+		crange   string
+		body     string
+		n        int64
+		wantFull bool
+		wantErr  bool
+	}{
+		{name: "200 whole object", status: 200, cl: 5, body: "hello", n: 32, wantFull: true},
+		{name: "200 larger than n", status: 200, cl: 5, body: "hello", n: 4},
+		{name: "200 chunked shorter than n", status: 200, cl: -1, body: "hello", n: 32, wantFull: true},
+		{name: "200 chunked larger than n", status: 200, cl: -1, body: "hello", n: 4},
+		{name: "206 whole object", status: 206, crange: "bytes 0-4/5", body: "hello", n: 32, wantFull: true},
+		{name: "206 prefix", status: 206, crange: "bytes 0-3/100", body: "hell", n: 4},
+		{name: "206 short read", status: 206, crange: "bytes 0-31/100", body: "hello", n: 32, wantErr: true},
+		{name: "206 no content-range short", status: 206, body: "hello", n: 32, wantErr: true},
+		{name: "206 unknown total shorter than n", status: 206, cl: -1, crange: "bytes 0-4/*", body: "hello", n: 32, wantFull: true},
+		{name: "206 unknown total prefix", status: 206, cl: -1, crange: "bytes 0-3/*", body: "hell", n: 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.cl > 0 {
+					w.Header().Set("Content-Length", strconv.FormatInt(tc.cl, 10))
+				}
+				if tc.crange != "" {
+					w.Header().Set("Content-Range", tc.crange)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+				w.(http.Flusher).Flush()
+			}))
+			defer srv.Close()
+			resp, err := http.Get(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if tc.cl == -1 && resp.ContentLength != -1 {
+				t.Fatalf("response not chunked: ContentLength=%d", resp.ContentLength)
+			}
+			body, full, err := ReadPrefix(resp, tc.n)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v, wantErr=%v", err, tc.wantErr)
+			}
+			if err != nil {
+				if errors.Is(err, ErrInvalidPackage) {
+					t.Fatalf("short read must be transient: %v", err)
+				}
+				return
+			}
+			if full != tc.wantFull || int64(len(body)) > tc.n {
+				t.Fatalf("full=%v len=%d, want full=%v", full, len(body), tc.wantFull)
+			}
+		})
 	}
 }

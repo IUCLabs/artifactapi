@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,15 +89,17 @@ type githubFixture struct {
 	notModHit   int
 	releaseAuth string
 	assetAuth   string
+	assetFail   map[string]int // asset filename -> downloads left to answer 500
 	mu          sync.Mutex
 }
 
 func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 	t.Helper()
 	f := &githubFixture{
-		apkBytes: map[string][]byte{},
-		rangeHit: map[string]int{},
-		fullHit:  map[string]int{},
+		apkBytes:  map[string][]byte{},
+		rangeHit:  map[string]int{},
+		fullHit:   map[string]int{},
+		assetFail: map[string]int{},
 	}
 	f.apkBytes["demo-1.2.3-r0.apk"] = testsupport.MinimalApk("demo", "1.2.3-r0", "x86_64")
 
@@ -146,6 +149,12 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 		}
 		rng := r.Header.Get("Range")
 		f.mu.Lock()
+		if f.assetFail[name] > 0 {
+			f.assetFail[name]--
+			f.mu.Unlock()
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
 		f.assetAuth = r.Header.Get("Authorization")
 		if rng != "" {
 			f.rangeHit[name]++
@@ -493,5 +502,15 @@ func readAPKIndex(t *testing.T, gzBytes []byte) string {
 			}
 			return string(body)
 		}
+	}
+}
+
+func TestGitHubDeriveAssetMissingPkgnameIsInvalid(t *testing.T) {
+	fx := newGitHubFixture(t, true)
+	fx.apkBytes["nameless-1-r0.apk"] = testsupport.MinimalApk("", "1-r0", "x86_64")
+	asset := ghAsset{BrowserDownloadURL: fx.srv.URL + "/acme/tools/releases/download/v1.2.3/nameless-1-r0.apk"}
+	_, err := newTestProvider().deriveAsset(context.Background(), fx.remote(), asset, "fp")
+	if !errors.Is(err, provider.ErrInvalidPackage) {
+		t.Fatalf("want ErrInvalidPackage, got %v", err)
 	}
 }

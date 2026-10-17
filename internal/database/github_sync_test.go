@@ -207,3 +207,72 @@ func TestGitHubSyncLeaseFailureBackoff(t *testing.T) {
 		t.Fatal("claimed inside freshness window after a successful sync")
 	}
 }
+
+// Deleting a remote drops its sync state, so a recreated remote of the same name
+// starts clean instead of inheriting the old ETag, sync time and retry state.
+func TestGitHubSyncStateDeletedWithRemote(t *testing.T) {
+	requireDB(t)
+	for _, tc := range []struct {
+		table   string
+		pt      models.PackageType
+		claim   func(name string) (bool, string, error)
+		release func(name string, res provider.SyncResult) error
+	}{
+		{"github_rpm_sync_state", models.PackageGitHubRPM,
+			func(n string) (bool, string, error) {
+				return testDB.ClaimGitHubSyncLease(ctx(), n, "r1", time.Hour, time.Minute)
+			},
+			func(n string, res provider.SyncResult) error {
+				return testDB.ReleaseGitHubSyncLease(ctx(), n, "r1", res)
+			}},
+		{"github_deb_sync_state", models.PackageGitHubDeb,
+			func(n string) (bool, string, error) {
+				return testDB.ClaimGitHubDebSyncLease(ctx(), n, "r1", time.Hour, time.Minute)
+			},
+			func(n string, res provider.SyncResult) error {
+				return testDB.ReleaseGitHubDebSyncLease(ctx(), n, "r1", res)
+			}},
+		{"github_alpine_sync_state", models.PackageGitHubAlpine,
+			func(n string) (bool, string, error) {
+				return testDB.ClaimGitHubAlpineSyncLease(ctx(), n, "r1", time.Hour, time.Minute)
+			},
+			func(n string, res provider.SyncResult) error {
+				return testDB.ReleaseGitHubAlpineSyncLease(ctx(), n, "r1", res)
+			}},
+	} {
+		t.Run(tc.table, func(t *testing.T) {
+			name := "gh-recreate-" + time.Now().Format("150405.000000")
+			create := func() {
+				t.Helper()
+				if err := testDB.CreateRemote(ctx(), &models.Remote{
+					Name: name, PackageType: tc.pt, RepoType: models.RepoTypeRemote,
+					BaseURL: "https://api.github.com/repos/acme/tools", ReleasesRemote: "github", MutableTTL: 3600,
+				}); err != nil {
+					t.Fatalf("create remote: %v", err)
+				}
+			}
+
+			create()
+			if ok, _, err := tc.claim(name); err != nil || !ok {
+				t.Fatalf("claim: ok=%v err=%v", ok, err)
+			}
+			if err := tc.release(name, provider.SyncResult{Etag: `"old"`}); err != nil {
+				t.Fatalf("release: %v", err)
+			}
+
+			if err := testDB.DeleteRemote(ctx(), name); err != nil {
+				t.Fatalf("delete remote: %v", err)
+			}
+			var rows int
+			if err := testDB.Pool.QueryRow(ctx(), `SELECT count(*) FROM `+tc.table+` WHERE remote_name = $1`, name).Scan(&rows); err != nil || rows != 0 {
+				t.Fatalf("sync state left after delete: rows=%d err=%v", rows, err)
+			}
+
+			create()
+			ok, etag, err := tc.claim(name)
+			if err != nil || !ok || etag != "" {
+				t.Fatalf("recreated remote claim ok=%v etag=%q err=%v, want a fresh claim with no etag", ok, etag, err)
+			}
+		})
+	}
+}

@@ -262,6 +262,21 @@ there's nothing to provision. To bring your own key instead, point
 `TF_SIGNING_KEY_PASSPHRASE`), which takes precedence over the generated one.
 `TF_PROVIDER_PROTOCOLS` (default `5.0,6.0`) sets the advertised plugin protocols.
 
+### Local puppet forge
+
+A local `puppet` repo is a Forge: `PUT` a module tarball to
+`/api/v2/remotes/<repo>/files/<owner>-<module>-<version>.tar.gz` and the Forge
+v3 API (`/v3/modules`, `/v3/releases`, `/v3/files`) is served from each
+release's `metadata.json` at `/api/v1/local/<repo>`. Versions are immutable.
+
+```bash
+puppet module build ./hello
+curl -fsSL --upload-file pkg/myorg-hello-0.1.0.tar.gz \
+  https://artifactapi.example.com/api/v2/remotes/<repo>/files/myorg-hello-0.1.0.tar.gz
+puppet module install myorg-hello \
+  --module_repository https://artifactapi.example.com/api/v1/local/<repo>
+```
+
 ### Local docker registry
 
 A local `docker` repo is a real container registry, not a mirror: it serves the

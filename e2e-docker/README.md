@@ -26,7 +26,8 @@ already-running stack.
   helm, pypi, npm, rpm, alpine, puppet, terraform, goproxy, cargo, nuget) proxied through the
   mock upstream: first fetch `X-Artifact-Source: remote`, second `cache`, bytes
   verified against the origin fixture.
-- **Local uploads** — generic (upload/download), pypi (wheel + generated `simple/`
+- **Local uploads** — puppet (Forge v3 API via real `r10k` and `puppet module install`),
+  generic (upload/download), pypi (wheel + generated `simple/`
   index), rpm (real package + **automatic repodata** generation).
 - **Virtual repositories** — pypi simple-index merge and helm `index.yaml` merge
   across two members.

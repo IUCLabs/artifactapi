@@ -19,6 +19,7 @@ func TestPackageTypeValid(t *testing.T) {
 		models.PackageTerraform,
 		models.PackageGoProxy,
 		models.PackageCargo,
+		models.PackageNuGet,
 		models.PackageGitHubRPM,
 		models.PackageGitHubDeb,
 		models.PackageGitHubAlpine,

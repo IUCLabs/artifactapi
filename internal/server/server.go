@@ -29,6 +29,7 @@ import (
 	_ "github.com/IUCLabs/artifactapi/internal/provider/goproxy"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/helm"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/npm"
+	_ "github.com/IUCLabs/artifactapi/internal/provider/nuget"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/puppet"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/pypi"
 	"github.com/IUCLabs/artifactapi/internal/provider/rpm"

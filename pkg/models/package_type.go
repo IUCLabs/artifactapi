@@ -17,6 +17,7 @@ const (
 	PackageTerraform    PackageType = "terraform"
 	PackageGoProxy      PackageType = "goproxy"
 	PackageCargo        PackageType = "cargo"
+	PackageNuGet        PackageType = "nuget"
 	PackageGitHubRPM    PackageType = "github_rpm"
 	PackageGitHubDeb    PackageType = "github_deb"
 	PackageGitHubAlpine PackageType = "github_alpine"
@@ -35,6 +36,7 @@ var validPackageTypes = map[PackageType]bool{
 	PackageTerraform:    true,
 	PackageGoProxy:      true,
 	PackageCargo:        true,
+	PackageNuGet:        true,
 	PackageGitHubRPM:    true,
 	PackageGitHubDeb:    true,
 	PackageGitHubAlpine: true,

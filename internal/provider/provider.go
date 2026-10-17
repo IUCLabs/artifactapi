@@ -75,6 +75,13 @@ type RemoteServer interface {
 	ServeRemote(w http.ResponseWriter, r *http.Request, remote models.Remote, path, proxyBaseURL string, store RemoteMetadataStore) bool
 }
 
+// ServeRewriter rewrites a cached mutable remote response per request, for
+// indexes whose URLs must name the requesting host and so cannot be rewritten
+// before caching.
+type ServeRewriter interface {
+	RewriteServed(body []byte, remote models.Remote, proxyBaseURL string) []byte
+}
+
 // RemoteMetadataStore is the persistence surface a RemoteServer needs to cache
 // and read the metadata it derives per upstream asset. *database.DB satisfies it.
 type RemoteMetadataStore interface {

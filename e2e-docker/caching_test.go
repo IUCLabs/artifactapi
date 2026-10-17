@@ -30,6 +30,7 @@ func TestCachingPerProvider(t *testing.T) {
 		{"puppet", "puppet-releases/author-mod-1.0.0.tar.gz", "puppet-releases/author-mod-1.0.0.tar.gz"},
 		{"goproxy", "goproxy/example.com/mod/@v/v1.0.0.zip", "goproxy/example.com/mod/@v/v1.0.0.zip"},
 		{"cargo", "crates/mycrate/mycrate-1.0.0.crate", "crates/mycrate/mycrate-1.0.0.crate"},
+		{"nuget", "nuget/e2epkg/1.0.0/e2epkg.1.0.0.nupkg", "nuget/e2epkg/1.0.0/e2epkg.1.0.0.nupkg"},
 		{"terraform", "hashicorp/aws/download/pkg.zip", "v1/providers/hashicorp/aws/download/pkg.zip"},
 		{"docker", "library/testimg/blobs/blobdata", "v2/library/testimg/blobs/blobdata"},
 	}

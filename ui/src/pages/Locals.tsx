@@ -18,6 +18,7 @@ const typeColors: Record<string, 'blue' | 'green' | 'yellow' | 'red' | 'default'
   terraform: 'blue',
   goproxy: 'green',
   cargo: 'yellow',
+  nuget: 'blue',
 };
 
 export function Locals() {

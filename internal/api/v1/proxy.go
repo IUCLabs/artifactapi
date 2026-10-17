@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -105,13 +106,24 @@ func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	defer result.Reader.Close()
 
+	var body io.Reader = result.Reader
+	if sr, ok := prov.(provider.ServeRewriter); ok && prov.Classify(path) == provider.Mutable {
+		raw, err := io.ReadAll(result.Reader)
+		if err != nil {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		raw = sr.RewriteServed(raw, *remote, fmt.Sprintf("%s://%s", scheme(r), r.Host))
+		body, result.Size = bytes.NewReader(raw), int64(len(raw))
+	}
+
 	w.Header().Set("Content-Type", result.ContentType)
 	w.Header().Set("X-Artifact-Source", result.Source)
 	if result.Size > 0 {
 		w.Header().Set("X-Artifact-Size", fmt.Sprintf("%d", result.Size))
 	}
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, result.Reader)
+	io.Copy(w, body)
 }
 
 func (h *ProxyHandler) handleProxyHead(w http.ResponseWriter, r *http.Request) {

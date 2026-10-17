@@ -4,22 +4,8 @@ import { api } from '../api/client';
 import type { Remote } from '../api/types';
 import { Badge } from '../components/Badge';
 import { DataTable } from '../components/DataTable';
+import { typeColor } from '../packagetypes';
 import './Remotes.css';
-
-const typeColors: Record<string, 'blue' | 'green' | 'yellow' | 'red' | 'default'> = {
-  docker: 'blue',
-  helm: 'green',
-  rpm: 'yellow',
-  pypi: 'blue',
-  npm: 'red',
-  generic: 'default',
-  alpine: 'green',
-  puppet: 'yellow',
-  terraform: 'blue',
-  goproxy: 'green',
-  cargo: 'yellow',
-  nuget: 'blue',
-};
 
 export function Remotes() {
   const navigate = useNavigate();
@@ -81,7 +67,7 @@ export function Remotes() {
               key: 'type',
               header: 'Type',
               render: (r: Remote) => (
-                <Badge variant={typeColors[r.package_type] || 'default'}>
+                <Badge variant={typeColor(r.package_type)}>
                   {r.package_type}
                 </Badge>
               ),

@@ -4,42 +4,10 @@ import "fmt"
 
 type PackageType string
 
-const (
-	PackageGeneric      PackageType = "generic"
-	PackageDocker       PackageType = "docker"
-	PackageHelm         PackageType = "helm"
-	PackagePyPI         PackageType = "pypi"
-	PackageNPM          PackageType = "npm"
-	PackageRPM          PackageType = "rpm"
-	PackageDeb          PackageType = "deb"
-	PackageAlpine       PackageType = "alpine"
-	PackagePuppet       PackageType = "puppet"
-	PackageTerraform    PackageType = "terraform"
-	PackageGoProxy      PackageType = "goproxy"
-	PackageCargo        PackageType = "cargo"
-	PackageNuGet        PackageType = "nuget"
-	PackageGitHubRPM    PackageType = "github_rpm"
-	PackageGitHubDeb    PackageType = "github_deb"
-	PackageGitHubAlpine PackageType = "github_alpine"
-)
+var validPackageTypes = map[PackageType]bool{}
 
-var validPackageTypes = map[PackageType]bool{
-	PackageGeneric:      true,
-	PackageDocker:       true,
-	PackageHelm:         true,
-	PackagePyPI:         true,
-	PackageNPM:          true,
-	PackageRPM:          true,
-	PackageDeb:          true,
-	PackageAlpine:       true,
-	PackagePuppet:       true,
-	PackageTerraform:    true,
-	PackageGoProxy:      true,
-	PackageCargo:        true,
-	PackageNuGet:        true,
-	PackageGitHubRPM:    true,
-	PackageGitHubDeb:    true,
-	PackageGitHubAlpine: true,
+func registerPackageType(p PackageType) {
+	validPackageTypes[p] = true
 }
 
 func (p PackageType) Valid() bool {

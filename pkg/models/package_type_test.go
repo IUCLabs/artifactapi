@@ -1,33 +1,54 @@
 package models_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
+// TestPackageTypeValid parses every package_type_<type>.go and asserts the
+// const it declares is registered, so a type file missing its init() fails.
 func TestPackageTypeValid(t *testing.T) {
-	valid := []models.PackageType{
-		models.PackageGeneric,
-		models.PackageDocker,
-		models.PackageHelm,
-		models.PackagePyPI,
-		models.PackageNPM,
-		models.PackageRPM,
-		models.PackageAlpine,
-		models.PackagePuppet,
-		models.PackageTerraform,
-		models.PackageGoProxy,
-		models.PackageCargo,
-		models.PackageNuGet,
-		models.PackageGitHubRPM,
-		models.PackageGitHubDeb,
-		models.PackageGitHubAlpine,
+	files, err := filepath.Glob("package_type_*.go")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, pt := range valid {
-		if !pt.Valid() {
-			t.Errorf("expected %q to be valid", pt)
+	seen := 0
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
 		}
+		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				for _, v := range spec.(*ast.ValueSpec).Values {
+					lit := v.(*ast.BasicLit)
+					pt := models.PackageType(strings.Trim(lit.Value, `"`))
+					if !pt.Valid() {
+						t.Errorf("%s: %q is not registered", f, pt)
+					}
+					if want := "package_type_" + pt.String() + ".go"; f != want {
+						t.Errorf("%s declares %q, want it in %s", f, pt, want)
+					}
+					seen++
+				}
+			}
+		}
+	}
+	if seen == 0 {
+		t.Fatal("found no package types")
 	}
 }
 

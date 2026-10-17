@@ -22,9 +22,8 @@ already-running stack.
 ## Coverage
 
 - **Repository lifecycle** — add / change / delete for remote, local and virtual repos.
-- **Caching** — one immutable artifact per remote package type (generic, docker,
-  helm, pypi, npm, rpm, alpine, puppet, terraform, goproxy, cargo, nuget) proxied through the
-  mock upstream: first fetch `X-Artifact-Source: remote`, second `cache`, bytes
+- **Caching** — one immutable artifact per remote package type (one
+  `caching_<type>_test.go` case each) proxied through the mock upstream: first fetch `X-Artifact-Source: remote`, second `cache`, bytes
   verified against the origin fixture.
 - **Local uploads** — puppet (Forge v3 API via real `r10k` and `puppet module install`),
   generic (upload/download), pypi (wheel + generated `simple/`

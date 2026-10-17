@@ -9,33 +9,23 @@ import (
 	"testing"
 )
 
+type cachingCase struct {
+	pkgType string
+	// path is the request path under /api/v1/remote/<name>/. The provider
+	// derives the upstream URL from it (docker prepends /v2/, terraform
+	// prepends /v1/providers/), and the fixture lives at that resolved path.
+	path    string
+	fixture string
+}
+
+// cachingCases is filled by one caching_<type>_test.go file per package type.
+var cachingCases []cachingCase
+
 // TestCachingPerProvider proxies one immutable artifact for every remote
 // package type through the mock upstream and asserts: first fetch is served
 // from the remote, the second from cache, and the bytes match the origin.
 func TestCachingPerProvider(t *testing.T) {
-	cases := []struct {
-		pkgType string
-		// path is the request path under /api/v1/remote/<name>/. The provider
-		// derives the upstream URL from it (docker prepends /v2/, terraform
-		// prepends /v1/providers/), and the fixture lives at that resolved path.
-		path    string
-		fixture string
-	}{
-		{"generic", "blobs/hello.bin", "blobs/hello.bin"},
-		{"npm", "mypkg/-/mypkg-1.0.0.tgz", "mypkg/-/mypkg-1.0.0.tgz"},
-		{"helm", "charts/mychart-1.0.0.tgz", "charts/mychart-1.0.0.tgz"},
-		{"pypi", "packages/foo-1.0-py3-none-any.whl", "packages/foo-1.0-py3-none-any.whl"},
-		{"rpm", "rpmrepo/Packages/e2e-testpkg-1.0-1.noarch.rpm", "rpmrepo/Packages/e2e-testpkg-1.0-1.noarch.rpm"},
-		{"alpine", "alpine/x86_64/testpkg-1.0-r0.apk", "alpine/x86_64/testpkg-1.0-r0.apk"},
-		{"puppet", "puppet-releases/author-mod-1.0.0.tar.gz", "puppet-releases/author-mod-1.0.0.tar.gz"},
-		{"goproxy", "goproxy/example.com/mod/@v/v1.0.0.zip", "goproxy/example.com/mod/@v/v1.0.0.zip"},
-		{"cargo", "crates/mycrate/mycrate-1.0.0.crate", "crates/mycrate/mycrate-1.0.0.crate"},
-		{"nuget", "nuget/e2epkg/1.0.0/e2epkg.1.0.0.nupkg", "nuget/e2epkg/1.0.0/e2epkg.1.0.0.nupkg"},
-		{"terraform", "hashicorp/aws/download/pkg.zip", "v1/providers/hashicorp/aws/download/pkg.zip"},
-		{"docker", "library/testimg/blobs/blobdata", "v2/library/testimg/blobs/blobdata"},
-	}
-
-	for _, tc := range cases {
+	for _, tc := range cachingCases {
 		t.Run(tc.pkgType, func(t *testing.T) {
 			name := "cache-" + tc.pkgType
 			createRepo(t, fmt.Sprintf(`{

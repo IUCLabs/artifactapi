@@ -20,98 +20,25 @@ API: `http://localhost:8000` | Frontend: `http://localhost:5173`
 
 ## Package Types
 
-| Type | Mutable (auto-detected) | Immutable (auto-detected) |
-|---|---|---|
-| `generic` | nothing | everything |
-| `docker` | tag manifests, `/tags/list` | blobs, digest manifests |
-| `helm` | `index.yaml` | `.tgz` charts |
-| `pypi` | `simple/*` index pages | `.whl`, `.tar.gz` |
-| `npm` | package metadata | `.tgz` tarballs |
-| `rpm` | `repomd.xml`, `repodata/*` | `.rpm` |
-| `alpine` | `APKINDEX.tar.gz` | `.apk` |
-| `puppet` | `v3/modules/*`, `v3/releases*` | `.tar.gz` |
-| `terraform` | `*/versions` | `*/download/*/*` |
-| `goproxy` | `@v/list`, `@latest` | `.info`, `.mod`, `.zip` |
-| `cargo` | sparse index files (`config.json` synthesized) | `crates/*/*.crate` |
-| `nuget` | `index.json` (service index), registration and flat container indexes | `.nupkg`, `.nuspec` |
-| `github_rpm` | `repodata/*` (synthesized) | `.rpm` (redirected) |
-
 Providers classify paths automatically. Users only configure what to proxy and TTLs.
 
-### `github_rpm` — GitHub releases as a yum repo (metadata-only, no precache)
+Classification precedence, TTLs and eviction for every remote: [docs/common/caching.md](docs/common/caching.md).
 
-A `github_rpm` remote turns a GitHub repo's **releases** into a real `dnf`/`yum`
-repository without ever caching the packages. It scans releases for `.rpm`
-assets, derives each package's metadata (NEVRA, requires/provides/conflicts/
-obsoletes, files, checksum) and **synthesizes `repodata/` on the fly**. Package
-metadata comes from a **ranged GET of just the RPM header** (the header sits at
-the front of the file, so the whole package is never downloaded); the sha256
-checksum comes from the GitHub asset `digest` when present, else a one-time
-lazy stream. Derived metadata is cached (keyed by asset) so repodata generation
-is served from primed DB rows, never a cold on-demand derive.
+Each type's paths, Terraform examples and local/virtual behaviour are in `docs/<type>/`:
 
-Each package's `<location>` points back at the remote, which **302-redirects**
-the download to the `releases_remote` — an existing generic `github.com` remote
-that streams the actual bytes. `dnf` follows the redirect transparently.
-
-#### Background syncer
-
-A single process-wide **background syncer** keeps every `github_rpm` remote's
-derived metadata current off the client request path:
-
-- **Prime on create.** Creating a `github_rpm` remote enqueues a background prime
-  scan, so its metadata is derived right away without blocking the create call.
-  The first `dnf` request is served from cache. If a request arrives before the
-  prime lands, it returns a retryable `503` (with `Retry-After`) rather than
-  serving an empty repo or blocking on a multi-minute derive.
-- **Periodic re-check, driven by `mutable_ttl`.** Each remote is re-checked for
-  new or changed releases no more often than its `mutable_ttl`. New/changed
-  assets are derived incrementally; assets already cached are never re-fetched,
-  and assets that disappear upstream are pruned.
-- **ETag / 304 conditional requests.** The releases-list `ETag` is stored per
-  remote and sent as `If-None-Match`; a `304 Not Modified` means nothing changed
-  and the syncer derives nothing. GitHub does not count `304` conditional
-  responses against the rate limit, so an unchanged repo is nearly free — this is
-  the main lever keeping GitHub traffic low.
-- **Global rate limit.** Every GitHub call (releases list + each ranged asset
-  header GET) passes through a single token-bucket limiter **shared across all
-  remotes**, so GitHub is never hammered. Configure a token (`password`) on the
-  remote for the higher authenticated rate limit (~5000/hr vs ~60/hr
-  unauthenticated).
-- **Multi-replica coordination.** State is shared through the database. Before a
-  periodic scan a replica must atomically claim a per-remote lease
-  (`github_rpm_sync_state`: `last_synced_at`, `etag`, `sync_lease_owner`,
-  `sync_lease_expires`); only the winner scans. This bounds total GitHub load to
-  ~once per `mutable_ttl` regardless of replica count, and the shared `etag`
-  lets any replica issue the conditional request.
-
-```hcl
-# Backend that serves the actual .rpm bytes from github.com.
-resource "artifactapi_remote_generic" "github" {
-  name     = "github"
-  base_url = "https://github.com"
-  patterns = [
-    "acme/tools/releases/download/.*\\.rpm$", # allowlist the repo's release assets
-  ]
-}
-
-resource "artifactapi_remote_github_rpm" "acme-tools" {
-  name            = "acme-tools"
-  base_url        = "https://api.github.com/repos/acme/tools" # the releases API root
-  releases_remote = "github"                                  # backend for downloads
-  mutable_ttl     = 3600                                      # release re-scan interval
-
-  # Optional: restrict which release assets become packages (regex on filename).
-  patterns = [".*\\.x86_64\\.rpm$", ".*\\.noarch\\.rpm$"]
-
-  # Optional: a token for private repos / higher API rate limits.
-  # password = "ghp_..."
-}
-```
-
-`dnf` config: `baseurl=https://artifactapi.example/api/v1/remote/acme-tools`.
-The repo is multi-arch (no `$basearch` needed) — `dnf` selects matching packages
-from the synthesized metadata.
+- `alpine`: [remote](docs/alpine/remote.md), [remote-github](docs/alpine/remote-github.md)
+- `cargo`: [remote](docs/cargo/remote.md)
+- `deb`: [remote](docs/deb/remote.md), [remote-github](docs/deb/remote-github.md)
+- `docker`: [remote](docs/docker/remote.md), [local](docs/docker/local.md)
+- `generic`: [remote](docs/generic/remote.md)
+- `goproxy`: [remote](docs/goproxy/remote.md)
+- `helm`: [remote](docs/helm/remote.md), [local](docs/helm/local.md), [virtual](docs/helm/virtual.md)
+- `npm`: [remote](docs/npm/remote.md)
+- `nuget`: [remote](docs/nuget/remote.md)
+- `puppet`: [remote](docs/puppet/remote.md), [local](docs/puppet/local.md)
+- `pypi`: [remote](docs/pypi/remote.md)
+- `rpm`: [remote](docs/rpm/remote.md), [remote-github](docs/rpm/remote-github.md)
+- `terraform`: [remote](docs/terraform/remote.md), [local](docs/terraform/local.md)
 
 ### GitHub authentication
 
@@ -180,136 +107,9 @@ GITHUB_APP_PRIVATE_KEY_PATH=/etc/artifactapi/github-app.pem
 
 ## Terraform
 
-Remotes and virtuals are managed by Terraform. Each package type has its own resource:
+Remotes and virtuals are managed by Terraform. Each package type has its own resource; see `docs/<type>/` for examples.
 
-```hcl
-resource "artifactapi_remote_generic" "github" {
-  name     = "github"
-  base_url = "https://github.com"
-
-  immutable_ttl = 0
-  mutable_ttl   = 7200
-
-  patterns = [
-    "ducaale/xh/.*/xh-.*-x86_64-unknown-linux-musl.tar.gz$",
-    "mikefarah/yq/.*/yq_linux_amd64$",
-  ]
-
-  mutable_patterns = [
-    ".*/archive/refs/heads/.*\\.tar\\.gz$",
-  ]
-}
-
-resource "artifactapi_remote_docker" "dockerhub" {
-  name     = "dockerhub"
-  base_url = "https://registry-1.docker.io"
-
-  immutable_ttl    = 0
-  mutable_ttl      = 300
-  ban_tags_enabled = true
-  ban_tags         = ["latest"]
-
-  patterns = [
-    "^library/postgres",
-    "^library/redis",
-  ]
-}
-
-resource "artifactapi_remote_helm" "jetstack" {
-  name     = "jetstack"
-  base_url = "https://charts.jetstack.io"
-
-  immutable_ttl = 0
-  mutable_ttl   = 3600
-}
-
-resource "artifactapi_virtual" "helm" {
-  name         = "helm"
-  package_type = "helm"
-  members      = [artifactapi_remote_helm.jetstack.name]
-}
-```
-
-Provider: [terraform-provider-artifactapi](../terraform-provider-artifactapi)
-
-### Serving providers as a registry
-
-A local `terraform` repo is a real provider registry: upload
-`terraform-provider-{type}_{version}_{os}_{arch}.zip` files under
-`{namespace}/{type}/`, and Terraform installs them from a bare source address —
-no `.terraformrc` mirror config:
-
-```hcl
-terraform {
-  required_providers {
-    artifactapi = {
-      source  = "artifactapi.example.com/<repo>/<type>"
-      version = "0.1.2"
-    }
-  }
-}
-```
-
-The Terraform *namespace* segment is the artifactapi repo name; the provider is
-matched by *type*. The registry serves service discovery
-(`/.well-known/terraform.json`), the `providers.v1` version/download endpoints,
-and a GPG-signed `SHA256SUMS` per the provider registry protocol.
-
-Signing needs a GPG key. By default artifactapi generates one on first start and
-stores it in the database (`signing_keys` table), so every replica shares it and
-there's nothing to provision. To bring your own key instead, point
-`TF_SIGNING_KEY_PATH` at an armored private key (optionally
-`TF_SIGNING_KEY_PASSPHRASE`), which takes precedence over the generated one.
-`TF_PROVIDER_PROTOCOLS` (default `5.0,6.0`) sets the advertised plugin protocols.
-
-### Local helm repository
-
-A local `helm` repo is a real chart repository: `PUT` a packaged chart to
-`/api/v2/remotes/<repo>/files/<chart>-<version>.tgz` and `index.yaml` is
-generated from each chart's `Chart.yaml` (with sha256 digests) at
-`/api/v1/local/<repo>/index.yaml`; a file not named after its `Chart.yaml`
-name and version is stored but left out of the index. Add the local as a
-member of a helm virtual to serve it alongside remotes.
-
-```bash
-helm package ./mychart
-curl -fsSL --upload-file mychart-0.1.0.tgz \
-  https://artifactapi.example.com/api/v2/remotes/<repo>/files/mychart-0.1.0.tgz
-helm repo add <repo> https://artifactapi.example.com/api/v1/local/<repo>
-```
-
-### Local puppet forge
-
-A local `puppet` repo is a Forge: `PUT` a module tarball to
-`/api/v2/remotes/<repo>/files/<owner>-<module>-<version>.tar.gz` and the Forge
-v3 API (`/v3/modules`, `/v3/releases`, `/v3/files`) is served from each
-release's `metadata.json` at `/api/v1/local/<repo>`. Versions are immutable.
-
-```bash
-puppet module build ./hello
-curl -fsSL --upload-file pkg/myorg-hello-0.1.0.tar.gz \
-  https://artifactapi.example.com/api/v2/remotes/<repo>/files/myorg-hello-0.1.0.tar.gz
-puppet module install myorg-hello \
-  --module_repository https://artifactapi.example.com/api/v1/local/<repo>
-```
-
-### Local docker registry
-
-A local `docker` repo is a real container registry, not a mirror: it serves the
-Docker Registry HTTP API V2 for both push and pull, so any client (`docker`,
-`podman`, `skopeo`, `buildah`) can use it directly.
-
-```sh
-docker tag myapp:latest artifactapi.example.com/docker-internal/myapp:latest
-docker push        artifactapi.example.com/docker-internal/myapp:latest
-docker pull        artifactapi.example.com/docker-internal/myapp:latest
-```
-
-The first path segment after `/v2/` is the artifactapi repo name; the remainder
-is the image name. Blobs and manifests are stored through the shared
-content-addressable store (deduplicated by digest, reaped by GC once
-unreferenced); tags are mutable references and re-pushing a tag moves it. Blob
-uploads support both the monolithic and chunked (`POST`/`PATCH`/`PUT`) flows.
+Provider: [terraform-provider-artifactapi](https://git.example.com/example/terraform-provider-artifactapi)
 
 ## Access Control
 

@@ -33,7 +33,7 @@ Each type's paths, Terraform examples and local/virtual behaviour are in `docs/<
 - `generic`: [remote](docs/generic/remote.md)
 - `goproxy`: [remote](docs/goproxy/remote.md)
 - `helm`: [remote](docs/helm/remote.md), [local](docs/helm/local.md), [virtual](docs/helm/virtual.md)
-- `npm`: [remote](docs/npm/remote.md)
+- `npm`: [remote](docs/npm/remote.md), [local](docs/npm/local.md)
 - `nuget`: [remote](docs/nuget/remote.md)
 - `puppet`: [remote](docs/puppet/remote.md), [local](docs/puppet/local.md)
 - `pypi`: [remote](docs/pypi/remote.md)
@@ -129,6 +129,7 @@ No patterns + no blocklist = open proxy. Provider handles mutability classificat
 ```
 GET /api/v1/remote/{name}/{path}     Proxy/cache artifact
 GET /api/v1/virtual/{name}/{path}    Virtual repo (merged index)
+PUT /api/v1/local/{name}/{package}   npm publish (local npm repos)
 GET /v2/{name}/{path}                Docker Registry v2
 ```
 

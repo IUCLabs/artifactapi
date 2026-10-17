@@ -16,6 +16,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/internal/virtual"
+	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
 type ProxyHandler struct {
@@ -42,6 +43,7 @@ func (h *ProxyHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/remote/{remoteName}/*", h.handleProxy)
 	r.Get("/local/{localName}/*", h.handleLocal)
+	r.Put("/local/{localName}/*", h.handleLocalPut)
 	r.Get("/virtual/{virtualName}/*", h.handleVirtual)
 	return r
 }
@@ -209,6 +211,13 @@ func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, fmt.Sprintf("local %q not found", localName), http.StatusNotFound)
 		return
+	}
+
+	if remote.PackageType == models.PackageNPM {
+		if pkg := npmPackageName(path); pkg != "" {
+			h.serveNPMPackument(w, r, remote, pkg)
+			return
+		}
 	}
 
 	prov, _ := provider.Get(remote.PackageType)

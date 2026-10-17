@@ -27,7 +27,9 @@ already-running stack.
   verified against the origin fixture.
 - **Local uploads** — puppet (Forge v3 API via real `r10k` and `puppet module install`),
   generic (upload/download), pypi (wheel + generated `simple/`
-  index), rpm (real package + **automatic repodata** generation).
+  index), rpm (real package + **automatic repodata** generation), npm (stock
+  `node:22` client: `npm publish` unscoped + scoped, `npm install` + `require()`,
+  second version, republish rejected).
 - **Virtual repositories** — pypi simple-index merge and helm `index.yaml` merge
   across two members.
 - **Mirrorlist** — an rpm remote with a `mirrorlist` of extra upstream mirrors

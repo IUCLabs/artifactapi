@@ -32,6 +32,12 @@ type Engine struct {
 	// to the repo, or ErrNotFound.
 	NPMLocal func(ctx context.Context, repo, pkg string) ([]byte, error)
 
+	gemsMember func(ctx context.Context, name, path string) (*GemsMember, error)
+
+	// GemsLocal returns a local gems repo's versions, names or info/<gem>, or
+	// ErrNotFound.
+	GemsLocal func(ctx context.Context, repo, path string) ([]byte, error)
+
 	mergeTTL time.Duration
 
 	sf   singleflight.Group
@@ -61,6 +67,7 @@ func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 	e := &Engine{db: db, proxyEngine: proxyEngine, getRemote: db.GetRemote, mergeTTL: rpmMergeTTL}
 	e.rpmMember = e.fetchRPMMember
 	e.npmMember = e.fetchNPMMember
+	e.gemsMember = e.fetchGemsMember
 	return e
 }
 
@@ -202,6 +209,11 @@ func (e *Engine) MemberRedirect(ctx context.Context, virt models.Virtual, path, 
 	if !found || !slices.Contains(virt.Members, name) {
 		return "", false, nil
 	}
+	return e.memberLocation(ctx, name, rest, rawQuery, proxyBaseURL)
+}
+
+// memberLocation returns the URL of rest on member name's own route.
+func (e *Engine) memberLocation(ctx context.Context, name, rest, rawQuery, proxyBaseURL string) (string, bool, error) {
 	segs, err := memberSegments(rest)
 	if err != nil {
 		return "", false, err

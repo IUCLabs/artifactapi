@@ -33,7 +33,9 @@ already-running stack.
   `gem install`, `bundle install` + `require`, republish rejected, `gem yank`).
 - **Virtual repositories** — pypi simple-index merge and helm `index.yaml` merge
   across two members; npm packument merge over two locals via a stock `node:22`
-  client (merged versions, install through the member redirect).
+  client (merged versions, install through the member redirect); gems compact
+  index merge over two locals via stock `ruby:3.3` bundler (member order wins,
+  downloads 302 to the owning member).
 - **Mirrorlist** — an rpm remote with a `mirrorlist` of extra upstream mirrors
   (pool = `base_url` + `mirrorlist`): round-robin distribution across both mirrors
   (constant-body `mockupstreama` / `mockupstreamb`), failover past a dead primary,

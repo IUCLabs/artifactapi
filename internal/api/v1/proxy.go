@@ -52,6 +52,7 @@ func (h *ProxyHandler) Routes() chi.Router {
 	r.Post("/local/{localName}/*", h.handleLocalPost)
 	r.Delete("/local/{localName}/*", h.handleLocalDelete)
 	r.Get("/virtual/{virtualName}/*", h.handleVirtual)
+	r.Head("/virtual/{virtualName}/*", h.handleVirtual)
 	return r
 }
 
@@ -201,6 +202,11 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 
 	proxyBaseURL, ok := requestBaseURL(w, r)
 	if !ok {
+		return
+	}
+
+	if virt.PackageType == models.PackageGems {
+		h.serveVirtualGems(w, r, *virt, path, proxyBaseURL)
 		return
 	}
 

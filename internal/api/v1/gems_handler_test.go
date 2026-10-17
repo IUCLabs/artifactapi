@@ -231,8 +231,9 @@ func TestGemsLockTimeoutIs503(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := redis.AcquireLock(context.Background(), repo, "_gemlock/busy-1.0.0", time.Minute); !ok || err != nil {
-		t.Fatalf("hold lock = %v %v", ok, err)
+	token, err := redis.AcquireLock(context.Background(), repo, "_gemlock/busy-1.0.0", time.Minute)
+	if token == "" || err != nil {
+		t.Fatalf("hold lock = %q %v", token, err)
 	}
 	prev := gemsLockWait
 	gemsLockWait = 100 * time.Millisecond
@@ -244,7 +245,7 @@ func TestGemsLockTimeoutIs503(t *testing.T) {
 	if code, _ := npmDo(t, http.MethodDelete, base+"api/v1/gems/yank?gem_name=busy&version=1.0.0", ""); code != http.StatusServiceUnavailable {
 		t.Fatalf("yank under held lock = %d, want 503", code)
 	}
-	if err := redis.ReleaseLock(context.Background(), repo, "_gemlock/busy-1.0.0"); err != nil {
+	if err := redis.ReleaseLock(context.Background(), repo, "_gemlock/busy-1.0.0", token); err != nil {
 		t.Fatal(err)
 	}
 	if code, body := npmDo(t, http.MethodPost, base+"api/v1/gems", string(testGemFile(t, "busy", "1.0.0", "ruby"))); code != http.StatusOK {

@@ -152,13 +152,15 @@ func TestEvictUnknownRemote(t *testing.T) {
 	}
 }
 
-func holdLock(t *testing.T, remote, path string) {
+func holdLock(t *testing.T, remote, path string) string {
 	t.Helper()
 	ctx := context.Background()
-	if ok, err := testCache.AcquireLock(ctx, remote, path, time.Minute); !ok || err != nil {
-		t.Fatalf("acquire: %v %v", ok, err)
+	token, err := testCache.AcquireLock(ctx, remote, path, time.Minute)
+	if token == "" || err != nil {
+		t.Fatalf("acquire: %q %v", token, err)
 	}
-	t.Cleanup(func() { _ = testCache.ReleaseLock(ctx, remote, path) })
+	t.Cleanup(func() { _ = testCache.ReleaseLock(ctx, remote, path, token) })
+	return token
 }
 
 func TestEvictWaitsForFetchLock(t *testing.T) {
@@ -167,7 +169,7 @@ func TestEvictWaitsForFetchLock(t *testing.T) {
 	r := rpmRemote(t, "evict-lock", srv.URL)
 	ctx := context.Background()
 	const path = "8/Everything/x86_64/repodata/repomd.xml"
-	holdLock(t, r.Name, path)
+	token := holdLock(t, r.Name, path)
 	done := make(chan error, 1)
 	go func() { done <- testEngine.Evict(ctx, r.Name, path) }()
 	select {
@@ -175,13 +177,13 @@ func TestEvictWaitsForFetchLock(t *testing.T) {
 		t.Fatalf("evict returned while fetch lock held: %v", err)
 	case <-time.After(200 * time.Millisecond):
 	}
-	_ = testCache.ReleaseLock(ctx, r.Name, path)
+	_ = testCache.ReleaseLock(ctx, r.Name, path, token)
 	if err := <-done; err != nil {
 		t.Fatalf("evict: %v", err)
 	}
-	ok, err := testCache.AcquireLock(ctx, r.Name, path, time.Second)
-	if !ok || err != nil {
-		t.Fatalf("lock still held after evict: %v %v", ok, err)
+	token, err := testCache.AcquireLock(ctx, r.Name, path, time.Second)
+	if token == "" || err != nil {
+		t.Fatalf("lock still held after evict: %q %v", token, err)
 	}
 }
 

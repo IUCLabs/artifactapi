@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"strings"
 	"time"
@@ -46,15 +47,23 @@ func (r *Redis) CheckTTL(ctx context.Context, remote, path string) (bool, error)
 	return exists > 0, nil
 }
 
-func (r *Redis) AcquireLock(ctx context.Context, remote, path string, ttl time.Duration) (bool, error) {
+// AcquireLock returns the owner token on success and "" when the lock is held.
+func (r *Redis) AcquireLock(ctx context.Context, remote, path string, ttl time.Duration) (string, error) {
 	key := fmt.Sprintf("lock:%s:%s", remote, path)
-	ok, err := r.client.SetNX(ctx, key, "1", ttl).Result()
-	return ok, err
+	token := rand.Text()
+	ok, err := r.client.SetNX(ctx, key, token, ttl).Result()
+	if err != nil || !ok {
+		return "", err
+	}
+	return token, nil
 }
 
-func (r *Redis) ReleaseLock(ctx context.Context, remote, path string) error {
+var releaseScript = redis.NewScript(`if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end`)
+
+// ReleaseLock deletes the lock only while token still owns it.
+func (r *Redis) ReleaseLock(ctx context.Context, remote, path, token string) error {
 	key := fmt.Sprintf("lock:%s:%s", remote, path)
-	return r.client.Del(ctx, key).Err()
+	return releaseScript.Run(ctx, r.client, []string{key}, token).Err()
 }
 
 // SetETag stores etag for path, or drops the stored one when etag is empty.

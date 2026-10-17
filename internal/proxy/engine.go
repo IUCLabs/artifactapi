@@ -134,10 +134,11 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 		slog.Warn("cache hit but S3 miss, re-fetching", "remote", remote.Name, "path", path)
 	}
 
-	locked, err := e.cache.AcquireLock(ctx, remote.Name, path, fetchLockTTL)
+	token, err := e.cache.AcquireLock(ctx, remote.Name, path, fetchLockTTL)
 	if err != nil {
 		slog.Warn("lock acquire failed", "error", err)
 	}
+	locked := token != ""
 
 	if !locked {
 		// Another request holds the fetch lock. Poll the store until the leader
@@ -151,7 +152,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	}
 
 	if locked {
-		defer e.cache.ReleaseLock(ctx, remote.Name, path)
+		defer func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remote.Name, path, token) }()
 	}
 
 	if class == ClassMutable && remote.CheckMutable {
@@ -257,31 +258,32 @@ func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 // release. It fails with a 503 when the lock cannot be taken within wait or
 // Redis errors.
 func (e *Engine) Lock(ctx context.Context, remoteName, path string, wait, ttl time.Duration) (func(), error) {
-	if err := e.waitForLock(ctx, remoteName, path, wait, ttl); err != nil {
+	token, err := e.waitForLock(ctx, remoteName, path, wait, ttl)
+	if err != nil {
 		return nil, err
 	}
-	return func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remoteName, path) }, nil
+	return func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remoteName, path, token) }, nil
 }
 
-func (e *Engine) waitForLock(ctx context.Context, remoteName, path string, wait, ttl time.Duration) error {
+func (e *Engine) waitForLock(ctx context.Context, remoteName, path string, wait, ttl time.Duration) (string, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		ok, err := e.cache.AcquireLock(ctx, remoteName, path, ttl)
-		if ok {
-			return nil
+		token, err := e.cache.AcquireLock(ctx, remoteName, path, ttl)
+		if token != "" {
+			return token, nil
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return "", ctx.Err()
 		}
 		if err != nil {
-			return &ProxyError{Status: http.StatusServiceUnavailable, Message: fmt.Sprintf("fetch lock: %v", err)}
+			return "", &ProxyError{Status: http.StatusServiceUnavailable, Message: fmt.Sprintf("lock: %v", err)}
 		}
 		if time.Now().After(deadline) {
-			return &ProxyError{Status: http.StatusServiceUnavailable, Message: "fetch in progress, retry evict"}
+			return "", &ProxyError{Status: http.StatusServiceUnavailable, Message: "resource busy, retry later"}
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

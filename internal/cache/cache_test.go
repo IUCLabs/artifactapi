@@ -61,18 +61,54 @@ func TestTTL(t *testing.T) {
 func TestLock(t *testing.T) {
 	requireRedis(t)
 	ctx := context.Background()
-	ok, err := testRedis.AcquireLock(ctx, "r", "lockpath", time.Minute)
-	if err != nil || !ok {
-		t.Fatalf("first acquire should succeed: %v %v", ok, err)
+	token, err := testRedis.AcquireLock(ctx, "r", "lockpath", time.Minute)
+	if err != nil || token == "" {
+		t.Fatalf("first acquire should succeed: %q %v", token, err)
 	}
-	if ok, _ := testRedis.AcquireLock(ctx, "r", "lockpath", time.Minute); ok {
+	if again, _ := testRedis.AcquireLock(ctx, "r", "lockpath", time.Minute); again != "" {
 		t.Error("second acquire should fail while held")
 	}
-	if err := testRedis.ReleaseLock(ctx, "r", "lockpath"); err != nil {
+	if err := testRedis.ReleaseLock(ctx, "r", "lockpath", "not-the-owner"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := testRedis.AcquireLock(ctx, "r", "lockpath", time.Minute); !ok {
-		t.Error("acquire should succeed after release")
+	if again, _ := testRedis.AcquireLock(ctx, "r", "lockpath", time.Minute); again != "" {
+		t.Error("release with a foreign token must not drop the lock")
+	}
+	if err := testRedis.ReleaseLock(ctx, "r", "lockpath", token); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := testRedis.AcquireLock(ctx, "r", "lockpath", time.Minute)
+	if next == "" {
+		t.Fatal("acquire should succeed after release")
+	}
+	if next == token {
+		t.Error("tokens must differ between holders")
+	}
+}
+
+func TestStaleReleaseKeepsNextHolder(t *testing.T) {
+	requireRedis(t)
+	ctx := context.Background()
+	stale, err := testRedis.AcquireLock(ctx, "r", "stale", 50*time.Millisecond)
+	if err != nil || stale == "" {
+		t.Fatalf("acquire: %q %v", stale, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	fresh, err := testRedis.AcquireLock(ctx, "r", "stale", time.Minute)
+	if err != nil || fresh == "" {
+		t.Fatalf("acquire after expiry: %q %v", fresh, err)
+	}
+	if err := testRedis.ReleaseLock(ctx, "r", "stale", stale); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := testRedis.AcquireLock(ctx, "r", "stale", time.Minute); again != "" {
+		t.Fatal("stale holder's release dropped the second holder's lock")
+	}
+	if err := testRedis.ReleaseLock(ctx, "r", "stale", fresh); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := testRedis.AcquireLock(ctx, "r", "stale", time.Minute); again == "" {
+		t.Error("owner release should free the lock")
 	}
 }
 

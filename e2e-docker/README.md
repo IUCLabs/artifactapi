@@ -31,7 +31,8 @@ already-running stack.
   `node:22` client: `npm publish` unscoped + scoped, `npm install` + `require()`,
   second version, republish rejected).
 - **Virtual repositories** — pypi simple-index merge and helm `index.yaml` merge
-  across two members.
+  across two members; npm packument merge over two locals via a stock `node:22`
+  client (merged versions, install through the member redirect).
 - **Mirrorlist** — an rpm remote with a `mirrorlist` of extra upstream mirrors
   (pool = `base_url` + `mirrorlist`): round-robin distribution across both mirrors
   (constant-body `mockupstreama` / `mockupstreamb`), failover past a dead primary,

@@ -18,6 +18,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
+	"github.com/IUCLabs/artifactapi/internal/virtual"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -290,4 +291,43 @@ func TestNPMPublishHandler(t *testing.T) {
 			t.Errorf("publish to generic local = %d, want 405", code)
 		}
 	})
+}
+
+func TestNPMPackumentPerHost(t *testing.T) {
+	h, srv := npmTestServer(t)
+	h.virtualEngine = virtual.NewEngine(h.db, nil)
+	h.virtualEngine.NPMLocal = h.LocalNPMPackument
+	repo := npmRepo(t, h, models.PackageNPM)
+	virt := "v" + repo
+	if err := h.db.CreateVirtual(context.Background(), &models.Virtual{Name: virt, PackageType: models.PackageNPM, Members: []string{repo}}); err != nil {
+		t.Fatal(err)
+	}
+	if code, b := npmDo(t, http.MethodPut, srv.URL+"/api/v1/local/"+repo+"/hostpkg", publishBody(t, "hostpkg", []byte("tgz"), publishOpts{})); code != http.StatusCreated {
+		t.Fatalf("publish = %d: %s", code, b)
+	}
+	routes := h.Routes()
+	get := func(path, host, proto string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Host = host
+		if proto != "" {
+			r.Header.Set("X-Forwarded-Proto", proto)
+		}
+		w := httptest.NewRecorder()
+		routes.ServeHTTP(w, r)
+		return w
+	}
+	for _, path := range []string{"/local/" + repo + "/hostpkg", "/virtual/" + virt + "/hostpkg"} {
+		for _, host := range []string{"x@evil.com", "evil.example:"} {
+			if w := get(path, host, ""); w.Code != http.StatusBadRequest {
+				t.Errorf("%s Host %q = %d, want 400", path, host, w.Code)
+			}
+		}
+		w := get(path, "aa.example", "https")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"tarball":"https://aa.example/api/v1/`) {
+			t.Fatalf("%s = %d: %s", path, w.Code, w.Body)
+		}
+		if cc, vary := w.Header().Get("Cache-Control"), w.Header().Get("Vary"); cc != "no-store" || vary != "Host, X-Forwarded-Proto, Accept" {
+			t.Errorf("%s Cache-Control %q Vary %q", path, cc, vary)
+		}
+	}
 }

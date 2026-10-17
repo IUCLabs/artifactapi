@@ -26,6 +26,11 @@ type Engine struct {
 	proxyEngine *proxy.Engine
 	getRemote   func(context.Context, string) (*models.Remote, error)
 	rpmMember   func(context.Context, string) (*RPMMember, error)
+	npmMember   func(ctx context.Context, name, pkg string) (*NPMMember, error)
+
+	// NPMLocal returns a local npm repo's packument with tarball paths relative
+	// to the repo, or ErrNotFound.
+	NPMLocal func(ctx context.Context, repo, pkg string) ([]byte, error)
 
 	mergeTTL time.Duration
 
@@ -55,6 +60,7 @@ const rpmMergeTTL = 60 * time.Second
 func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 	e := &Engine{db: db, proxyEngine: proxyEngine, getRemote: db.GetRemote, mergeTTL: rpmMergeTTL}
 	e.rpmMember = e.fetchRPMMember
+	e.npmMember = e.fetchNPMMember
 	return e
 }
 
@@ -179,11 +185,17 @@ var (
 	ErrBadPath  = errors.New("invalid path")
 )
 
-// MemberRedirect maps an rpm virtual package path (<member>/<href>, as written
-// by MergeRPM) to the owning member's route. ok is false for any other path;
-// ErrBadPath means the path is absolute or escapes the member.
+// MemberRedirect maps an rpm or npm virtual package path (<member>/<href>, as
+// written by MergeRPM/MergeNPM) to the owning member's route. ok is false for
+// any other path; ErrBadPath means the path is absolute or escapes the member.
 func (e *Engine) MemberRedirect(ctx context.Context, virt models.Virtual, path, rawQuery, proxyBaseURL string) (string, bool, error) {
-	if virt.PackageType != models.PackageRPM || strings.HasPrefix(path, "repodata/") {
+	switch virt.PackageType {
+	case models.PackageRPM:
+		if strings.HasPrefix(path, "repodata/") {
+			return "", false, nil
+		}
+	case models.PackageNPM:
+	default:
 		return "", false, nil
 	}
 	name, rest, found := strings.Cut(path, "/")

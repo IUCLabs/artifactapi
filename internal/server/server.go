@@ -166,6 +166,7 @@ func (s *Server) routes() chi.Router {
 	r.Mount(tfregistry.MountPath, s.tfRegistry.Routes())
 
 	proxyHandler := v1.NewProxyHandler(s.engine, s.virtEngine, s.db, s.store, s.localHandler)
+	s.virtEngine.NPMLocal = proxyHandler.LocalNPMPackument
 	r.Mount("/api/v1", proxyHandler.Routes())
 	r.Mount("/v2", proxyHandler.DockerV2Routes())
 

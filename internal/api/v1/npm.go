@@ -253,8 +253,12 @@ func (h *ProxyHandler) serveNPMPackument(w http.ResponseWriter, r *http.Request,
 		npmError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	base, ok := requestBaseURL(w, r)
+	if !ok {
+		return
+	}
 	read := func(hash string) ([]byte, error) { return h.readLocalBlob(r.Context(), hash) }
-	tarballBase := fmt.Sprintf("%s://%s/api/v1/local/%s/", Scheme(r), r.Host, remote.Name)
+	tarballBase := base + "/api/v1/local/" + remote.Name + "/"
 	doc, err := buildNPMPackument(pkg, files, read, tarballBase)
 	if err != nil {
 		npmError(w, http.StatusInternalServerError, err.Error())
@@ -264,10 +268,18 @@ func (h *ProxyHandler) serveNPMPackument(w http.ResponseWriter, r *http.Request,
 		npmError(w, http.StatusNotFound, "not found")
 		return
 	}
+	setNPMPerHostHeaders(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Artifact-Source", "local")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(doc)
+}
+
+// setNPMPerHostHeaders keeps shared caches off packuments whose tarball URLs
+// are built from the request host and Accept (abbreviated vs full).
+func setNPMPerHostHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Vary", "Host, X-Forwarded-Proto, Accept")
 }
 
 // buildNPMPackument returns nil when pkg has no published versions.

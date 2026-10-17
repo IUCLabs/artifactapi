@@ -47,6 +47,7 @@ func (h *ProxyHandler) Routes() chi.Router {
 	r.Get("/remote/{remoteName}/*", h.handleProxy)
 	r.Head("/remote/{remoteName}/*", h.handleProxyHead)
 	r.Get("/local/{localName}/*", h.handleLocal)
+	r.Put("/local/{localName}/*", h.handleLocalPut)
 	r.Get("/virtual/{virtualName}/*", h.handleVirtual)
 	return r
 }
@@ -195,7 +196,10 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyBaseURL := fmt.Sprintf("%s://%s", Scheme(r), r.Host)
+	proxyBaseURL, ok := requestBaseURL(w, r)
+	if !ok {
+		return
+	}
 
 	loc, ok, err := h.virtualEngine.MemberRedirect(r.Context(), *virt, path, r.URL.RawQuery, proxyBaseURL)
 	if err != nil {
@@ -207,7 +211,14 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, contentType, err := h.virtualEngine.Fetch(r.Context(), *virt, path, proxyBaseURL)
+	var body []byte
+	var contentType string
+	if virt.PackageType == models.PackageNPM {
+		abbreviated := strings.Contains(r.Header.Get("Accept"), virtual.NPMAbbreviatedType)
+		body, contentType, err = h.virtualEngine.FetchNPM(r.Context(), *virt, path, proxyBaseURL, abbreviated)
+	} else {
+		body, contentType, err = h.virtualEngine.Fetch(r.Context(), *virt, path, proxyBaseURL)
+	}
 	if errors.Is(err, virtual.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -218,6 +229,9 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if virt.PackageType == models.PackageNPM {
+		setNPMPerHostHeaders(w)
+	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Artifact-Source", "virtual")
 	w.WriteHeader(http.StatusOK)
@@ -232,6 +246,13 @@ func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, fmt.Sprintf("local %q not found", localName), http.StatusNotFound)
 		return
+	}
+
+	if remote.PackageType == models.PackageNPM {
+		if pkg := npmPackageName(path); pkg != "" {
+			h.serveNPMPackument(w, r, remote, pkg)
+			return
+		}
 	}
 
 	prov, _ := provider.Get(remote.PackageType)
@@ -288,8 +309,8 @@ func Scheme(r *http.Request) string {
 // rewriteServed rewrites a cached body for the requesting host and marks the
 // response uncacheable by shared caches, since it varies per Host.
 func rewriteServed(w http.ResponseWriter, r *http.Request, sr provider.ServeRewriter, remote models.Remote, src io.Reader) ([]byte, bool) {
-	if !validHost(r.Host) {
-		http.Error(w, "invalid host header", http.StatusBadRequest)
+	base, ok := requestBaseURL(w, r)
+	if !ok {
 		return nil, false
 	}
 	raw, err := io.ReadAll(src)
@@ -297,11 +318,21 @@ func rewriteServed(w http.ResponseWriter, r *http.Request, sr provider.ServeRewr
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return nil, false
 	}
-	raw = sr.RewriteServed(raw, remote, fmt.Sprintf("%s://%s", Scheme(r), r.Host))
+	raw = sr.RewriteServed(raw, remote, base)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Vary", "Host, X-Forwarded-Proto")
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	return raw, true
+}
+
+// requestBaseURL returns the client-facing scheme://host, answering 400 on an
+// invalid Host.
+func requestBaseURL(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !validHost(r.Host) {
+		http.Error(w, "invalid host header", http.StatusBadRequest)
+		return "", false
+	}
+	return Scheme(r) + "://" + r.Host, true
 }
 
 // validHost accepts host[:port] where host is a DNS name or IP literal.

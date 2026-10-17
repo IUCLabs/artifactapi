@@ -29,15 +29,24 @@ type Engine struct {
 
 	mergeTTL time.Duration
 
-	sf  singleflight.Group
-	mu  sync.Mutex
-	rpm map[string]*rpmGen
+	sf   singleflight.Group
+	mu   sync.Mutex
+	gens map[string]*repoGen
 }
 
-// rpmGen holds a virtual's current merge plus the previous one, so a client
-// holding the previous repomd can still fetch its content-hashed data files.
-type rpmGen struct {
-	cur, prev *RPMRepo
+// mergedRepo is a merged index document plus the files it references.
+type mergedRepo interface {
+	index() []byte
+	files() map[string][]byte
+}
+
+func (r *RPMRepo) index() []byte            { return r.Repomd }
+func (r *RPMRepo) files() map[string][]byte { return r.Files }
+
+// repoGen holds a virtual's current merge plus the previous one, so a client
+// holding the previous index can still fetch the files it references.
+type repoGen struct {
+	cur, prev mergedRepo
 	at        time.Time
 }
 
@@ -217,54 +226,57 @@ func (e *Engine) fetchRPM(ctx context.Context, virt models.Virtual, path string)
 	if !strings.HasPrefix(path, "repodata/") {
 		return nil, "", ErrNotFound
 	}
+	key := "rpm\x00" + virt.Name
 	if path != "repodata/repomd.xml" {
-		if body, ok := e.cachedRPMFile(virt.Name, path); ok {
+		if body, ok := e.cachedFile(key, path); ok {
 			return body, "application/gzip", nil
 		}
 	}
 
-	repo, err := e.mergedRPM(ctx, virt)
+	repo, err := e.merged(ctx, key, func(ctx context.Context) (mergedRepo, error) {
+		return e.mergeRPM(ctx, virt)
+	})
 	if err != nil {
 		return nil, "", err
 	}
 	if path == "repodata/repomd.xml" {
-		return repo.Repomd, "application/xml", nil
+		return repo.index(), "application/xml", nil
 	}
-	if body, ok := repo.Files[path]; ok {
+	if body, ok := repo.files()[path]; ok {
 		return body, "application/gzip", nil
 	}
 	return nil, "", ErrNotFound
 }
 
-// mergedRPM returns the virtual's merge, reusing it for mergeTTL and
-// collapsing concurrent merges of the same virtual into one.
+// merged returns the merge cached under key, reusing it for mergeTTL and
+// collapsing concurrent merges of the same key into one.
 // ponytail: per-replica cache; behind a non-sticky LB a data request landing on
 // another replica re-merges and 404s if a member changed in between. Move to the
 // shared redis cache if that shows up.
-func (e *Engine) mergedRPM(ctx context.Context, virt models.Virtual) (*RPMRepo, error) {
+func (e *Engine) merged(ctx context.Context, key string, merge func(context.Context) (mergedRepo, error)) (mergedRepo, error) {
 	e.mu.Lock()
-	g := e.rpm[virt.Name]
+	g := e.gens[key]
 	if g != nil && time.Since(g.at) < e.mergeTTL {
 		e.mu.Unlock()
 		return g.cur, nil
 	}
 	e.mu.Unlock()
 
-	v, err, _ := e.sf.Do(virt.Name, func() (any, error) {
-		repo, err := e.mergeRPM(context.WithoutCancel(ctx), virt)
+	v, err, _ := e.sf.Do(key, func() (any, error) {
+		repo, err := merge(context.WithoutCancel(ctx))
 		if err != nil {
 			return nil, err
 		}
 		e.mu.Lock()
 		defer e.mu.Unlock()
-		if e.rpm == nil {
-			e.rpm = map[string]*rpmGen{}
+		if e.gens == nil {
+			e.gens = map[string]*repoGen{}
 		}
-		g := e.rpm[virt.Name]
+		g := e.gens[key]
 		switch {
 		case g == nil:
-			e.rpm[virt.Name] = &rpmGen{cur: repo, at: time.Now()}
-		case string(g.cur.Repomd) == string(repo.Repomd):
+			e.gens[key] = &repoGen{cur: repo, at: time.Now()}
+		case string(g.cur.index()) == string(repo.index()):
 			g.at = time.Now()
 			repo = g.cur
 		default:
@@ -275,18 +287,31 @@ func (e *Engine) mergedRPM(ctx context.Context, virt models.Virtual) (*RPMRepo, 
 	if err != nil {
 		return nil, err
 	}
-	return v.(*RPMRepo), nil
+	return v.(mergedRepo), nil
 }
 
 func (e *Engine) mergeRPM(ctx context.Context, virt models.Virtual) (*RPMRepo, error) {
-	members := make([]RPMMember, len(virt.Members))
+	members, err := fetchMembers(virt, func(name string) (*RPMMember, error) { return e.rpmMember(ctx, name) })
+	if err != nil {
+		return nil, err
+	}
+	repo, err := MergeRPM(members)
+	if err != nil {
+		return nil, fmt.Errorf("merge rpm repodata: %w", err)
+	}
+	return repo, nil
+}
+
+// fetchMembers reads every member in parallel, failing if any member fails.
+func fetchMembers[T any](virt models.Virtual, fetch func(name string) (*T, error)) ([]T, error) {
+	members := make([]T, len(virt.Members))
 	errs := make([]error, len(virt.Members))
 	var wg sync.WaitGroup
 	for i, name := range virt.Members {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			m, err := e.rpmMember(ctx, name)
+			m, err := fetch(name)
 			if err != nil {
 				errs[i] = fmt.Errorf("member %q: %w", name, err)
 				return
@@ -299,26 +324,21 @@ func (e *Engine) mergeRPM(ctx context.Context, virt models.Virtual) (*RPMRepo, e
 	if err := errors.Join(errs...); err != nil {
 		return nil, fmt.Errorf("virtual %q: %v", virt.Name, err)
 	}
-
-	repo, err := MergeRPM(members)
-	if err != nil {
-		return nil, fmt.Errorf("merge rpm repodata: %w", err)
-	}
-	return repo, nil
+	return members, nil
 }
 
-func (e *Engine) cachedRPMFile(virt, path string) ([]byte, bool) {
+func (e *Engine) cachedFile(key, path string) ([]byte, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	g := e.rpm[virt]
+	g := e.gens[key]
 	if g == nil {
 		return nil, false
 	}
-	for _, r := range []*RPMRepo{g.cur, g.prev} {
+	for _, r := range []mergedRepo{g.cur, g.prev} {
 		if r == nil {
 			continue
 		}
-		if body, ok := r.Files[path]; ok {
+		if body, ok := r.files()[path]; ok {
 			return body, true
 		}
 	}

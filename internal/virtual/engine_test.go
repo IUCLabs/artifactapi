@@ -156,3 +156,53 @@ func TestMemberRedirect(t *testing.T) {
 		}
 	}
 }
+
+type fakeRepo struct {
+	idx string
+	fs  map[string][]byte
+}
+
+func (r *fakeRepo) index() []byte            { return []byte(r.idx) }
+func (r *fakeRepo) files() map[string][]byte { return r.fs }
+
+func genRepo(gen string) func(context.Context) (mergedRepo, error) {
+	return func(context.Context) (mergedRepo, error) {
+		return &fakeRepo{idx: gen, fs: map[string][]byte{gen + ".gz": []byte(gen), "fixed": []byte(gen)}}, nil
+	}
+}
+
+func TestMergedRetainsPreviousGeneration(t *testing.T) {
+	e := fakeEngine(nil)
+	for _, gen := range []string{"g1", "g2", "g3"} {
+		if _, err := e.merged(context.Background(), "k", genRepo(gen)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, want := range map[string]string{"g3.gz": "g3", "g2.gz": "g2", "fixed": "g3"} {
+		if body, ok := e.cachedFile("k", path); !ok || string(body) != want {
+			t.Errorf("%s: got (%q, %v), want %q", path, body, ok, want)
+		}
+	}
+	if _, ok := e.cachedFile("k", "g1.gz"); ok {
+		t.Error("generation two merges back must be dropped")
+	}
+}
+
+func TestMergedReusesWithinTTLAndIsolatesKeys(t *testing.T) {
+	e := fakeEngine(nil)
+	e.mergeTTL = time.Minute
+	for _, step := range []struct{ key, gen, want string }{
+		{"a", "a1", "a1"}, {"b", "b1", "b1"}, {"a", "a2", "a1"},
+	} {
+		repo, err := e.merged(context.Background(), step.key, genRepo(step.gen))
+		if err != nil || string(repo.index()) != step.want {
+			t.Fatalf("%s: got %v (err %v), want %s", step.key, repo, err, step.want)
+		}
+	}
+	if _, ok := e.cachedFile("b", "a1.gz"); ok {
+		t.Error("key b served key a's file")
+	}
+	if _, ok := e.cachedFile("c", "a1.gz"); ok {
+		t.Error("unknown key served a file")
+	}
+}

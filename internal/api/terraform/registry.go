@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	v1 "github.com/IUCLabs/artifactapi/internal/api/v1"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	tfprov "github.com/IUCLabs/artifactapi/internal/provider/terraform"
 	"github.com/IUCLabs/artifactapi/internal/tfsign"
@@ -290,12 +291,5 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func baseURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
-		scheme = fwd
-	}
-	return scheme + "://" + r.Host
+	return v1.Scheme(r) + "://" + r.Host
 }

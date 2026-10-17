@@ -40,8 +40,10 @@ func assertHeadMatchesGet(t *testing.T, url string) {
 	if len(hb) != 0 {
 		t.Errorf("HEAD returned a %d-byte body", len(hb))
 	}
-	if head.Header.Get("Content-Type") != get.Header.Get("Content-Type") {
-		t.Errorf("HEAD Content-Type %q, GET %q", head.Header.Get("Content-Type"), get.Header.Get("Content-Type"))
+	for _, h := range []string{"Content-Type", "Cache-Control", "Vary"} {
+		if head.Header.Get(h) != get.Header.Get(h) {
+			t.Errorf("HEAD %s %q, GET %q", h, head.Header.Get(h), get.Header.Get(h))
+		}
 	}
 	if head.ContentLength != int64(len(body)) {
 		t.Errorf("HEAD Content-Length %d, GET body %d bytes", head.ContentLength, len(body))
@@ -61,7 +63,19 @@ func TestProxyHeadNuGetRewritten(t *testing.T) {
 	createRemote(t, mustFormat(`{"name": "head-nuget", "package_type": "nuget", "base_url": %q}`, upstream.URL+"/v3/index.json"))
 	defer deleteRemote(t, "head-nuget")
 
-	assertHeadMatchesGet(t, apiURL("/api/v1/remote/head-nuget/index.json"))
+	url := apiURL("/api/v1/remote/head-nuget/index.json")
+	assertHeadMatchesGet(t, url)
+
+	req, _ := http.NewRequest(http.MethodHead, url, nil)
+	req.Host = "evil.example:"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("HEAD with invalid Host: got %d, want 400", resp.StatusCode)
+	}
 }
 
 func TestProxyHeadGitHubRPMRepodata(t *testing.T) {

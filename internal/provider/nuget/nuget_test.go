@@ -19,7 +19,11 @@ func TestClassify(t *testing.T) {
 	}{
 		{"v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg", provider.Immutable},
 		{"v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.nuspec", provider.Immutable},
+		{"v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.snupkg", provider.Immutable},
+		{"v3-flatcontainer/newtonsoft.json/13.0.3/readme", provider.Immutable},
+		{"v3-flatcontainer/newtonsoft.json/13.0.3/icon", provider.Immutable},
 		{"v3-flatcontainer/newtonsoft.json/index.json", provider.Mutable},
+		{"readme", provider.Mutable},
 		{"v3/registration5-gz-semver2/newtonsoft.json/index.json", provider.Mutable},
 		{"index.json", provider.Mutable},
 	}
@@ -27,6 +31,28 @@ func TestClassify(t *testing.T) {
 		if got := p.Classify(tt.path); got != tt.want {
 			t.Errorf("Classify(%q) = %v, want %v", tt.path, got, tt.want)
 		}
+	}
+}
+
+func TestContentType(t *testing.T) {
+	p := &Provider{}
+	for path, want := range map[string]string{
+		"v3-flatcontainer/a/1.0.0/a.1.0.0.snupkg": "application/octet-stream",
+		"v3-flatcontainer/a/1.0.0/icon":           "application/octet-stream",
+		"v3-flatcontainer/a/1.0.0/readme":         "text/markdown",
+		"v3-flatcontainer/a/index.json":           "application/json",
+	} {
+		if got := p.ContentType(path); got != want {
+			t.Errorf("ContentType(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestRewriteServedEscapesJSON(t *testing.T) {
+	body := `{"@id":"https://api.nuget.org/v3-flatcontainer/"}`
+	got := (&Provider{}).RewriteServed([]byte(body), nugetOrg, `http://evil"<x>`)
+	if want := `{"@id":"http://evil\"\u003cx\u003e/api/v1/remote/nuget-org/v3-flatcontainer/"}`; string(got) != want {
+		t.Errorf("RewriteServed = %s, want %s", got, want)
 	}
 }
 

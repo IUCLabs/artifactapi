@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -44,7 +47,6 @@ func (h *ProxyHandler) Routes() chi.Router {
 	r.Get("/remote/{remoteName}/*", h.handleProxy)
 	r.Head("/remote/{remoteName}/*", h.handleProxyHead)
 	r.Get("/local/{localName}/*", h.handleLocal)
-	r.Put("/local/{localName}/*", h.handleLocalPut)
 	r.Get("/virtual/{virtualName}/*", h.handleVirtual)
 	return r
 }
@@ -92,7 +94,7 @@ func (h *ProxyHandler) remoteFor(w http.ResponseWriter, r *http.Request) (*model
 // responses and redirect package downloads instead of proxying bytes.
 func (h *ProxyHandler) serveRemote(w http.ResponseWriter, r *http.Request, remote *models.Remote, prov provider.Provider, path string) bool {
 	rs, ok := prov.(provider.RemoteServer)
-	return ok && rs.ServeRemote(w, r, *remote, path, fmt.Sprintf("%s://%s", scheme(r), r.Host), h.db)
+	return ok && rs.ServeRemote(w, r, *remote, path, fmt.Sprintf("%s://%s", Scheme(r), r.Host), h.db)
 }
 
 func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
@@ -123,12 +125,10 @@ func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote
 
 	var body io.Reader = result.Reader
 	if sr, ok := prov.(provider.ServeRewriter); ok && prov.Classify(path) == provider.Mutable {
-		raw, err := io.ReadAll(result.Reader)
-		if err != nil {
-			http.Error(w, "bad gateway", http.StatusBadGateway)
+		raw, ok := rewriteServed(w, r, sr, *remote, result.Reader)
+		if !ok {
 			return
 		}
-		raw = sr.RewriteServed(raw, *remote, fmt.Sprintf("%s://%s", scheme(r), r.Host))
 		body, result.Size = bytes.NewReader(raw), int64(len(raw))
 	}
 
@@ -195,7 +195,7 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyBaseURL := fmt.Sprintf("%s://%s", scheme(r), r.Host)
+	proxyBaseURL := fmt.Sprintf("%s://%s", Scheme(r), r.Host)
 
 	loc, ok, err := h.virtualEngine.MemberRedirect(r.Context(), *virt, path, r.URL.RawQuery, proxyBaseURL)
 	if err != nil {
@@ -232,13 +232,6 @@ func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, fmt.Sprintf("local %q not found", localName), http.StatusNotFound)
 		return
-	}
-
-	if remote.PackageType == models.PackageNPM {
-		if pkg := npmPackageName(path); pkg != "" {
-			h.serveNPMPackument(w, r, remote, pkg)
-			return
-		}
 	}
 
 	prov, _ := provider.Get(remote.PackageType)
@@ -279,12 +272,68 @@ func (h *ProxyHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, re
 	io.Copy(w, reader)
 }
 
-func scheme(r *http.Request) string {
+// Scheme returns the client-facing scheme: TLS, else the first
+// X-Forwarded-Proto value when it is http or https, else http.
+func Scheme(r *http.Request) string {
 	if r.TLS != nil {
 		return "https"
 	}
-	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+	fwd, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
+	if fwd = strings.ToLower(strings.TrimSpace(fwd)); fwd == "https" {
 		return fwd
 	}
 	return "http"
+}
+
+// rewriteServed rewrites a cached body for the requesting host and marks the
+// response uncacheable by shared caches, since it varies per Host.
+func rewriteServed(w http.ResponseWriter, r *http.Request, sr provider.ServeRewriter, remote models.Remote, src io.Reader) ([]byte, bool) {
+	if !validHost(r.Host) {
+		http.Error(w, "invalid host header", http.StatusBadRequest)
+		return nil, false
+	}
+	raw, err := io.ReadAll(src)
+	if err != nil {
+		http.Error(w, "bad gateway", http.StatusBadGateway)
+		return nil, false
+	}
+	raw = sr.RewriteServed(raw, remote, fmt.Sprintf("%s://%s", Scheme(r), r.Host))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Vary", "Host, X-Forwarded-Proto")
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+	return raw, true
+}
+
+// validHost accepts host[:port] where host is a DNS name or IP literal.
+func validHost(hostport string) bool {
+	host, port := hostport, ""
+	if h, p, err := net.SplitHostPort(hostport); err == nil {
+		if p == "" {
+			return false
+		}
+		host, port = h, p
+	} else if strings.HasPrefix(hostport, "[") {
+		return strings.HasSuffix(hostport, "]") && net.ParseIP(hostport[1:len(hostport)-1]) != nil
+	}
+	if port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if strings.HasPrefix(hostport, "[") {
+		return false
+	}
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(host, "."), ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' ||
+			strings.Trim(strings.ToLower(label), "abcdefghijklmnopqrstuvwxyz0123456789-_") != "" {
+			return false
+		}
+	}
+	return true
 }

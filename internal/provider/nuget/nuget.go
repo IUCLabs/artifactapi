@@ -1,5 +1,6 @@
 // Package nuget proxies a NuGet v3 feed: the service index, registration pages
-// and flat container indexes are mutable, .nupkg/.nuspec downloads immutable.
+// and flat container indexes are mutable; package, symbol, nuspec, readme and
+// icon blobs are immutable.
 package nuget
 
 import (
@@ -7,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	pathpkg "path"
 	"strings"
 
 	"github.com/IUCLabs/artifactapi/internal/auth"
@@ -34,10 +36,12 @@ func (p *Provider) Classify(path string) provider.Mutability {
 
 func (p *Provider) ContentType(path string) string {
 	switch {
-	case strings.HasSuffix(path, ".nupkg"):
+	case strings.HasSuffix(path, ".nupkg"), strings.HasSuffix(path, ".snupkg"), pathpkg.Base(path) == "icon":
 		return "application/octet-stream"
 	case strings.HasSuffix(path, ".nuspec"):
 		return "application/xml"
+	case pathpkg.Base(path) == "readme":
+		return "text/markdown"
 	}
 	return "application/json"
 }
@@ -64,8 +68,8 @@ func (p *Provider) RewriteServed(body []byte, remote models.Remote, proxyBaseURL
 	if from == "" || !json.Valid(body) {
 		return body
 	}
-	to := strings.TrimRight(proxyBaseURL, "/") + "/api/v1/remote/" + remote.Name
-	return []byte(strings.ReplaceAll(string(body), from, to))
+	to, _ := json.Marshal(strings.TrimRight(proxyBaseURL, "/") + "/api/v1/remote/" + remote.Name)
+	return []byte(strings.ReplaceAll(string(body), from, string(to[1:len(to)-1])))
 }
 
 func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {
@@ -80,6 +84,14 @@ func origin(baseURL string) string {
 	return u.Scheme + "://" + u.Host
 }
 
+// isPackage matches flat container blobs: {id}.{ver}.(s)nupkg, {id}.nuspec and
+// the {id}/{ver}/readme and {id}/{ver}/icon files.
 func isPackage(path string) bool {
-	return strings.HasSuffix(path, ".nupkg") || strings.HasSuffix(path, ".nuspec")
+	for _, ext := range []string{".nupkg", ".snupkg", ".nuspec"} {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	base := pathpkg.Base(path)
+	return (base == "readme" || base == "icon") && strings.Count(strings.Trim(path, "/"), "/") >= 2
 }

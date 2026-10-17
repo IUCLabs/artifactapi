@@ -254,7 +254,7 @@ func (h *ProxyHandler) serveNPMPackument(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	read := func(hash string) ([]byte, error) { return h.readLocalBlob(r.Context(), hash) }
-	tarballBase := fmt.Sprintf("%s://%s/api/v1/local/%s/", scheme(r), r.Host, remote.Name)
+	tarballBase := fmt.Sprintf("%s://%s/api/v1/local/%s/", Scheme(r), r.Host, remote.Name)
 	doc, err := buildNPMPackument(pkg, files, read, tarballBase)
 	if err != nil {
 		npmError(w, http.StatusInternalServerError, err.Error())

@@ -29,7 +29,8 @@ already-running stack.
   generic (upload/download), pypi (wheel + generated `simple/`
   index), rpm (real package + **automatic repodata** generation), npm (stock
   `node:22` client: `npm publish` unscoped + scoped, `npm install` + `require()`,
-  second version, republish rejected).
+  second version, republish rejected), gems (stock `ruby:3.3`: `gem push`,
+  `gem install`, `bundle install` + `require`, republish rejected, `gem yank`).
 - **Virtual repositories** — pypi simple-index merge and helm `index.yaml` merge
   across two members; npm packument merge over two locals via a stock `node:22`
   client (merged versions, install through the member redirect).

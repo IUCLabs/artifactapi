@@ -47,7 +47,10 @@ func (h *ProxyHandler) Routes() chi.Router {
 	r.Get("/remote/{remoteName}/*", h.handleProxy)
 	r.Head("/remote/{remoteName}/*", h.handleProxyHead)
 	r.Get("/local/{localName}/*", h.handleLocal)
+	r.Head("/local/{localName}/*", h.handleLocal)
 	r.Put("/local/{localName}/*", h.handleLocalPut)
+	r.Post("/local/{localName}/*", h.handleLocalPost)
+	r.Delete("/local/{localName}/*", h.handleLocalDelete)
 	r.Get("/virtual/{virtualName}/*", h.handleVirtual)
 	return r
 }
@@ -253,6 +256,10 @@ func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
 			h.serveNPMPackument(w, r, remote, pkg)
 			return
 		}
+	}
+	if remote.PackageType == models.PackageGems && isGemsIndexPath(path) {
+		h.serveLocalGemsIndex(w, r, remote, path)
+		return
 	}
 
 	prov, _ := provider.Get(remote.PackageType)

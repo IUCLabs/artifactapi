@@ -31,7 +31,7 @@ Each type's paths, Terraform examples and local/virtual behaviour are in `docs/<
 - `deb`: [remote](docs/deb/remote.md), [remote-github](docs/deb/remote-github.md)
 - `docker`: [remote](docs/docker/remote.md), [local](docs/docker/local.md)
 - `generic`: [remote](docs/generic/remote.md)
-- `gems`: [remote](docs/gems/remote.md)
+- `gems`: [remote](docs/gems/remote.md), [local](docs/gems/local.md)
 - `goproxy`: [remote](docs/goproxy/remote.md)
 - `helm`: [remote](docs/helm/remote.md), [local](docs/helm/local.md), [virtual](docs/helm/virtual.md)
 - `npm`: [remote](docs/npm/remote.md), [local](docs/npm/local.md), [virtual](docs/npm/virtual.md)
@@ -131,6 +131,7 @@ No patterns + no blocklist = open proxy. Provider handles mutability classificat
 GET /api/v1/remote/{name}/{path}     Proxy/cache artifact
 GET /api/v1/virtual/{name}/{path}    Virtual repo (merged index)
 PUT /api/v1/local/{name}/{package}   npm publish (local npm repos)
+POST/DELETE /api/v1/local/{name}/api/v1/gems[/yank]   gem push / yank (local gems repos)
 GET /v2/{name}/{path}                Docker Registry v2
 ```
 

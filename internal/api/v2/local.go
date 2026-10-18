@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/go-chi/chi/v5"
 
@@ -83,7 +84,22 @@ func (h *LocalHandler) uploadValidated(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	result, err := h.cas.Store(r.Context(), r.Body, contentType)
+	var body io.Reader = r.Body
+	if cv, ok := prov.(provider.ContentValidator); ok {
+		f, err := spoolBody(r.Body)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("read upload: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer discard(f)
+		if err := cv.ValidateContent(storagePath, f.Name()); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		body = f
+	}
+
+	result, err := h.cas.Store(r.Context(), body, contentType)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("store failed: %v", err), http.StatusInternalServerError)
 		return
@@ -108,6 +124,27 @@ func (h *LocalHandler) uploadValidated(w http.ResponseWriter, r *http.Request, r
 	}
 
 	writeJSON(w, http.StatusCreated, uploader.UploadResponse(storagePath, result.ContentHash, result.SizeBytes))
+}
+
+func spoolBody(r io.Reader) (*os.File, error) {
+	f, err := os.CreateTemp("", "artifactapi-upload-*")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		discard(f)
+		return nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		discard(f)
+		return nil, err
+	}
+	return f, nil
+}
+
+func discard(f *os.File) {
+	_ = f.Close()
+	_ = os.Remove(f.Name())
 }
 
 func (h *LocalHandler) uploadGeneric(w http.ResponseWriter, r *http.Request, remote *models.Remote, filePath string) {

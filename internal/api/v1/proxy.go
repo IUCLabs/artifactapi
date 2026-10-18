@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -115,7 +116,7 @@ func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote *models.Remote, prov provider.Provider, path string) {
-	result, err := h.engine.Fetch(r.Context(), *remote, path, prov, r.Header)
+	result, err := h.engine.Fetch(r.Context(), *remote, forwardQuery(prov, path, r.URL.Query()), prov, r.Header)
 	if err != nil {
 		var proxyErr *proxy.ProxyError
 		if errors.As(err, &proxyErr) {
@@ -323,6 +324,25 @@ func Scheme(r *http.Request) string {
 		return fwd
 	}
 	return "http"
+}
+
+// forwardQuery appends the provider's validated query params to path in a
+// canonical (sorted, single-valued) form, since the result is the cache key.
+func forwardQuery(prov provider.Provider, path string, query url.Values) string {
+	f, ok := prov.(provider.QueryForwarder)
+	if !ok {
+		return path
+	}
+	kept := url.Values{}
+	for name, valid := range f.ForwardedQuery(path) {
+		if v, ok := valid(query.Get(name)); ok {
+			kept.Set(name, v)
+		}
+	}
+	if len(kept) == 0 {
+		return path
+	}
+	return path + "?" + kept.Encode()
 }
 
 // rewriteServed rewrites a cached body for the requesting host and marks the

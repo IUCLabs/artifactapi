@@ -271,3 +271,28 @@ func TestEvictWildcardClearsPrefixOnly(t *testing.T) {
 		t.Errorf("path outside prefix = %q, want cached rev1", got)
 	}
 }
+
+func TestEvictPathDropsQueryVariants(t *testing.T) {
+	requireStack(t)
+	srv, _, _ := changingUpstream(t)
+	r := rpmRemote(t, "evict-query", srv.URL)
+	const (
+		path    = "8/Everything/x86_64/repodata/repomd.xml"
+		variant = path + "?limit=10"
+		sibling = "8/Everything/x86_64/repodata/repomd.xml.asc"
+	)
+	for _, p := range []string{path, variant, sibling} {
+		fetchBody(t, r, p)
+	}
+	if err := testEngine.Evict(context.Background(), r.Name, path); err != nil {
+		t.Fatalf("evict: %v", err)
+	}
+	for _, p := range []string{path, variant} {
+		if c := layers(t, r.Name, p); c != (cached{}) {
+			t.Errorf("%s after evict = %+v, want every layer gone", p, c)
+		}
+	}
+	if c := layers(t, r.Name, sibling); c == (cached{}) {
+		t.Errorf("%s sharing the name prefix was evicted", sibling)
+	}
+}

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
@@ -37,7 +38,9 @@ func NewClassifier(p provider.Provider) *Classifier {
 	return &Classifier{provider: p}
 }
 
+// Classify judges the bare path; a forwarded query must not change the verdict.
 func (c *Classifier) Classify(remote models.Remote, path string) Classification {
+	path, _, _ = strings.Cut(path, "?")
 	if matchesAny(path, compilePatterns(remote.Blocklist)) {
 		return ClassDenied
 	}

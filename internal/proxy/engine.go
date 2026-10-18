@@ -217,7 +217,8 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 
 // Evict drops path from every cache layer (artifact row, index object, Redis
 // freshness and ETag keys) so the next request refetches from upstream. A
-// trailing "/*" evicts every path under that directory.
+// trailing "/*" evicts every path under that directory; a plain path also
+// drops its forwarded-query variants ("path?...").
 func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 	prefix, wildcard := strings.CutSuffix(path, "*")
 	if wildcard && !strings.HasSuffix(prefix, "/") {
@@ -240,11 +241,23 @@ func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 		if err := e.store.Delete(ctx, storage.IndexKey(remoteName, path)); err != nil {
 			return fmt.Errorf("delete index: %w", err)
 		}
-		return e.cache.ForgetPath(ctx, remoteName, path)
+		if err := e.cache.ForgetPath(ctx, remoteName, path); err != nil {
+			return err
+		}
+		if strings.Contains(path, "?") {
+			return nil
+		}
+		return e.evictPrefix(ctx, remoteName, path+"?")
 	}
 	// ponytail: no lock for wildcards; a Fetch already in flight under the
 	// prefix can re-cache its path after the evict. Per-path locks over a
 	// directory would close it if that ever matters.
+	return e.evictPrefix(ctx, remoteName, prefix)
+}
+
+// evictPrefix drops every cached path starting with prefix, including the
+// forwarded-query variants ("path?...") of a single path.
+func (e *Engine) evictPrefix(ctx context.Context, remoteName, prefix string) error {
 	if err := e.db.DeleteArtifactsByPrefix(ctx, remoteName, prefix); err != nil {
 		return fmt.Errorf("delete artifacts: %w", err)
 	}

@@ -38,6 +38,24 @@ func TestClassifierBranches(t *testing.T) {
 	}
 }
 
+func TestClassifierIgnoresForwardedQuery(t *testing.T) {
+	gp, err := provider.Get(models.PackageGeneric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewClassifier(gp)
+	if got := c.Classify(models.Remote{Blocklist: []string{`\.exe$`}}, "x.exe?limit=1"); got != ClassDenied {
+		t.Errorf("blocklist bypassed by query: %v", got)
+	}
+	allow := models.Remote{Patterns: []string{`/versions/$`}}
+	if got := c.Classify(allow, "a/versions/?limit=1&offset=100"); got != ClassImmutable {
+		t.Errorf("allowlisted paginated path = %v, want immutable", got)
+	}
+	if got := c.Classify(models.Remote{MutablePatterns: []string{`/versions/$`}}, "a/versions/?offset=100"); got != ClassMutable {
+		t.Errorf("mutable pattern on paginated path = %v, want mutable", got)
+	}
+}
+
 func TestClassificationString(t *testing.T) {
 	for c, want := range map[Classification]string{
 		ClassImmutable:     "immutable",

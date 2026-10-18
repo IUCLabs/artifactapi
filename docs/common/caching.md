@@ -93,7 +93,7 @@ Force a moving path mutable, e.g. branch tarballs on `generic`:
 ## Built-in classification per type
 
 Each type's page lists its auto-detected mutable and immutable paths:
-[alpine](../alpine/remote.md), [alpine github](../alpine/remote-github.md),
+[alpine](../alpine/remote.md), [alpine github](../alpine/remote-github.md), [ansible](../ansible/remote.md),
 [cargo](../cargo/remote.md), [deb](../deb/remote.md), [deb github](../deb/remote-github.md),
 [docker](../docker/remote.md), [generic](../generic/remote.md), [gems](../gems/remote.md), [goproxy](../goproxy/remote.md),
 [helm](../helm/remote.md), [npm](../npm/remote.md), [nuget](../nuget/remote.md),

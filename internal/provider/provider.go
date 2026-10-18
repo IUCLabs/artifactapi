@@ -8,6 +8,9 @@ import (
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
+// RemoteMountPath is the URL path remote proxies are served under.
+const RemoteMountPath = "/api/v1/remote/"
+
 type Mutability int
 
 const (

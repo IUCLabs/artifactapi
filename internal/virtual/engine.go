@@ -38,6 +38,11 @@ type Engine struct {
 	// ErrNotFound.
 	GemsLocal func(ctx context.Context, repo, path string) ([]byte, error)
 
+	// AnsibleLocal returns a local ansible repo's collection, full versions list
+	// or version detail with root-relative URLs, or ErrNotFound.
+	AnsibleLocal func(ctx context.Context, repo, path string) ([]byte, error)
+	ansibleDoc   func(ctx context.Context, remote models.Remote, path string) ([]byte, error)
+
 	mergeTTL time.Duration
 
 	sf   singleflight.Group
@@ -68,6 +73,7 @@ func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 	e.rpmMember = e.fetchRPMMember
 	e.npmMember = e.fetchNPMMember
 	e.gemsMember = e.fetchGemsMember
+	e.ansibleDoc = e.ansibleMemberDoc
 	return e
 }
 
@@ -192,16 +198,17 @@ var (
 	ErrBadPath  = errors.New("invalid path")
 )
 
-// MemberRedirect maps an rpm or npm virtual package path (<member>/<href>, as
-// written by MergeRPM/MergeNPM) to the owning member's route. ok is false for
-// any other path; ErrBadPath means the path is absolute or escapes the member.
+// MemberRedirect maps an rpm, npm or ansible virtual package path
+// (<member>/<href>, as written by MergeRPM/MergeNPM/AnsibleVersion) to the
+// owning member's route. ok is false for any other path; ErrBadPath means the
+// path is absolute or escapes the member.
 func (e *Engine) MemberRedirect(ctx context.Context, virt models.Virtual, path, rawQuery, proxyBaseURL string) (string, bool, error) {
 	switch virt.PackageType {
 	case models.PackageRPM:
 		if strings.HasPrefix(path, "repodata/") {
 			return "", false, nil
 		}
-	case models.PackageNPM:
+	case models.PackageNPM, models.PackageAnsible:
 	default:
 		return "", false, nil
 	}

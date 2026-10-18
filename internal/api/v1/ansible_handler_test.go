@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"mime/multipart"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/IUCLabs/artifactapi/internal/virtual"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -212,5 +214,62 @@ func TestAnsibleLocalPerHost(t *testing.T) {
 	}
 	if cc, vary := w.Header().Get("Cache-Control"), w.Header().Get("Vary"); cc != "no-store" || vary != "Host, X-Forwarded-Proto" {
 		t.Errorf("Cache-Control %q Vary %q", cc, vary)
+	}
+}
+
+func TestAnsibleVirtualOverLocals(t *testing.T) {
+	h, srv := npmTestServer(t)
+	h.virtualEngine = virtual.NewEngine(h.db, nil)
+	h.virtualEngine.AnsibleLocal = h.LocalAnsible
+	a, b := npmRepo(t, h, models.PackageAnsible), npmRepo(t, h, models.PackageAnsible)
+	for _, p := range []struct{ repo, version string }{{a, "1.0.0"}, {b, "1.0.0"}, {b, "2.0.0"}} {
+		if code, body := ansiblePublish(t, srv.URL+"/api/v1/local/"+p.repo+"/api/v3/artifacts/collections/", testCollection(t, "myorg", "virt", p.version), ""); code != http.StatusAccepted {
+			t.Fatalf("publish %s to %s = %d: %s", p.version, p.repo, code, body)
+		}
+	}
+	virt := "v" + a
+	if err := h.db.CreateVirtual(context.Background(), &models.Virtual{Name: virt, PackageType: models.PackageAnsible, Members: []string{a, b}}); err != nil {
+		t.Fatal(err)
+	}
+	base := srv.URL + "/api/v1/virtual/" + virt + "/"
+
+	var page struct {
+		Meta  struct{ Count int }
+		Links struct{ Next *string }
+		Data  []struct{ Version, Href string }
+	}
+	getJSON(t, base+"api/v3/collections/myorg/virt/versions/?limit=1", &page)
+	if page.Meta.Count != 2 || len(page.Data) != 1 || page.Data[0].Version != "1.0.0" || page.Links.Next == nil {
+		t.Fatalf("page 1 = %+v", page)
+	}
+	href := page.Data[0].Href
+	if !strings.HasPrefix(*page.Links.Next, "/api/v1/virtual/"+virt+"/") {
+		t.Fatalf("next = %q, want root-relative", *page.Links.Next)
+	}
+	getJSON(t, srv.URL+*page.Links.Next, &page)
+	if len(page.Data) != 1 || page.Data[0].Version != "2.0.0" || page.Links.Next != nil {
+		t.Fatalf("page 2 = %+v", page)
+	}
+
+	var detail struct {
+		DownloadURL string `json:"download_url"`
+	}
+	getJSON(t, href, &detail)
+	if detail.DownloadURL != base+a+"/artifacts/myorg-virt-1.0.0.tar.gz" {
+		t.Fatalf("download_url = %q, want the first member via the virtual", detail.DownloadURL)
+	}
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := noFollow.Get(detail.DownloadURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != srv.URL+"/api/v1/local/"+a+"/artifacts/myorg-virt-1.0.0.tar.gz" {
+		t.Fatalf("download = %d -> %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	for _, p := range []string{"api/v3/collections/myorg/nope/", "notamember/x.tar.gz"} {
+		if code, _ := npmDo(t, http.MethodGet, base+p, ""); code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", p, code)
+		}
 	}
 }

@@ -37,7 +37,8 @@ already-running stack.
   across two members; npm packument merge over two locals via a stock `node:22`
   client (merged versions, install through the member redirect); gems compact
   index merge over two locals via stock `ruby:3.3` bundler (member order wins,
-  downloads 302 to the owning member).
+  downloads 302 to the owning member); ansible over two locals via stock
+  `ansible-galaxy` (install through the virtual, download 302 to the owner).
 - **Mirrorlist** — an rpm remote with a `mirrorlist` of extra upstream mirrors
   (pool = `base_url` + `mirrorlist`): round-robin distribution across both mirrors
   (constant-body `mockupstreama` / `mockupstreamb`), failover past a dead primary,

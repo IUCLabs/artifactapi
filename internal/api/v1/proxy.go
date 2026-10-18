@@ -17,6 +17,7 @@ import (
 	v2 "github.com/IUCLabs/artifactapi/internal/api/v2"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/provider"
+	"github.com/IUCLabs/artifactapi/internal/provider/ansible"
 	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/internal/virtual"
@@ -270,6 +271,17 @@ func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.HasPrefix(path, gemsIndexPrefix) || strings.HasPrefix(path, gemsYankedPrefix) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+	}
+
+	if remote.PackageType == models.PackageAnsible {
+		if ap := ansible.ParseAPIPath(path); ap.Kind != ansible.APIUnknown {
+			h.serveLocalAnsible(w, r, remote, ap)
+			return
+		}
+		if !strings.HasPrefix(path, ansible.ArtifactPrefix) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}

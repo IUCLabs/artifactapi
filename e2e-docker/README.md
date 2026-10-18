@@ -31,7 +31,8 @@ already-running stack.
   `node:22` client: `npm publish` unscoped + scoped, `npm install` + `require()`,
   second version, republish rejected), gems (stock `ruby:3.3`: `gem push`,
   `gem install`, `bundle install` + `require`, republish rejected, `gem yank`,
-  yanked re-push rejected).
+  yanked re-push rejected), ansible (stock `ansible-galaxy`: `collection build`,
+  `publish`, republish rejected, `install` + module run).
 - **Virtual repositories** — pypi simple-index merge and helm `index.yaml` merge
   across two members; npm packument merge over two locals via a stock `node:22`
   client (merged versions, install through the member redirect); gems compact

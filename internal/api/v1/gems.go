@@ -64,6 +64,10 @@ func (h *ProxyHandler) lockGemVersion(w http.ResponseWriter, r *http.Request, re
 }
 
 func (h *ProxyHandler) handleLocalPost(w http.ResponseWriter, r *http.Request) {
+	if isAnsiblePublish(chi.URLParam(r, "*")) {
+		h.handleAnsiblePublish(w, r)
+		return
+	}
 	if chi.URLParam(r, "*") != "api/v1/gems" {
 		gemsText(w, http.StatusNotFound, "not found")
 		return

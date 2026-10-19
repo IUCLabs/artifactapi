@@ -33,7 +33,7 @@ Each type's paths, Terraform examples and local/virtual behaviour are in `docs/<
 - `docker`: [remote](docs/docker/remote.md), [local](docs/docker/local.md)
 - `generic`: [remote](docs/generic/remote.md)
 - `gems`: [remote](docs/gems/remote.md), [local](docs/gems/local.md), [virtual](docs/gems/virtual.md)
-- `goproxy`: [remote](docs/goproxy/remote.md), [local](docs/goproxy/local.md)
+- `goproxy`: [remote](docs/goproxy/remote.md), [local](docs/goproxy/local.md), [virtual](docs/goproxy/virtual.md)
 - `helm`: [remote](docs/helm/remote.md), [local](docs/helm/local.md), [virtual](docs/helm/virtual.md)
 - `npm`: [remote](docs/npm/remote.md), [local](docs/npm/local.md), [virtual](docs/npm/virtual.md)
 - `nuget`: [remote](docs/nuget/remote.md)

@@ -141,7 +141,8 @@ func versions(ctx context.Context, files provider.FileStore, repoName, escMod st
 	return versions, infos, nil
 }
 
-func latest(vs []string) string {
+// Latest is the highest release in sorted vs, else the highest prerelease.
+func Latest(vs []string) string {
 	for i := len(vs) - 1; i >= 0; i-- {
 		if semver.Prerelease(vs[i]) == "" {
 			return vs[i]
@@ -205,7 +206,7 @@ func (p *Provider) GenerateLocalIndex(ctx context.Context, files provider.FileSt
 		if err != nil {
 			return nil, err
 		}
-		v := latest(vs)
+		v := Latest(vs)
 		if v == "" {
 			return nil, fmt.Errorf("no versions of %s", escMod)
 		}

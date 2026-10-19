@@ -43,6 +43,8 @@ type Engine struct {
 	AnsibleLocal func(ctx context.Context, repo, path string) ([]byte, error)
 	ansibleDoc   func(ctx context.Context, remote models.Remote, path string) ([]byte, error)
 
+	goMember func(ctx context.Context, name, path string) (*GoMember, error)
+
 	mergeTTL time.Duration
 
 	sf   singleflight.Group
@@ -74,6 +76,7 @@ func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 	e.npmMember = e.fetchNPMMember
 	e.gemsMember = e.fetchGemsMember
 	e.ansibleDoc = e.ansibleMemberDoc
+	e.goMember = e.fetchGoMember
 	return e
 }
 
@@ -428,6 +431,9 @@ func (e *Engine) fetchMemberPath(ctx context.Context, remote models.Remote, path
 	if serve != nil {
 		rec := httptest.NewRecorder()
 		if serve(rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/"+path, nil)) {
+			if rec.Code == http.StatusNotFound || rec.Code == http.StatusGone {
+				return nil, fmt.Errorf("%s/%s: %w", remote.Name, path, ErrNotFound)
+			}
 			if rec.Code != http.StatusOK {
 				return nil, fmt.Errorf("%s/%s: status %d", remote.Name, path, rec.Code)
 			}

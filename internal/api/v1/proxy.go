@@ -215,6 +215,10 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 		h.serveVirtualAnsible(w, r, *virt, path, proxyBaseURL)
 		return
 	}
+	if virt.PackageType == models.PackageGoProxy {
+		h.serveVirtualGoProxy(w, r, *virt, path)
+		return
+	}
 
 	loc, ok, err := h.virtualEngine.MemberRedirect(r.Context(), *virt, path, r.URL.RawQuery, proxyBaseURL)
 	if err != nil {

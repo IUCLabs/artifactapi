@@ -40,7 +40,9 @@ already-running stack.
   downloads 302 to the owning member); ansible over two locals via stock
   `ansible-galaxy` (install through the virtual, download 302 to the owner);
   goproxy over two locals via a stock `golang:1.25` client (merged versions,
-  member order wins, version files 302 to the owning member).
+  member order wins, version files 302 to the owning member); puppet over two
+  locals via real `puppet module install` (dependency resolved across members)
+  and `r10k`, downloads 302 to the owning member.
 - **Mirrorlist** — an rpm remote with a `mirrorlist` of extra upstream mirrors
   (pool = `base_url` + `mirrorlist`): round-robin distribution across both mirrors
   (constant-body `mockupstreama` / `mockupstreamb`), failover past a dead primary,

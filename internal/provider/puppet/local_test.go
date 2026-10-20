@@ -291,11 +291,11 @@ func TestFilesFallThrough(t *testing.T) {
 func TestCompareSemver(t *testing.T) {
 	ordered := []string{"0.1.0", "0.2.0", "0.10.0", "1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0", "1.0.1+build"}
 	for i := 1; i < len(ordered); i++ {
-		if compareSemver(ordered[i-1], ordered[i]) >= 0 || compareSemver(ordered[i], ordered[i-1]) <= 0 {
+		if CompareSemver(ordered[i-1], ordered[i]) >= 0 || CompareSemver(ordered[i], ordered[i-1]) <= 0 {
 			t.Errorf("%s should sort before %s", ordered[i-1], ordered[i])
 		}
 	}
-	if compareSemver("1.0.0+a", "1.0.0+b") != 0 {
+	if CompareSemver("1.0.0+a", "1.0.0+b") != 0 {
 		t.Error("build metadata must not affect precedence")
 	}
 }

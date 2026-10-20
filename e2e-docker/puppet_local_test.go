@@ -18,12 +18,17 @@ const puppetHelloMetadata = `{"name":"myorg-hello","version":"0.1.0","author":"m
 
 func puppetModuleTarball(t *testing.T) []byte {
 	t.Helper()
+	return puppetTarball(t, "myorg-hello-0.1.0", puppetHelloMetadata)
+}
+
+func puppetTarball(t *testing.T, dir, metadata string) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	zw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(zw)
 	for name, body := range map[string]string{
-		"myorg-hello-0.1.0/metadata.json":     puppetHelloMetadata,
-		"myorg-hello-0.1.0/manifests/init.pp": "class hello {}\n",
+		dir + "/metadata.json":     metadata,
+		dir + "/manifests/init.pp": "class stub {}\n",
 	} {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), ModTime: time.Now()}); err != nil {
 			t.Fatal(err)

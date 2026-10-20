@@ -45,6 +45,8 @@ type Engine struct {
 
 	goMember func(ctx context.Context, name, path string) (*GoMember, error)
 
+	puppetDoc func(ctx context.Context, remote models.Remote, path string) ([]byte, error)
+
 	mergeTTL time.Duration
 
 	sf   singleflight.Group
@@ -77,6 +79,7 @@ func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 	e.gemsMember = e.fetchGemsMember
 	e.ansibleDoc = e.ansibleMemberDoc
 	e.goMember = e.fetchGoMember
+	e.puppetDoc = e.fetchMemberPath
 	return e
 }
 
@@ -419,8 +422,9 @@ func (e *Engine) fetchMemberPath(ctx context.Context, remote models.Remote, path
 		if !ok {
 			return nil, fmt.Errorf("provider %q does not serve a local index", remote.PackageType)
 		}
+		reqPath, _, _ := strings.Cut(path, "?")
 		serve = func(w http.ResponseWriter, r *http.Request) bool {
-			return indexer.ServeLocalIndex(w, r, e.db, remote.Name, path)
+			return indexer.ServeLocalIndex(w, r, e.db, remote.Name, reqPath)
 		}
 	} else if rs, ok := prov.(provider.RemoteServer); ok {
 		serve = func(w http.ResponseWriter, r *http.Request) bool {

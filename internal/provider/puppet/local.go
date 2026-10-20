@@ -29,7 +29,7 @@ const filesPrefix = "v3/files/"
 // tarball basename that `puppet module build` produces.
 var releaseRe = regexp.MustCompile(`^([a-z0-9]+)-([a-z][a-z0-9_]*)-(\d+\.\d+\.\d+(?:-[0-9a-z.-]+)?(?:\+[0-9a-z.-]+)?)$`)
 
-func parseRelease(s string) (slug, version string, ok bool) {
+func ParseRelease(s string) (slug, version string, ok bool) {
 	m := releaseRe.FindStringSubmatch(strings.ToLower(s))
 	if m == nil {
 		return "", "", false
@@ -37,7 +37,12 @@ func parseRelease(s string) (slug, version string, ok bool) {
 	return m[1] + "-" + m[2], m[3], true
 }
 
-func normalizeSlug(s string) string {
+var slugRe = regexp.MustCompile(`^[a-z0-9]+-[a-z][a-z0-9_]*$`)
+
+// ValidSlug reports whether s is a normalized <owner>-<name> module slug.
+func ValidSlug(s string) bool { return slugRe.MatchString(s) }
+
+func NormalizeSlug(s string) string {
 	return strings.ToLower(strings.ReplaceAll(s, "/", "-"))
 }
 
@@ -45,7 +50,7 @@ func normalizeSlug(s string) string {
 // resolve straight to the stored file.
 func (p *Provider) ValidateUpload(filePath string) (storagePath, contentType string, err error) {
 	filename := strings.ToLower(path.Base(path.Clean("/" + filePath)))
-	if _, _, ok := parseRelease(strings.TrimSuffix(filename, ".tar.gz")); !ok || !strings.HasSuffix(filename, ".tar.gz") {
+	if _, _, ok := ParseRelease(strings.TrimSuffix(filename, ".tar.gz")); !ok || !strings.HasSuffix(filename, ".tar.gz") {
 		return "", "", fmt.Errorf("file must be named <owner>-<module>-<version>.tar.gz")
 	}
 	return filesPrefix + filename, "application/gzip", nil
@@ -82,7 +87,7 @@ func (p *Provider) AfterUpload(ctx context.Context, repoName, storagePath, conte
 		slog.Error("puppet metadata: read failed", "repo", repoName, "path", storagePath, "error", err)
 		return
 	}
-	slug, version, _ := parseRelease(strings.TrimSuffix(path.Base(storagePath), ".tar.gz"))
+	slug, version, _ := ParseRelease(strings.TrimSuffix(path.Base(storagePath), ".tar.gz"))
 	if meta.Slug != slug || meta.Version != version {
 		slog.Error("puppet metadata: metadata.json does not match filename", "repo", repoName, "path", storagePath, "name", meta.Slug, "version", meta.Version)
 		return
@@ -158,7 +163,7 @@ func parseModule(r io.Reader) (*provider.PuppetMetadata, error) {
 		if md.Name == "" || md.Version == "" {
 			return nil, errors.New("metadata.json missing name or version")
 		}
-		return &provider.PuppetMetadata{Slug: normalizeSlug(md.Name), Version: md.Version, MetadataJSON: string(body)}, nil
+		return &provider.PuppetMetadata{Slug: NormalizeSlug(md.Name), Version: md.Version, MetadataJSON: string(body)}, nil
 	}
 }
 
@@ -181,9 +186,9 @@ func (p *Provider) ServeLocalIndex(w http.ResponseWriter, r *http.Request, files
 	case clean == "v3/releases":
 		serveReleaseList(w, r, list)
 	case strings.HasPrefix(clean, "v3/releases/"):
-		slug, version, ok := parseRelease(strings.TrimPrefix(clean, "v3/releases/"))
+		slug, version, ok := ParseRelease(strings.TrimPrefix(clean, "v3/releases/"))
 		if !ok {
-			notFound(w)
+			NotFound(w)
 			return true
 		}
 		metas, err := list(slug)
@@ -193,23 +198,23 @@ func (p *Provider) ServeLocalIndex(w http.ResponseWriter, r *http.Request, files
 		}
 		for _, m := range metas {
 			if m.Version == version {
-				writeJSON(w, releaseObject(m))
+				WriteJSON(w, releaseObject(m))
 				return true
 			}
 		}
-		notFound(w)
+		NotFound(w)
 	case strings.HasPrefix(clean, "v3/modules/"):
-		slug := normalizeSlug(strings.TrimPrefix(clean, "v3/modules/"))
+		slug := NormalizeSlug(strings.TrimPrefix(clean, "v3/modules/"))
 		metas, err := list(slug)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return true
 		}
 		if len(metas) == 0 {
-			notFound(w)
+			NotFound(w)
 			return true
 		}
-		writeJSON(w, moduleObject(metas))
+		WriteJSON(w, moduleObject(metas))
 	default:
 		return false
 	}
@@ -222,7 +227,22 @@ func (p *Provider) GenerateLocalIndex(ctx context.Context, files provider.FileSt
 
 func serveReleaseList(w http.ResponseWriter, r *http.Request, list func(string) ([]provider.PuppetMetadata, error)) {
 	q := r.URL.Query()
-	slug := normalizeSlug(q.Get("module"))
+	slug := NormalizeSlug(q.Get("module"))
+	metas, err := list(slug)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	releases := make([]any, len(metas))
+	for i, m := range metas {
+		releases[i] = releaseObject(m)
+	}
+	WriteJSON(w, ReleasesPage(slug, releases, q))
+}
+
+// ReleasesPage is one limit/offset page of a /v3/releases listing, with
+// pagination links relative to the Forge root.
+func ReleasesPage(slug string, releases []any, q url.Values) map[string]any {
 	limit, err := strconv.Atoi(q.Get("limit"))
 	if err != nil || limit <= 0 {
 		limit = 20
@@ -232,20 +252,10 @@ func serveReleaseList(w http.ResponseWriter, r *http.Request, list func(string) 
 	if err != nil || offset < 0 {
 		offset = 0
 	}
-
-	metas, err := list(slug)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	offset = min(offset, len(metas))
-	results := []map[string]any{}
-	for _, m := range metas[offset : offset+min(limit, len(metas)-offset)] {
-		results = append(results, releaseObject(m))
-	}
+	offset = min(offset, len(releases))
 
 	page := func(off int) any {
-		if off < 0 || off >= len(metas) && off != 0 {
+		if off < 0 || off >= len(releases) && off != 0 {
 			return nil
 		}
 		v := url.Values{"limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(off)}}
@@ -258,7 +268,7 @@ func serveReleaseList(w http.ResponseWriter, r *http.Request, list func(string) 
 	if offset > 0 {
 		previous = page(max(offset-limit, 0))
 	}
-	writeJSON(w, map[string]any{
+	return map[string]any{
 		"pagination": map[string]any{
 			"limit":    limit,
 			"offset":   offset,
@@ -266,10 +276,10 @@ func serveReleaseList(w http.ResponseWriter, r *http.Request, list func(string) 
 			"previous": previous,
 			"current":  page(offset),
 			"next":     page(offset + limit),
-			"total":    len(metas),
+			"total":    len(releases),
 		},
-		"results": results,
-	})
+		"results": releases[offset : offset+min(limit, len(releases)-offset)],
+	}
 }
 
 func owner(slug string) map[string]any {
@@ -329,7 +339,7 @@ func moduleObject(metas []provider.PuppetMetadata) map[string]any {
 	return obj
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
+func WriteJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
@@ -337,7 +347,7 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = enc.Encode(v)
 }
 
-func notFound(w http.ResponseWriter) {
+func NotFound(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = io.WriteString(w, `{"message":"404 Not Found","errors":["The requested resource could not be found"]}`)
@@ -349,11 +359,11 @@ func sortReleases(metas []provider.PuppetMetadata) {
 		if c := strings.Compare(a.Slug, b.Slug); c != 0 {
 			return c
 		}
-		return compareSemver(b.Version, a.Version)
+		return CompareSemver(b.Version, a.Version)
 	})
 }
 
-func compareSemver(a, b string) int {
+func CompareSemver(a, b string) int {
 	a, _, _ = strings.Cut(a, "+")
 	b, _, _ = strings.Cut(b, "+")
 	aCore, aPre, aHasPre := strings.Cut(a, "-")

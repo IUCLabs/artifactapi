@@ -76,3 +76,28 @@ func TestAuthHeaders(t *testing.T) {
 		t.Error("no credentials, no header")
 	}
 }
+
+func TestForwardedQuery(t *testing.T) {
+	p := &Provider{}
+	if p.ForwardedQuery("v3/files/a-b-1.0.0.tar.gz") != nil || p.ForwardedQuery("v3/modules/a-b") != nil {
+		t.Fatal("only release listings forward a query")
+	}
+	f := p.ForwardedQuery("v3/releases")
+	for name, c := range map[string]struct {
+		in, want string
+		ok       bool
+	}{
+		"module": {"Puppetlabs/stdlib", "puppetlabs-stdlib", true},
+		"limit":  {"500", "100", true},
+		"offset": {"40", "40", true},
+	} {
+		if got, ok := f[name](c.in); got != c.want || ok != c.ok {
+			t.Errorf("%s(%q) = %q %v, want %q %v", name, c.in, got, ok, c.want, c.ok)
+		}
+	}
+	for name, bad := range map[string]string{"module": "../x", "limit": "0", "offset": "-1"} {
+		if _, ok := f[name](bad); ok {
+			t.Errorf("%s(%q) accepted", name, bad)
+		}
+	}
+}

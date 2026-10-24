@@ -98,4 +98,4 @@ Each type's page lists its auto-detected mutable and immutable paths:
 [docker](../docker/remote.md), [generic](../generic/remote.md), [gems](../gems/remote.md), [goproxy](../goproxy/remote.md),
 [helm](../helm/remote.md), [npm](../npm/remote.md), [nuget](../nuget/remote.md),
 [puppet](../puppet/remote.md), [pypi](../pypi/remote.md), [rpm](../rpm/remote.md),
-[rpm github](../rpm/remote-github.md), [terraform](../terraform/remote.md).
+[rpm github](../rpm/remote-github.md), [terraform](../terraform/remote.md), [vcs](../vcs/remote.md).

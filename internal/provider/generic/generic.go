@@ -71,7 +71,7 @@ func (p *Provider) AuthHeaders(ctx context.Context, remote models.Remote) (http.
 		h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(remote.Username+":"+remote.Password)))
 		return h, nil
 	}
-	if isGitHubHost(remote.BaseURL) {
+	if IsGitHubHost(remote.BaseURL) {
 		if c := githubauth.Server(); c != nil {
 			tok, err := c.Token(ctx)
 			if err != nil {
@@ -85,11 +85,11 @@ func (p *Provider) AuthHeaders(ctx context.Context, remote models.Remote) (http.
 	return h, nil
 }
 
-// isGitHubHost reports whether rawURL targets a GitHub API/download host that
+// IsGitHubHost reports whether rawURL targets a GitHub API/download host that
 // accepts the server credential. objects.githubusercontent.com is deliberately
 // excluded: release-asset downloads 302-redirect there with a pre-signed URL
 // that must not carry an Authorization header.
-func isGitHubHost(rawURL string) bool {
+func IsGitHubHost(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false

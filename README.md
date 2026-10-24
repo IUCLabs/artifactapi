@@ -41,6 +41,7 @@ Each type's paths, Terraform examples and local/virtual behaviour are in `docs/<
 - `pypi`: [remote](docs/pypi/remote.md)
 - `rpm`: [remote](docs/rpm/remote.md), [remote-github](docs/rpm/remote-github.md)
 - `terraform`: [remote](docs/terraform/remote.md), [local](docs/terraform/local.md)
+- `vcs`: [remote](docs/vcs/remote.md)
 
 ### GitHub authentication
 

@@ -26,7 +26,7 @@ Classification precedence, TTLs and eviction for every remote: [docs/common/cach
 
 Each type's paths, Terraform examples and local/virtual behaviour are in `docs/<type>/`:
 
-- `alpine`: [remote](docs/alpine/remote.md), [remote-github](docs/alpine/remote-github.md)
+- `alpine`: [remote](docs/alpine/remote.md), [remote-github](docs/alpine/remote-github.md), [virtual](docs/alpine/virtual.md)
 - `ansible`: [remote](docs/ansible/remote.md), [local](docs/ansible/local.md), [virtual](docs/ansible/virtual.md)
 - `cargo`: [remote](docs/cargo/remote.md)
 - `deb`: [remote](docs/deb/remote.md), [remote-github](docs/deb/remote-github.md), [virtual](docs/deb/virtual.md)

@@ -28,6 +28,7 @@ type Engine struct {
 	getRemote   func(context.Context, string) (*models.Remote, error)
 	rpmMember   func(context.Context, string) (*RPMMember, error)
 	debMember   func(ctx context.Context, name, base string) (*DebMember, error)
+	apkMember   func(ctx context.Context, name, dir string) (*AlpineMember, error)
 	npmMember   func(ctx context.Context, name, pkg string) (*NPMMember, error)
 
 	// NPMLocal returns a local npm repo's packument with tarball paths relative
@@ -76,13 +77,15 @@ type repoGen struct {
 
 const rpmMergeTTL = 60 * time.Second
 
-// maxDebSuites bounds the client-chosen suites cached per deb virtual.
+// maxDebSuites bounds the client-chosen deb suites or alpine directories
+// cached per virtual.
 const maxDebSuites = 32
 
 func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 	e := &Engine{db: db, proxyEngine: proxyEngine, getRemote: db.GetRemote, mergeTTL: rpmMergeTTL}
 	e.rpmMember = e.fetchRPMMember
 	e.debMember = e.fetchDebMember
+	e.apkMember = e.fetchAlpineMember
 	e.npmMember = e.fetchNPMMember
 	e.gemsMember = e.fetchGemsMember
 	e.ansibleDoc = e.ansibleMemberDoc
@@ -97,6 +100,8 @@ func (e *Engine) Fetch(ctx context.Context, virt models.Virtual, path string, pr
 		return e.fetchRPM(ctx, virt, path)
 	case models.PackageDeb:
 		return e.fetchDeb(ctx, virt, path)
+	case models.PackageAlpine:
+		return e.fetchAlpine(ctx, virt, path)
 	}
 
 	merger, err := GetMerger(virt.PackageType)
@@ -216,8 +221,8 @@ var (
 )
 
 // MemberRedirect maps an rpm, deb, npm or ansible virtual package path
-// (<member>/<href>, as written by MergeRPM/MergeDeb/MergeNPM/AnsibleVersion)
-// to the owning member's route. ok is false for any other path; ErrBadPath
+// (<member>/<href>, as written by MergeRPM/MergeDeb/MergeNPM/AnsibleVersion),
+// or an alpine <dir>/<name>-<version>.apk, to the owning member's route. ok is false for any other path; ErrBadPath
 // means the path is absolute or escapes the member.
 func (e *Engine) MemberRedirect(ctx context.Context, virt models.Virtual, path, rawQuery, proxyBaseURL string) (string, bool, error) {
 	switch virt.PackageType {
@@ -231,6 +236,8 @@ func (e *Engine) MemberRedirect(ctx context.Context, virt models.Virtual, path, 
 		if strings.HasPrefix(path, "dists/") {
 			return "", false, nil
 		}
+	case models.PackageAlpine:
+		return e.alpineRedirect(ctx, virt, path, rawQuery, proxyBaseURL)
 	case models.PackageNPM, models.PackageAnsible:
 	default:
 		return "", false, nil
@@ -443,6 +450,78 @@ func (e *Engine) fetchDebMember(ctx context.Context, name, base string) (*DebMem
 		}
 	}
 	return m, nil
+}
+
+func (e *Engine) mergedAlpine(ctx context.Context, virt models.Virtual, dir string) (mergedRepo, error) {
+	repo, err := e.merged(ctx, "alpine\x00"+virt.Name+"\x00"+dir, func(ctx context.Context) (mergedRepo, error) {
+		members, err := fetchMembers(virt, func(name string) (*AlpineMember, error) { return e.apkMember(ctx, name, dir) })
+		if err != nil {
+			return nil, err
+		}
+		return MergeAlpine(members), nil
+	})
+	if err == nil {
+		e.evictLRU("alpine\x00"+virt.Name+"\x00", maxDebSuites)
+	}
+	return repo, err
+}
+
+func (e *Engine) fetchAlpine(ctx context.Context, virt models.Virtual, reqPath string) ([]byte, string, error) {
+	dir, file, ok := alpinePath(strings.TrimPrefix(path.Clean("/"+reqPath), "/"))
+	if !ok {
+		return nil, "", ErrNotFound
+	}
+	repo, err := e.mergedAlpine(ctx, virt, dir)
+	if err != nil {
+		return nil, "", err
+	}
+	if file != "APKINDEX.tar.gz" {
+		return nil, "", ErrNotFound
+	}
+	return repo.index(), "application/gzip", nil
+}
+
+// alpineRedirect finds the member whose index lists the requested .apk; apk
+// builds the download path itself, so the index cannot carry a member prefix.
+// A failed merge returns ok=false so Fetch re-merges and fails with 502.
+func (e *Engine) alpineRedirect(ctx context.Context, virt models.Virtual, reqPath, rawQuery, proxyBaseURL string) (string, bool, error) {
+	dir, file, ok := alpinePath(strings.TrimPrefix(path.Clean("/"+reqPath), "/"))
+	if !ok || file == "APKINDEX.tar.gz" {
+		return "", false, nil
+	}
+	owner, ok := e.cachedFile("alpine\x00"+virt.Name+"\x00"+dir, file)
+	if !ok {
+		repo, err := e.mergedAlpine(ctx, virt, dir)
+		if err != nil {
+			return "", false, nil
+		}
+		if owner, ok = repo.files()[file]; !ok {
+			return "", false, nil
+		}
+	}
+	return e.memberLocation(ctx, string(owner), dir+file, rawQuery, proxyBaseURL)
+}
+
+// fetchAlpineMember reads a member's APKINDEX under dir; a member without that
+// directory contributes nothing.
+func (e *Engine) fetchAlpineMember(ctx context.Context, name, dir string) (*AlpineMember, error) {
+	remote, err := e.getRemote(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("remote %q: %w", name, err)
+	}
+	raw, err := e.fetchMemberPath(ctx, *remote, dir+"APKINDEX.tar.gz")
+	var pe *proxy.ProxyError
+	if errors.Is(err, ErrNotFound) || errors.As(err, &pe) && pe.Status == http.StatusNotFound {
+		return &AlpineMember{RemoteName: name}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	idx, err := apkIndexText(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s/%sAPKINDEX.tar.gz: %w", name, dir, err)
+	}
+	return &AlpineMember{RemoteName: name, Index: idx}, nil
 }
 
 // evictLRU drops the least recently used merges under prefix beyond keep.

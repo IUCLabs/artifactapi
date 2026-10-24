@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -157,6 +158,97 @@ func TestMemberRedirect(t *testing.T) {
 	}
 }
 
+func debEngine(members map[string]*DebMember) *Engine {
+	e := fakeEngine(nil)
+	e.debMember = func(_ context.Context, name, base string) (*DebMember, error) {
+		if m := members[name]; m != nil && base == "" {
+			return m, nil
+		}
+		return nil, errors.New("upstream down")
+	}
+	return e
+}
+
+func debVirt(members ...string) models.Virtual {
+	return models.Virtual{Name: "v", PackageType: models.PackageDeb, Members: members}
+}
+
+func TestFetchDebFailsClosed(t *testing.T) {
+	a := flatDebMember("a", "", debStanza("foo", "1", "amd64", "pool/foo.deb"))
+	e := debEngine(map[string]*DebMember{"a": &a})
+	for _, p := range []string{"Release", "./Packages.gz", "dists/trixie/Release"} {
+		if _, _, err := e.Fetch(context.Background(), debVirt("a", "b"), p, ""); err == nil || errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: want upstream error with a member down, got %v", p, err)
+		}
+	}
+	for _, p := range []string{"InRelease", "./Release.gpg", "Packages.xz"} {
+		if _, _, err := e.Fetch(context.Background(), debVirt("a"), p, ""); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s: want not found, got %v", p, err)
+		}
+	}
+}
+
+func TestFetchDebRemergesAfterTTL(t *testing.T) {
+	a := flatDebMember("a", "", debStanza("foo", "1", "amd64", "pool/foo_1.deb"))
+	e := debEngine(map[string]*DebMember{"a": &a})
+	virt := debVirt("a")
+
+	rel, _, err := e.Fetch(context.Background(), virt, "./Release", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Packages[""] = []byte(debStanza("foo", "2", "amd64", "pool/foo_2.deb"))
+	e.mergeTTL = 0
+	newRel, _, err := e.Fetch(context.Background(), virt, "Release", "")
+	if err != nil || string(newRel) == string(rel) {
+		t.Fatalf("Release should reflect the member change (err %v)", err)
+	}
+	pk, ct, err := e.Fetch(context.Background(), virt, "./Packages", "")
+	if err != nil || ct != "text/plain" || !strings.Contains(string(pk), "Version: 2") {
+		t.Fatalf("Packages should be the current merge (ct %q, err %v):\n%s", ct, err, pk)
+	}
+}
+
+func TestFetchDebMergeIsSharedPerSuite(t *testing.T) {
+	var calls atomic.Int32
+	e := fakeEngine(nil)
+	e.mergeTTL = time.Minute
+	e.debMember = func(_ context.Context, name, base string) (*DebMember, error) {
+		calls.Add(1)
+		m := flatDebMember(name, "", debStanza("foo", "1", "amd64", "pool/foo.deb"))
+		return &m, nil
+	}
+	for _, p := range []string{"Release", "Packages", "Packages.gz", "./Release", "dists/a/Release", "dists/b/Release"} {
+		if _, _, err := e.Fetch(context.Background(), debVirt("a"), p, ""); err != nil && !errors.Is(err, ErrNotFound) {
+			t.Fatal(err)
+		}
+	}
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("member fetched %d times, want once per Release dir (3)", n)
+	}
+}
+
+func TestMemberRedirectDeb(t *testing.T) {
+	e := fakeEngine(nil)
+	virt := debVirt("gh", "loc")
+	for _, tc := range []struct {
+		path, want string
+		ok         bool
+		err        error
+	}{
+		{path: "gh/o/r/releases/download/v1/foo_1.0_amd64.deb", ok: true, want: "http://h/api/v1/remote/gh/o/r/releases/download/v1/foo_1.0_amd64.deb"},
+		{path: "./gh/pool/a+b.deb", ok: true, want: "http://h/api/v1/remote/gh/pool/a+b.deb"},
+		{path: "gh/../loc/x.deb", err: ErrBadPath},
+		{path: "dists/trixie/Release"},
+		{path: "Packages"},
+	} {
+		got, ok, err := e.MemberRedirect(context.Background(), virt, tc.path, "", "http://h/")
+		if got != tc.want || ok != tc.ok || !errors.Is(err, tc.err) {
+			t.Errorf("%s: got (%q, %v, %v), want (%q, %v, %v)", tc.path, got, ok, err, tc.want, tc.ok, tc.err)
+		}
+	}
+}
+
 type fakeRepo struct {
 	idx string
 	fs  map[string][]byte
@@ -204,5 +296,74 @@ func TestMergedReusesWithinTTLAndIsolatesKeys(t *testing.T) {
 	}
 	if _, ok := e.cachedFile("c", "a1.gz"); ok {
 		t.Error("unknown key served a file")
+	}
+}
+
+func suiteDebMember(name, version string) *DebMember {
+	return &DebMember{RemoteName: name, Release: []byte("Suite: s\nSHA256:\n x 1 main/binary-amd64/Packages.gz\n"),
+		Packages: map[string][]byte{"main/binary-amd64/": []byte(debStanza("foo", version, "amd64", "pool/foo_"+version+".deb"))}}
+}
+
+func TestFetchDebByHashSurvivesRemerge(t *testing.T) {
+	version := "1"
+	e := fakeEngine(nil)
+	e.debMember = func(_ context.Context, name, _ string) (*DebMember, error) { return suiteDebMember(name, version), nil }
+	virt := debVirt("a")
+	fetch := func(p string) []byte {
+		body, _, err := e.Fetch(context.Background(), virt, p, "")
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		return body
+	}
+	byHash := func(rel []byte) string {
+		m := regexp.MustCompile(`(?m)^SHA256:\n(?: .*\n)*? ([0-9a-f]{64}) \d+ main/binary-amd64/Packages.gz$`).FindSubmatch(rel)
+		if m == nil {
+			t.Fatalf("no Packages.gz SHA256 in Release:\n%s", rel)
+		}
+		return "dists/trixie/main/binary-amd64/by-hash/SHA256/" + string(m[1])
+	}
+
+	oldRel := fetch("dists/trixie/Release")
+	version, e.mergeTTL = "2", 0
+	if newRel := fetch("dists/trixie/Release"); string(newRel) == string(oldRel) {
+		t.Fatal("Release should reflect the member change")
+	}
+	if got := string(gunzip(t, fetch(byHash(oldRel)))); !strings.Contains(got, "Version: 1\n") {
+		t.Fatalf("by-hash from the previous Release served the wrong index:\n%s", got)
+	}
+	if got := string(fetch("dists/trixie/main/binary-amd64/Packages")); !strings.Contains(got, "Version: 2\n") {
+		t.Fatalf("fixed-name Packages should be the current merge:\n%s", got)
+	}
+}
+
+func TestFetchDebBoundsSuitesPerVirtual(t *testing.T) {
+	e := fakeEngine(nil)
+	e.mergeTTL = time.Minute
+	e.debMember = func(_ context.Context, name, _ string) (*DebMember, error) { return suiteDebMember(name, "1"), nil }
+	other := models.Virtual{Name: "other", PackageType: models.PackageDeb, Members: []string{"a"}}
+	if _, _, err := e.Fetch(context.Background(), other, "dists/keep/Release", ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxDebSuites + 5 {
+		if _, _, err := e.Fetch(context.Background(), debVirt("a"), fmt.Sprintf("dists/s%d/Release", i), ""); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(time.Microsecond)
+	}
+	n := 0
+	for k := range e.gens {
+		if strings.HasPrefix(k, "deb\x00v\x00") {
+			n++
+		}
+	}
+	if n != maxDebSuites {
+		t.Fatalf("virtual v caches %d suites, want %d", n, maxDebSuites)
+	}
+	if e.gens["deb\x00v\x00dists/s0/"] != nil || e.gens["deb\x00v\x00dists/s4/"] != nil {
+		t.Fatal("least recently used suites should be evicted first")
+	}
+	if e.gens["deb\x00other\x00dists/keep/"] == nil {
+		t.Fatal("another virtual's suites must not be evicted")
 	}
 }

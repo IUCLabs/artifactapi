@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ type Engine struct {
 	proxyEngine *proxy.Engine
 	getRemote   func(context.Context, string) (*models.Remote, error)
 	rpmMember   func(context.Context, string) (*RPMMember, error)
+	debMember   func(ctx context.Context, name, base string) (*DebMember, error)
 	npmMember   func(ctx context.Context, name, pkg string) (*NPMMember, error)
 
 	// NPMLocal returns a local npm repo's packument with tarball paths relative
@@ -62,19 +64,25 @@ type mergedRepo interface {
 
 func (r *RPMRepo) index() []byte            { return r.Repomd }
 func (r *RPMRepo) files() map[string][]byte { return r.Files }
+func (r *DebRepo) index() []byte            { return r.Release }
+func (r *DebRepo) files() map[string][]byte { return r.Files }
 
 // repoGen holds a virtual's current merge plus the previous one, so a client
 // holding the previous index can still fetch the files it references.
 type repoGen struct {
 	cur, prev mergedRepo
-	at        time.Time
+	at, used  time.Time
 }
 
 const rpmMergeTTL = 60 * time.Second
 
+// maxDebSuites bounds the client-chosen suites cached per deb virtual.
+const maxDebSuites = 32
+
 func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 	e := &Engine{db: db, proxyEngine: proxyEngine, getRemote: db.GetRemote, mergeTTL: rpmMergeTTL}
 	e.rpmMember = e.fetchRPMMember
+	e.debMember = e.fetchDebMember
 	e.npmMember = e.fetchNPMMember
 	e.gemsMember = e.fetchGemsMember
 	e.ansibleDoc = e.ansibleMemberDoc
@@ -84,8 +92,11 @@ func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 }
 
 func (e *Engine) Fetch(ctx context.Context, virt models.Virtual, path string, proxyBaseURL string) ([]byte, string, error) {
-	if virt.PackageType == models.PackageRPM {
+	switch virt.PackageType {
+	case models.PackageRPM:
 		return e.fetchRPM(ctx, virt, path)
+	case models.PackageDeb:
+		return e.fetchDeb(ctx, virt, path)
 	}
 
 	merger, err := GetMerger(virt.PackageType)
@@ -204,14 +215,20 @@ var (
 	ErrBadPath  = errors.New("invalid path")
 )
 
-// MemberRedirect maps an rpm, npm or ansible virtual package path
-// (<member>/<href>, as written by MergeRPM/MergeNPM/AnsibleVersion) to the
-// owning member's route. ok is false for any other path; ErrBadPath means the
-// path is absolute or escapes the member.
+// MemberRedirect maps an rpm, deb, npm or ansible virtual package path
+// (<member>/<href>, as written by MergeRPM/MergeDeb/MergeNPM/AnsibleVersion)
+// to the owning member's route. ok is false for any other path; ErrBadPath
+// means the path is absolute or escapes the member.
 func (e *Engine) MemberRedirect(ctx context.Context, virt models.Virtual, path, rawQuery, proxyBaseURL string) (string, bool, error) {
 	switch virt.PackageType {
 	case models.PackageRPM:
 		if strings.HasPrefix(path, "repodata/") {
+			return "", false, nil
+		}
+	case models.PackageDeb:
+		// apt requests a flat repo's files under its "./" dist verbatim.
+		path = strings.TrimPrefix(path, "./")
+		if strings.HasPrefix(path, "dists/") {
 			return "", false, nil
 		}
 	case models.PackageNPM, models.PackageAnsible:
@@ -294,6 +311,7 @@ func (e *Engine) merged(ctx context.Context, key string, merge func(context.Cont
 	e.mu.Lock()
 	g := e.gens[key]
 	if g != nil && time.Since(g.at) < e.mergeTTL {
+		g.used = time.Now()
 		e.mu.Unlock()
 		return g.cur, nil
 	}
@@ -312,12 +330,12 @@ func (e *Engine) merged(ctx context.Context, key string, merge func(context.Cont
 		g := e.gens[key]
 		switch {
 		case g == nil:
-			e.gens[key] = &repoGen{cur: repo, at: time.Now()}
+			e.gens[key] = &repoGen{cur: repo, at: time.Now(), used: time.Now()}
 		case string(g.cur.index()) == string(repo.index()):
-			g.at = time.Now()
+			g.at, g.used = time.Now(), time.Now()
 			repo = g.cur
 		default:
-			g.prev, g.cur, g.at = g.cur, repo, time.Now()
+			g.prev, g.cur, g.at, g.used = g.cur, repo, time.Now(), time.Now()
 		}
 		return repo, nil
 	})
@@ -364,6 +382,85 @@ func fetchMembers[T any](virt models.Virtual, fetch func(name string) (*T, error
 	return members, nil
 }
 
+func (e *Engine) fetchDeb(ctx context.Context, virt models.Virtual, reqPath string) ([]byte, string, error) {
+	base, name, ok := debIndexPath(strings.TrimPrefix(path.Clean("/"+reqPath), "/"))
+	if !ok {
+		return nil, "", ErrNotFound
+	}
+	key := "deb\x00" + virt.Name + "\x00" + base
+	if name != "Release" {
+		if body, ok := e.cachedFile(key, name); ok {
+			return body, debContentType(name), nil
+		}
+	}
+
+	repo, err := e.merged(ctx, key, func(ctx context.Context) (mergedRepo, error) {
+		members, err := fetchMembers(virt, func(name string) (*DebMember, error) { return e.debMember(ctx, name, base) })
+		if err != nil {
+			return nil, err
+		}
+		return MergeDeb(members), nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	e.evictLRU("deb\x00"+virt.Name+"\x00", maxDebSuites)
+	if name == "Release" {
+		return repo.index(), "text/plain", nil
+	}
+	if body, ok := repo.files()[name]; ok {
+		return body, debContentType(name), nil
+	}
+	return nil, "", ErrNotFound
+}
+
+func debContentType(name string) string {
+	if strings.HasSuffix(name, ".gz") {
+		return "application/gzip"
+	}
+	return "text/plain"
+}
+
+// fetchDebMember reads a member's Release under base and each binary Packages
+// index it lists.
+func (e *Engine) fetchDebMember(ctx context.Context, name, base string) (*DebMember, error) {
+	remote, err := e.getRemote(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("remote %q: %w", name, err)
+	}
+	rel, err := e.fetchMemberPath(ctx, *remote, base+"Release")
+	if err != nil {
+		return nil, err
+	}
+	m := &DebMember{RemoteName: name, Release: rel, Packages: map[string][]byte{}}
+	for dir, file := range debIndexFiles(parseDebRelease(rel)) {
+		raw, err := e.fetchMemberPath(ctx, *remote, base+file)
+		if err != nil {
+			return nil, err
+		}
+		if m.Packages[dir], err = decompress(file, raw); err != nil {
+			return nil, fmt.Errorf("decompress %s: %w", file, err)
+		}
+	}
+	return m, nil
+}
+
+// evictLRU drops the least recently used merges under prefix beyond keep.
+func (e *Engine) evictLRU(prefix string, keep int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var keys []string
+	for k := range e.gens {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	slices.SortFunc(keys, func(a, b string) int { return e.gens[b].used.Compare(e.gens[a].used) })
+	for _, k := range keys[min(len(keys), keep):] {
+		delete(e.gens, k)
+	}
+}
+
 func (e *Engine) cachedFile(key, path string) ([]byte, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -376,6 +473,7 @@ func (e *Engine) cachedFile(key, path string) ([]byte, bool) {
 			continue
 		}
 		if body, ok := r.files()[path]; ok {
+			g.used = time.Now()
 			return body, true
 		}
 	}

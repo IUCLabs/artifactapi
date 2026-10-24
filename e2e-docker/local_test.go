@@ -150,31 +150,15 @@ func TestLocalAlpineIndex(t *testing.T) {
 	apk := testsupport.MinimalApk("e2e-testpkg", "1.0-r0", "x86_64")
 	uploadFile(t, "local-alpine", "x86_64/e2e-testpkg-1.0-r0.apk", apk, "application/vnd.android.package-archive")
 
-	// The index is generated asynchronously after upload; poll for it.
-	resp, body := getEventually(t, api("/api/v1/local/local-alpine/x86_64/APKINDEX.tar.gz"), 15*time.Second)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("APKINDEX: status %d: %s", resp.StatusCode, body)
-	}
-
-	zr, err := gzip.NewReader(bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("APKINDEX not gzip: %v", err)
-	}
-	tarBytes, _ := io.ReadAll(zr)
-	tr := tar.NewReader(bytes.NewReader(tarBytes))
+	// The index is served (empty) at once but lists the package only once the
+	// upload's metadata is parsed asynchronously; poll until it does.
 	var index string
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
+	for deadline := time.Now().Add(15 * time.Second); !strings.Contains(index, "P:e2e-testpkg") && time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+		resp, body := doRequest(t, http.MethodGet, api("/api/v1/local/local-alpine/x86_64/APKINDEX.tar.gz"), nil, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("APKINDEX: status %d: %s", resp.StatusCode, body)
 		}
-		if err != nil {
-			t.Fatalf("APKINDEX not tar: %v", err)
-		}
-		if hdr.Name == "APKINDEX" {
-			b, _ := io.ReadAll(tr)
-			index = string(b)
-		}
+		index = apkIndexText(t, body)
 	}
 	for _, want := range []string{"P:e2e-testpkg", "V:1.0-r0", "A:x86_64", "C:Q1", "S:", "I:"} {
 		if !strings.Contains(index, want) {
@@ -183,11 +167,33 @@ func TestLocalAlpineIndex(t *testing.T) {
 	}
 
 	// The .apk downloads back byte-identical from its arch path.
-	resp, body = doRequest(t, http.MethodGet, api("/api/v1/local/local-alpine/x86_64/e2e-testpkg-1.0-r0.apk"), nil, "")
+	resp, body := doRequest(t, http.MethodGet, api("/api/v1/local/local-alpine/x86_64/e2e-testpkg-1.0-r0.apk"), nil, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("download apk: status %d: %s", resp.StatusCode, body)
 	}
 	if !bytes.Equal(body, apk) {
 		t.Fatalf("apk content mismatch")
+	}
+}
+
+func apkIndexText(t *testing.T, body []byte) string {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("APKINDEX not gzip: %v", err)
+	}
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return ""
+		}
+		if err != nil {
+			t.Fatalf("APKINDEX not tar: %v", err)
+		}
+		if hdr.Name == "APKINDEX" {
+			b, _ := io.ReadAll(tr)
+			return string(b)
+		}
 	}
 }

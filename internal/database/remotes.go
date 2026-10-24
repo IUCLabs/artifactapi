@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -116,7 +118,16 @@ func (db *DB) UpdateRemote(ctx context.Context, r *models.Remote) error {
 	return err
 }
 
+// DeleteRemote drops a remote with its local files and package metadata, so a
+// repo recreated under the same name starts empty.
 func (db *DB) DeleteRemote(ctx context.Context, name string) error {
-	_, err := db.Pool.Exec(ctx, `DELETE FROM remotes WHERE name = $1`, name)
-	return err
+	return pgx.BeginFunc(ctx, db.Pool, func(tx pgx.Tx) error {
+		for _, table := range []string{"local_files", "rpm_metadata", "deb_metadata", "alpine_metadata", "puppet_metadata", "helm_metadata"} {
+			if _, err := tx.Exec(ctx, `DELETE FROM `+table+` WHERE repo_name = $1`, name); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM remotes WHERE name = $1`, name)
+		return err
+	})
 }

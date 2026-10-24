@@ -307,6 +307,34 @@ func TestLocalFiles(t *testing.T) {
 	}
 }
 
+// A repo recreated under a deleted repo's name must not inherit its files or
+// metadata, or re-uploading the same path 409s.
+func TestDeleteRemoteDropsLocalFiles(t *testing.T) {
+	requireDB(t)
+	seedRemote(t, "r-recreate")
+	hash := seedBlob(t, "recreatehash")
+	if err := testDB.CreateLocalFile(ctx(), "r-recreate", "x86_64/a-1.0-r0.apk", hash); err != nil {
+		t.Fatal(err)
+	}
+	if err := testDB.InsertAlpineMetadata(ctx(), &provider.AlpineMetadata{RepoName: "r-recreate", FilePath: "x86_64/a-1.0-r0.apk", ContentHash: hash, Name: "a", Version: "1.0-r0", Arch: "x86_64"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := testDB.DeleteRemote(ctx(), "r-recreate"); err != nil {
+		t.Fatal(err)
+	}
+	seedRemote(t, "r-recreate")
+	defer testDB.DeleteRemote(ctx(), "r-recreate")
+	if f, err := testDB.GetLocalFile(ctx(), "r-recreate", "x86_64/a-1.0-r0.apk"); err != nil || f != nil {
+		t.Fatalf("recreated repo inherited local file: %v %v", f, err)
+	}
+	if rows, err := testDB.ListAlpineMetadataEntries(ctx(), "r-recreate"); err != nil || len(rows) != 0 {
+		t.Fatalf("recreated repo inherited alpine metadata: %v %v", rows, err)
+	}
+	if err := testDB.CreateLocalFile(ctx(), "r-recreate", "x86_64/a-1.0-r0.apk", hash); err != nil {
+		t.Fatalf("re-upload after recreate: %v", err)
+	}
+}
+
 func TestVirtualsCRUD(t *testing.T) {
 	requireDB(t)
 	if err := testDB.CreateVirtual(ctx(), &models.Virtual{

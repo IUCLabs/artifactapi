@@ -153,6 +153,8 @@ func TestValidateSyncInterval(t *testing.T) {
 		{PackageGitHubDeb, 3600, true},
 		{PackageGitHubAlpine, 3600, true},
 		{PackageGitHubRPM, -1, false},
+		{PackageGitHubRPM, MaxSyncInterval, true},
+		{PackageGitHubRPM, MaxSyncInterval + 1, false},
 		{PackageRPM, 0, true},
 		{PackageRPM, 60, false},
 	} {

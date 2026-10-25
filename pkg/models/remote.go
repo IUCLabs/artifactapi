@@ -189,11 +189,14 @@ func syncPhase(name string, period time.Duration) time.Duration {
 	return time.Duration(h.Sum64() % uint64(period))
 }
 
-// ValidateSyncInterval rejects a negative sync_interval, or one set on a type
-// without a background syncer.
+// MaxSyncInterval caps sync_interval at 30 days (seconds).
+const MaxSyncInterval = 30 * 24 * 60 * 60
+
+// ValidateSyncInterval rejects a sync_interval outside 0..MaxSyncInterval, or
+// one set on a type without a background syncer.
 func (r *Remote) ValidateSyncInterval() error {
-	if r.SyncInterval < 0 {
-		return fmt.Errorf("sync_interval must be >= 0, got %d", r.SyncInterval)
+	if r.SyncInterval < 0 || r.SyncInterval > MaxSyncInterval {
+		return fmt.Errorf("sync_interval must be between 0 and %d, got %d", MaxSyncInterval, r.SyncInterval)
 	}
 	switch r.PackageType {
 	case PackageGitHubRPM, PackageGitHubDeb, PackageGitHubAlpine:

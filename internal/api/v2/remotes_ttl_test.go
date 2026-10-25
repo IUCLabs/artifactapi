@@ -57,7 +57,7 @@ func TestMutableTTLOmittedVsZero(t *testing.T) {
 }
 
 // sync_interval round-trips through the API and DB on github_* remotes and is
-// rejected when negative or on a type without a background syncer.
+// rejected when negative, over the maximum, or on a type without a background syncer.
 func TestSyncIntervalAPI(t *testing.T) {
 	if testDSN == "" {
 		t.Skip("Docker unavailable")
@@ -93,6 +93,8 @@ func TestSyncIntervalAPI(t *testing.T) {
 
 	for _, body := range []string{
 		`{"name":"si-neg",` + gh + `,"sync_interval":-1}`,
+		`{"name":"si-max",` + gh + `,"sync_interval":2592001}`,
+		`{"name":"si-int32",` + gh + `,"sync_interval":2147483648}`,
 		`{"name":"si-rpm","package_type":"rpm","base_url":"https://example.com/repo","sync_interval":60}`,
 	} {
 		if c := do(t, h, "POST", "/", body); c != 400 {

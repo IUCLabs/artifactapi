@@ -452,7 +452,7 @@ func TestMergeRPMPassesParallelFetchAndKeepsMemberOrder(t *testing.T) {
 		if name == "a" {
 			time.Sleep(20 * time.Millisecond)
 		}
-		return &RPMMember{RemoteName: name, Data: map[string][]byte{"primary": primaryXML(primaryPkgXML("foo", "1", name+"sum", name+".rpm"))}}, nil
+		return &RPMMember{RemoteName: name, Data: map[string][]byte{"primary": primaryXML(primaryPkgXML("foo-"+name, "1", name+"sum", name+".rpm"))}}, nil
 	}
 	virt := rpmVirt("a", "b")
 	virt.ParallelFetch = true
@@ -465,7 +465,7 @@ func TestMergeRPMPassesParallelFetchAndKeepsMemberOrder(t *testing.T) {
 	}
 	primary := regexp.MustCompile(`repodata/[0-9a-f]+-primary\.xml\.gz`).FindString(string(repo.Repomd))
 	body := string(gunzip(t, repo.Files[primary]))
-	if a, b := strings.Index(body, "a.rpm"), strings.Index(body, "b.rpm"); a < 0 || b >= 0 && b < a {
+	if a, b := strings.Index(body, "a.rpm"), strings.Index(body, "b.rpm"); a < 0 || b < a {
 		t.Fatalf("member priority order lost:\n%s", body)
 	}
 }

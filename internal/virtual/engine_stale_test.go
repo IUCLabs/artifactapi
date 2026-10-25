@@ -338,3 +338,128 @@ func TestMergePrunesExpiredCopiesOfOtherMembers(t *testing.T) {
 		t.Fatal("any merge should prune expired copies of removed members")
 	}
 }
+
+func primary(m any) string { return string(m.(*RPMMember).Data["primary"]) }
+
+func TestServeStaleLookupErrorKeepsCopy(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var slow atomic.Bool
+	e, calls := staleEngine(true, func() *RPMMember {
+		if slow.Load() {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			return rpmPkgMember("a", "2")
+		}
+		return rpmPkgMember("a", "1")
+	})
+	v1 := fetchRepomd(t, e)
+	slow.Store(true)
+	e.getRemote = func(context.Context, string) (*models.Remote, error) { return nil, errors.New("db down") }
+
+	done := make(chan string)
+	go func() { done <- fetchRepomd(t, e) }()
+	select {
+	case got := <-done:
+		if got != v1 {
+			t.Fatal("a failed remote lookup should serve the previous copy")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("merge blocked on the member fetch instead of serving the copy")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("no background refresh started")
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("member fetched %d times, want 2 (cold + one background refresh)", n)
+	}
+	close(release)
+	waitRefresh(e, rpmStaleKey)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if se := e.stale[rpmStaleKey]; se == nil || se.m == nil || primary(se.m) != primary(rpmPkgMember("a", "2")) {
+		t.Fatal("the background refresh should replace the copy")
+	}
+}
+
+func TestServeStaleLookupErrorDuringColdFetch(t *testing.T) {
+	e := fakeEngine(nil)
+	e.getRemote = staleRemote
+	ctx := context.Background()
+	entered, release := make(chan struct{}), make(chan struct{})
+	first := make(chan *RPMMember)
+	go func() {
+		m, err := staleMember(ctx, e, "rpm\x00v", "a", func(context.Context) (*RPMMember, error) {
+			close(entered)
+			<-release
+			return rpmPkgMember("a", "1"), nil
+		})
+		if err != nil {
+			t.Error(err)
+		}
+		first <- m
+	}()
+	<-entered
+	e.mu.Lock()
+	placeholder := e.stale[rpmStaleKey]
+	e.mu.Unlock()
+	if placeholder == nil || placeholder.m != nil {
+		t.Fatal("a cold fetch should hold an empty placeholder")
+	}
+
+	e.getRemote = func(context.Context, string) (*models.Remote, error) { return nil, errors.New("db down") }
+	m, err := staleMember(ctx, e, "rpm\x00v", "a", func(context.Context) (*RPMMember, error) { return rpmPkgMember("a", "2"), nil })
+	if err != nil || primary(m) != primary(rpmPkgMember("a", "2")) {
+		t.Fatalf("a failed lookup during a cold fetch should fetch directly, got %v", err)
+	}
+	e.mu.Lock()
+	if e.stale[rpmStaleKey] != placeholder || placeholder.m != nil {
+		e.mu.Unlock()
+		t.Fatal("a failed lookup must not touch the in-flight placeholder")
+	}
+	e.mu.Unlock()
+
+	close(release)
+	if got := <-first; got == nil || primary(got) != primary(rpmPkgMember("a", "1")) {
+		t.Fatal("the cold fetch should return its own result")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if se := e.stale[rpmStaleKey]; se == nil || se.m == nil || primary(se.m) != primary(rpmPkgMember("a", "1")) {
+		t.Fatal("the cold fetch should store its own result")
+	}
+}
+
+func TestServeStaleLookupErrorColdFetchStoresNothing(t *testing.T) {
+	e, calls := staleEngine(true, func() *RPMMember { return rpmPkgMember("a", "1") })
+	e.getRemote = func(context.Context, string) (*models.Remote, error) { return nil, errors.New("db down") }
+	fetchRepomd(t, e)
+	if calls.Load() != 1 {
+		t.Fatalf("cold member with a failed lookup should block on one fetch, got %d", calls.Load())
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.stale[rpmStaleKey]; ok {
+		t.Fatal("a failed lookup must not create a copy")
+	}
+}
+
+func TestNonServeStaleLookupErrorStoresNothing(t *testing.T) {
+	e, calls := staleEngine(false, func() *RPMMember { return rpmPkgMember("a", "1") })
+	fetchRepomd(t, e)
+	e.getRemote = func(context.Context, string) (*models.Remote, error) { return nil, errors.New("db down") }
+	fetchRepomd(t, e)
+	if calls.Load() != 2 {
+		t.Fatalf("each merge should fetch the member, got %d", calls.Load())
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, ok := e.stale[rpmStaleKey]; ok {
+		t.Fatal("a failed lookup must not create a copy for a non-serve_stale member")
+	}
+}

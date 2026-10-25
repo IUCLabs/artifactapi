@@ -548,8 +548,8 @@ func (e *Engine) fetchAlpineMember(ctx context.Context, name, dir string) (*Alpi
 // the background, one refresh per member at a time; the next merge picks it up.
 func staleMember[T any](ctx context.Context, e *Engine, key, name string, fetch func(context.Context) (*T, error)) (*T, error) {
 	sk := key + "\x00" + name
-	remote, err := e.getRemote(ctx, name)
-	if err != nil || !remote.ServeStale {
+	remote, lookupErr := e.getRemote(ctx, name)
+	if lookupErr == nil && !remote.ServeStale {
 		e.mu.Lock()
 		delete(e.stale, sk)
 		e.mu.Unlock()
@@ -560,6 +560,11 @@ func staleMember[T any](ctx context.Context, e *Engine, key, name string, fetch 
 		e.stale = map[string]*staleEntry{}
 	}
 	prev := e.stale[sk]
+	// A failed lookup serves an existing copy but never creates one.
+	if lookupErr != nil && (prev == nil || prev.m == nil) {
+		e.mu.Unlock()
+		return fetch(ctx)
+	}
 	// A cold fetch holds a placeholder so eviction or toggle-off during it is seen.
 	token := prev
 	if prev == nil || prev.m == nil {

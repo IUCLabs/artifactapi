@@ -325,12 +325,12 @@ func (e *Engine) Head(ctx context.Context, remote models.Remote, path string, pr
 		return &HeadResult{ContentType: info.ContentType, Size: info.Size, Source: "cache"}, nil
 	}
 
-	return e.headUpstream(ctx, remote, path, prov)
+	return e.headUpstream(ctx, remote, path, prov, class)
 }
 
 // headUpstream issues an upstream HEAD, load-balancing across the remote's base
 // URLs and failing over to the next mirror on a network error or 5xx.
-func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider) (*HeadResult, error) {
+func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification) (*HeadResult, error) {
 	order := e.baseURLAttemptOrder(remote)
 	if len(order) == 0 {
 		return nil, &ProxyError{Status: http.StatusBadGateway, Message: "no upstream base_url configured"}
@@ -338,7 +338,7 @@ func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path st
 	var lastErr error
 	for i, url := range order {
 		ctr := e.beginAttempt(remote, url)
-		result, err := e.headUpstreamOnce(ctx, withBaseURL(remote, url), path, prov)
+		result, err := e.headUpstreamOnce(ctx, withBaseURL(remote, url), path, prov, class)
 		endAttempt(ctr)
 		if err == nil {
 			return result, nil
@@ -353,7 +353,7 @@ func (e *Engine) headUpstream(ctx context.Context, remote models.Remote, path st
 	return nil, lastErr
 }
 
-func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider) (*HeadResult, error) {
+func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification) (*HeadResult, error) {
 	url := prov.UpstreamURL(remote, path)
 
 	authHeaders, err := prov.AuthHeaders(ctx, remote)
@@ -399,6 +399,11 @@ func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, pat
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, &ProxyError{Status: resp.StatusCode, Message: fmt.Sprintf("upstream returned %d", resp.StatusCode)}
+	}
+	if class == ClassImmutable {
+		if err := e.checkQuarantine(ctx, remote, path, resp.Header); err != nil {
+			return nil, err
+		}
 	}
 
 	contentType := prov.ContentType(path)
@@ -525,6 +530,11 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 			Size:        int64(len(body)),
 			Source:      "remote",
 		}, nil
+	}
+
+	if err := e.checkQuarantine(ctx, remote, path, resp.Header); err != nil {
+		_ = resp.Body.Close()
+		return nil, err
 	}
 
 	// Immutable blobs are streamed through the content-addressable store
@@ -661,6 +671,43 @@ func (e *Engine) checkUpstreamOnce(ctx context.Context, remote models.Remote, pa
 	resp.Body.Close()
 
 	return resp.StatusCode == http.StatusNotModified, nil
+}
+
+// checkQuarantine refuses an uncached immutable artifact published less than
+// quarantine_days ago. The publish time is the upstream Last-Modified, capped
+// at now, else the first time this path was seen.
+func (e *Engine) checkQuarantine(ctx context.Context, remote models.Remote, path string, upstream http.Header) error {
+	if !remote.QuarantineEnabled {
+		return nil
+	}
+	if a, err := e.db.GetArtifact(ctx, remote.Name, path); err == nil && a != nil {
+		return nil
+	}
+	days := remote.QuarantineDays
+	if days < 1 {
+		days = models.DefaultQuarantineDays
+	}
+	window := time.Duration(days) * 24 * time.Hour
+	now := time.Now()
+	published, err := http.ParseTime(upstream.Get("Last-Modified"))
+	if err != nil {
+		if published, err = e.cache.FirstSeen(ctx, remote.Name, path, window+24*time.Hour); err != nil {
+			slog.Warn("first-seen lookup failed", "remote", remote.Name, "path", path, "error", err)
+			return &ProxyError{Status: http.StatusServiceUnavailable, Message: "quarantine check unavailable", RetryAfter: 30}
+		}
+	}
+	if published.After(now) {
+		published = now
+	}
+	if until := published.Add(window); now.Before(until) {
+		return &ProxyError{
+			Status:    http.StatusForbidden,
+			Message:   fmt.Sprintf("quarantined: published %s, available from %s", published.UTC().Format(time.RFC3339), until.UTC().Format(time.RFC3339)),
+			Published: published.UTC(),
+			Available: until.UTC(),
+		}
+	}
+	return nil
 }
 
 // etagTTL keeps a mutable path's ETag well past its freshness key so an expired
@@ -821,9 +868,20 @@ func fetchBearerToken(ctx context.Context, wwwAuth string, remote models.Remote)
 type ProxyError struct {
 	Status  int
 	Message string
+	// Published and Available are set only on a quarantine refusal.
+	Published time.Time
+	Available time.Time
+	// RetryAfter, in seconds, is sent as Retry-After when set.
+	RetryAfter int
 }
 
 func (e *ProxyError) Error() string { return e.Message }
+
+// Quarantined reports whether err is a quarantine refusal.
+func Quarantined(err error) bool {
+	var pe *ProxyError
+	return errors.As(err, &pe) && !pe.Published.IsZero()
+}
 
 type UpstreamError struct {
 	Err error

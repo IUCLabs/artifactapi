@@ -194,16 +194,27 @@ func (e *Engine) goList(ctx context.Context, virt models.Virtual, escMod string)
 	return nil, ErrNotFound
 }
 
-// goProbe returns the first member, in member order, that serves path.
+// goProbe returns the first member, in member order, that serves path, else
+// the first member quarantining it so the client sees that refusal.
 func (e *Engine) goProbe(ctx context.Context, virt models.Virtual, path string) (string, error) {
+	held := ""
 	for _, name := range virt.Members {
 		m, err := e.goMember(ctx, name, path)
+		if proxy.Quarantined(err) {
+			if held == "" {
+				held = name
+			}
+			continue
+		}
 		if err != nil {
 			return "", fmt.Errorf("virtual %q: member %q: %v", virt.Name, name, err)
 		}
 		if m.Body != nil {
 			return name, nil
 		}
+	}
+	if held != "" {
+		return held, nil
 	}
 	return "", ErrNotFound
 }

@@ -149,6 +149,17 @@ func (r *Remote) ValidateMirrorStrategy() error {
 	return nil
 }
 
+// DefaultQuarantineDays matches the remotes.quarantine_days column default.
+const DefaultQuarantineDays = 3
+
+// ValidateQuarantine rejects an enabled quarantine with no window.
+func (r *Remote) ValidateQuarantine() error {
+	if r.QuarantineEnabled && r.QuarantineDays < 1 {
+		return fmt.Errorf("quarantine_days must be at least 1 when quarantine_enabled is set")
+	}
+	return nil
+}
+
 // ValidatePatterns ensures every configured regex compiles. Storing an
 // invalid pattern would otherwise be silently dropped at match time, which
 // for the blocklist is a fail-open: a mistyped deny rule becomes a no-op.

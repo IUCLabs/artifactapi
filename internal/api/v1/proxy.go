@@ -2,6 +2,7 @@ package v1
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -121,7 +123,7 @@ func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote
 	if err != nil {
 		var proxyErr *proxy.ProxyError
 		if errors.As(err, &proxyErr) {
-			http.Error(w, proxyErr.Message, proxyErr.Status)
+			writeProxyError(w, proxyErr)
 			return
 		}
 		slog.Error("proxy fetch failed", "remote", remote.Name, "path", path, "error", err)
@@ -147,6 +149,24 @@ func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote
 	}
 	w.WriteHeader(http.StatusOK)
 	io.Copy(w, body)
+}
+
+// writeProxyError answers a quarantine refusal as JSON and anything else as text.
+func writeProxyError(w http.ResponseWriter, pe *proxy.ProxyError) {
+	if pe.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(pe.RetryAfter))
+	}
+	if pe.Published.IsZero() {
+		http.Error(w, pe.Message, pe.Status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(pe.Status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":     pe.Message,
+		"published": pe.Published.Format(time.RFC3339),
+		"available": pe.Available.Format(time.RFC3339),
+	})
 }
 
 func rewritesMutable(prov provider.Provider, path string) bool {
@@ -176,7 +196,7 @@ func (h *ProxyHandler) handleProxyHead(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var proxyErr *proxy.ProxyError
 		if errors.As(err, &proxyErr) {
-			http.Error(w, proxyErr.Message, proxyErr.Status)
+			writeProxyError(w, proxyErr)
 			return
 		}
 		slog.Error("proxy head failed", "remote", remote.Name, "path", path, "error", err)

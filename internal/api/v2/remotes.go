@@ -72,7 +72,7 @@ func (h *RemotesHandler) get(w http.ResponseWriter, r *http.Request) {
 const defaultMutableTTL = 3600
 
 func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
-	remote := models.Remote{MutableTTL: defaultMutableTTL}
+	remote := models.Remote{MutableTTL: defaultMutableTTL, QuarantineDays: models.DefaultQuarantineDays}
 	if err := json.NewDecoder(r.Body).Decode(&remote); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
@@ -104,6 +104,10 @@ func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := remote.ValidateQuarantine(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := h.db.CreateRemote(r.Context(), &remote); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -126,6 +130,7 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 	var remote models.Remote
 	if oldKnown {
 		remote.MutableTTL = existing.MutableTTL
+		remote.QuarantineDays = existing.QuarantineDays
 	}
 	if err := json.NewDecoder(r.Body).Decode(&remote); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -141,6 +146,10 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := remote.ValidatePatterns(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := remote.ValidateQuarantine(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

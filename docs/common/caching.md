@@ -15,7 +15,7 @@ Every proxied request on a remote is classified as **denied**, **immutable** or
 | `mutable_ttl` | Seconds a mutable path stays fresh. `0` also means never expires. Omitted on create, it defaults to `3600`; omitted on update, the stored value is kept. |
 | `check_mutable` | When a mutable path's `mutable_ttl` expires, sends a conditional `HEAD` (`If-None-Match`) with the stored upstream ETag. A `304` re-arms the TTL and serves the stored copy; anything else refetches in full. The ETag is kept for `max(10 × mutable_ttl, 7 days)`, re-armed on each `304`, so idle paths age out. It is only stored when `check_mutable` is set and `mutable_ttl` is non-zero, and never for immutable paths. |
 | `stale_on_error` | On an upstream network error, serve the stored copy instead of failing. |
-| `quarantine_enabled` / `quarantine_days` | Stored on the remote but not enforced by the proxy yet. |
+| `quarantine_enabled` / `quarantine_days` | Refuses immutable artifacts published less than `quarantine_days` (default `3`) ago. See [Quarantine](#quarantine). |
 | `mirrorlist` / `mirror_strategy` | rpm/deb/alpine only. Upstream pool is `[base_url] + mirrorlist`; `round_robin` (default) rotates the starting mirror, `least_conn` starts at the one with the fewest in-flight requests. Network errors and 5xx fail over to the next mirror; other statuses return as-is. |
 
 ## Precedence
@@ -51,6 +51,24 @@ So `blocklist` beats the allowlist, and `immutable_patterns` beats
 
 Concurrent misses on one path share a fetch lock. Waiters poll the store for
 up to 5s instead of all going upstream.
+
+## Quarantine
+
+With `quarantine_enabled`, an uncached **immutable** path whose upstream copy
+was published less than `quarantine_days` ago answers `403` and is not cached:
+
+```json
+{"error": "quarantined: published 2026-10-24T09:00:00Z, available from 2026-10-27T09:00:00Z",
+ "published": "2026-10-24T09:00:00Z", "available": "2026-10-27T09:00:00Z"}
+```
+
+- `quarantine_days` must be at least `1` when quarantine is enabled.
+- The publish time is the upstream `Last-Modified` header (capped at now), else the first time artifactapi was asked for the path.
+- If that first-seen lookup fails, the path answers `503` with `Retry-After` instead.
+- Mutable paths (indexes, metadata) are never quarantined.
+- Paths already cached keep serving, including ones cached before quarantine was enabled.
+- A virtual redirects to the member that owns the path, so its `403` reaches the client. A goproxy virtual probing for an unlisted version skips a quarantining member and only redirects to it when no other member serves the version.
+- Indexes still list fresh versions, so a client resolving "latest" may pick one and get the `403`.
 
 ## Eviction
 

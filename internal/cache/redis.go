@@ -84,6 +84,20 @@ func (r *Redis) GetETag(ctx context.Context, remote, path string) (string, error
 	return val, err
 }
 
+// FirstSeen records now as the first sighting of path unless one is already
+// stored, and returns the stored sighting.
+func (r *Redis) FirstSeen(ctx context.Context, remote, path string, ttl time.Duration) (time.Time, error) {
+	key := fmt.Sprintf("firstseen:%s:%s", remote, path)
+	if err := r.client.SetNX(ctx, key, time.Now().Unix(), ttl).Err(); err != nil {
+		return time.Time{}, err
+	}
+	sec, err := r.client.Get(ctx, key).Int64()
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(sec, 0), nil
+}
+
 func (r *Redis) GetToken(ctx context.Context, key string) (string, error) {
 	val, err := r.client.Get(ctx, "token:"+key).Result()
 	if err == redis.Nil {

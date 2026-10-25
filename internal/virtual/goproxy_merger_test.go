@@ -3,11 +3,15 @@ package virtual
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/database"
+	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
@@ -179,5 +183,34 @@ func TestGoProxyLocalMemberNotFound(t *testing.T) {
 	virt := models.Virtual{Name: "go", PackageType: models.PackageGoProxy, Members: []string{"internal"}}
 	if _, _, err := e.GoProxy(ctx, virt, "example.com/mod/@latest", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("module only absent from a local member must be not-found, got %v", err)
+	}
+}
+
+func TestGoProbeFallsThroughQuarantine(t *testing.T) {
+	quarantined := &proxy.ProxyError{Status: http.StatusForbidden, Message: "quarantined", Published: time.Now()}
+	served := map[string]bool{}
+	e := &Engine{
+		mergeTTL: time.Minute,
+		getRemote: func(_ context.Context, name string) (*models.Remote, error) {
+			return &models.Remote{Name: name, RepoType: models.RepoTypeRemote}, nil
+		},
+		goMember: func(_ context.Context, name, path string) (*GoMember, error) {
+			if name == "internal" && strings.HasSuffix(path, ".info") {
+				return nil, fmt.Errorf("fetch: %w", quarantined)
+			}
+			if served[name] {
+				return &GoMember{RemoteName: name, Body: []byte("{}")}, nil
+			}
+			return &GoMember{RemoteName: name}, nil
+		},
+	}
+	zip := "example.com/mod/@v/v0.0.0-20260101-abcdef.zip"
+	served["goproxy"] = true
+	if _, loc, err := e.GoProxy(context.Background(), goVirt(), zip, ""); err != nil || loc != "/api/v1/remote/goproxy/"+zip {
+		t.Errorf("next member serving: %q %v", loc, err)
+	}
+	served["goproxy"] = false
+	if _, loc, err := e.GoProxy(context.Background(), goVirt(), zip, ""); err != nil || loc != "/api/v1/remote/internal/"+zip {
+		t.Errorf("only quarantined member: %q %v, want redirect to its refusal", loc, err)
 	}
 }

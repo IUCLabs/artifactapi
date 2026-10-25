@@ -227,7 +227,7 @@ func TestHeadUpstreamUsesRemoteTimeout(t *testing.T) {
 	r := models.Remote{Name: "slow-head", PackageType: models.PackageGeneric, BaseURL: slow.URL, UpstreamResponseHeaderTimeout: 1}
 
 	start := time.Now()
-	_, err := (&Engine{}).headUpstreamOnce(context.Background(), r, "blob.bin", prov(t, models.PackageGeneric))
+	_, err := (&Engine{}).headUpstreamOnce(context.Background(), r, "blob.bin", prov(t, models.PackageGeneric), ClassImmutable)
 	if err == nil || time.Since(start) > 2*time.Second {
 		t.Fatalf("HEAD ignored the remote's response header timeout: err=%v after %s", err, time.Since(start))
 	}

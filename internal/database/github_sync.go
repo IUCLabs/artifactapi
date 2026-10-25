@@ -50,7 +50,8 @@ func (db *DB) ReleaseGitHubSyncLease(ctx context.Context, remoteName, owner stri
 // next_retry_at, or, with no retry pending, the remote was never synced or was
 // last synced before the current slot (interval set) or longer than freshness
 // ago (otherwise). With interval set, slots start at phase past each multiple
-// of interval and a remote created inside the current slot waits for the next.
+// of interval and a remote created inside the current slot with no state row
+// waits for the next.
 // Slots are computed from the DB clock so replicas agree whatever their own
 // clocks say. A zero freshness and interval (prime scans) ignores the recency
 // gate but still honours a pending retry's backoff. The returned etag is the
@@ -63,7 +64,8 @@ func (db *DB) claimSyncLease(ctx context.Context, table, remoteName, owner strin
 		SELECT r.name, $2, now() + make_interval(secs => $4)
 		  FROM remotes r
 		 WHERE r.name = $1
-		   AND ($5::float8 <= 0 OR COALESCE(r.created_at, '-infinity') < `+slot+`)
+		   AND ($5::float8 <= 0 OR COALESCE(r.created_at, '-infinity') < `+slot+`
+		        OR EXISTS (SELECT 1 FROM `+table+` e WHERE e.remote_name = r.name))
 		ON CONFLICT (remote_name) DO UPDATE
 			SET sync_lease_owner   = $2,
 			    sync_lease_expires = now() + make_interval(secs => $4)

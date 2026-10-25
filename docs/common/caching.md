@@ -13,6 +13,7 @@ Every proxied request on a remote is classified as **denied**, **immutable** or
 | `mutable_patterns` | Regexes forcing a path mutable. |
 | `immutable_ttl` | Seconds an immutable path stays fresh. `0` = forever. |
 | `mutable_ttl` | Seconds a mutable path stays fresh. `0` also means never expires. Omitted on create, it defaults to `3600`; omitted on update, the stored value is kept. |
+| `sync_interval` | github_rpm/github_deb/github_alpine only. Seconds between background release re-scans, at a stable per-remote offset. Unset (`0`) re-scans no more often than `mutable_ttl`. |
 | `check_mutable` | When a mutable path's `mutable_ttl` expires, sends a conditional `HEAD` (`If-None-Match`) with the stored upstream ETag. A `304` re-arms the TTL and serves the stored copy; anything else refetches in full. The ETag is kept for `max(10 × mutable_ttl, 7 days)`, re-armed on each `304`, so idle paths age out. It is only stored when `check_mutable` is set and `mutable_ttl` is non-zero, and never for immutable paths. |
 | `stale_on_error` | On an upstream network error, serve the stored copy instead of failing. |
 | `serve_stale` | rpm/deb/alpine virtual members only. When a virtual re-merges, use this member's previous index at once and refresh it in the background; the next merge picks up the refresh. The first merge still waits, and so does any merge once the previous index is over an hour old, so a member that keeps failing surfaces its error. Default `false`. |

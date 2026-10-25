@@ -400,3 +400,90 @@ func TestSyncLeaseSlot(t *testing.T) {
 		})
 	}
 }
+
+// slotPhase returns the phase that puts the current interval slot's start
+// startAgo before the DB clock.
+func slotPhase(t *testing.T, interval, startAgo time.Duration) time.Duration {
+	t.Helper()
+	var epoch float64
+	if err := testDB.Pool.QueryRow(ctx(), `SELECT extract(epoch FROM now())::float8`).Scan(&epoch); err != nil {
+		t.Fatalf("db now: %v", err)
+	}
+	return time.Duration(math.Mod(epoch-startAgo.Seconds(), interval.Seconds()) * float64(time.Second))
+}
+
+func setSyncedAgo(t *testing.T, tc syncTable, name string, ago time.Duration) {
+	t.Helper()
+	if _, err := testDB.Pool.Exec(ctx(), `UPDATE `+tc.table+` SET last_synced_at = now() - make_interval(secs => $2), sync_lease_owner = '', sync_lease_expires = NULL WHERE remote_name = $1`, name, ago.Seconds()); err != nil {
+		t.Fatalf("set last_synced_at: %v", err)
+	}
+}
+
+// Toggling sync_interval on a remote with sync state neither re-syncs at once
+// nor leaves it waiting longer than one interval (or freshness) since its last
+// sync. Elapsed time is simulated by moving last_synced_at and the slot start
+// back together, relative to the DB clock.
+func TestSyncLeaseIntervalChange(t *testing.T) {
+	requireDB(t)
+	const (
+		interval  = time.Hour
+		freshness = time.Hour
+		day       = 24 * time.Hour
+	)
+	for _, tc := range syncTables() {
+		t.Run(tc.table, func(t *testing.T) {
+			t.Run("0 to N", func(t *testing.T) {
+				name := seedSynced(t, tc, day, 25*time.Minute)
+				if mustClaim(t, tc, name, "r1", freshness, 0, 0) {
+					t.Fatal("claimed inside freshness before the change")
+				}
+				if mustClaim(t, tc, name, "r1", freshness, interval, slotPhase(t, interval, 30*time.Minute)) {
+					t.Fatal("synced inside the current slot, yet claimed right after the change")
+				}
+				// 30m later the next slot opens; the last sync is 55m old.
+				setSyncedAgo(t, tc, name, 55*time.Minute)
+				if !mustClaim(t, tc, name, "r1", freshness, interval, slotPhase(t, interval, time.Second)) {
+					t.Fatal("not due at the first slot after the last sync")
+				}
+			})
+			t.Run("N to 0", func(t *testing.T) {
+				name := seedSynced(t, tc, day, 10*time.Minute)
+				if mustClaim(t, tc, name, "r1", freshness, interval, slotPhase(t, interval, 30*time.Minute)) {
+					t.Fatal("claimed inside the slot before the change")
+				}
+				if mustClaim(t, tc, name, "r1", freshness, 0, 0) {
+					t.Fatal("synced inside freshness, yet claimed right after the change")
+				}
+				setSyncedAgo(t, tc, name, freshness+time.Second)
+				if !mustClaim(t, tc, name, "r1", freshness, 0, 0) {
+					t.Fatal("not due once freshness elapsed after the change")
+				}
+			})
+		})
+	}
+}
+
+// The created_at gate only holds back the first insert of a remote created
+// inside the current slot; once a state row exists the row's own sync and
+// retry state decide.
+func TestSyncLeaseCreatedGateInsertOnly(t *testing.T) {
+	requireDB(t)
+	const interval = time.Hour
+	phase := slotPhase(t, interval, 30*time.Minute)
+	for _, tc := range syncTables() {
+		t.Run(tc.table, func(t *testing.T) {
+			fresh := seedSynced(t, tc, 10*time.Second, neverSynced)
+			if mustClaim(t, tc, fresh, "r1", 0, interval, phase) {
+				t.Fatal("remote created inside the slot claimed with no state row")
+			}
+
+			name := seedSynced(t, tc, 10*time.Second, neverSynced)
+			if _, err := testDB.Pool.Exec(ctx(), `INSERT INTO `+tc.table+` (remote_name, sync_failures, next_retry_at) VALUES ($1, 1, now() - interval '1 second')`, name); err != nil {
+				t.Fatalf("seed failed prime: %v", err)
+			}
+			if !mustClaim(t, tc, name, "r1", 0, interval, phase) {
+				t.Fatal("created_at gate blocked a remote with a state row whose retry is due")
+			}
+		})
+	}
+}

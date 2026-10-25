@@ -101,6 +101,12 @@ func TestSyncIntervalAPI(t *testing.T) {
 			t.Errorf("%s = %d, want 400", body, c)
 		}
 	}
+	if c := do(t, h, "PUT", "/si-gh", `{`+gh+`,"sync_interval":-1}`); c != 400 {
+		t.Errorf("update negative = %d, want 400", c)
+	}
+	if got := interval("si-gh"); got != 3600 {
+		t.Errorf("rejected update changed sync_interval to %d", got)
+	}
 }
 
 func TestQuarantineDaysDefault(t *testing.T) {

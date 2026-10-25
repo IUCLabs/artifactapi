@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -206,18 +207,35 @@ func TestCachedRepodataEvictsIdleRemotes(t *testing.T) {
 	}
 }
 
-// waitFor polls until cond holds, then gives goroutines that passed the
-// fingerprint a moment to reach the singleflight call.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatal("condition not reached")
 		}
 		time.Sleep(time.Millisecond)
 	}
-	time.Sleep(50 * time.Millisecond)
+}
+
+// sfWaiters counts goroutines parked on an in-flight singleflight call.
+func sfWaiters() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	waiters := 0
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "sync.(*WaitGroup).Wait") && strings.Contains(g, "singleflight.(*Group).Do(") {
+			waiters++
+		}
+	}
+	return waiters
 }
 
 func TestCachedRepodataCoalescesConcurrentBuilds(t *testing.T) {
@@ -234,7 +252,7 @@ func TestCachedRepodataCoalescesConcurrentBuilds(t *testing.T) {
 			codes[i] = serveReq(t, p, remote, store, httptest.NewRequest(http.MethodGet, "/x", nil), repodataPaths[i%len(repodataPaths)]).Code
 		}()
 	}
-	waitFor(t, func() bool { return store.fpCount() == n })
+	waitFor(t, func() bool { return store.listCount() == 1 && sfWaiters() == n-1 })
 	close(gate)
 	wg.Wait()
 	for i, c := range codes {
@@ -261,7 +279,7 @@ func TestCachedRepodataLeaderCancelDoesNotFailWaiters(t *testing.T) {
 	go func() {
 		results <- serveReq(t, p, remote, store, httptest.NewRequest(http.MethodGet, "/x", nil), "repodata/repomd.xml").Code
 	}()
-	waitFor(t, func() bool { return store.fpCount() == 2 })
+	waitFor(t, func() bool { return sfWaiters() == 1 })
 	cancelLeader()
 	close(gate)
 	for range 2 {

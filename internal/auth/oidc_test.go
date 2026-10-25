@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -251,5 +252,92 @@ func TestRequireWritesLeavesReadsOpen(t *testing.T) {
 		if got := serve(h, m, ""); got != http.StatusUnauthorized {
 			t.Errorf("%s: status %d, want 401", m, got)
 		}
+	}
+}
+
+func basic(user, pass string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+}
+
+func TestTokenSchemes(t *testing.T) {
+	iss := testsupport.NewOIDCIssuer()
+	defer iss.Close()
+	h := NewBearerOIDC(iss.URL, []string{"artifactapi"}).RequireWrites(ok)
+	valid := iss.Token(nil, "artifactapi", "ci", time.Hour)
+	cases := []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"bearer", "Bearer " + valid, http.StatusNoContent},
+		{"token scheme", "Token " + valid, http.StatusNoContent},
+		{"basic password", basic("anyone", valid), http.StatusNoContent},
+		{"basic empty user", basic("", valid), http.StatusNoContent},
+		{"bare jwt", valid, http.StatusNoContent},
+		{"basic wrong aud", basic("ci", iss.Token(nil, "nope", "ci", time.Hour)), http.StatusUnauthorized},
+		{"basic token as user", basic(valid, "x"), http.StatusUnauthorized},
+		{"bare garbage", "garbage", http.StatusUnauthorized},
+		{"unknown scheme", "Digest " + valid, http.StatusUnauthorized},
+	}
+	for _, c := range cases {
+		if got := serveAuth(h, http.MethodPut, c.authz); got != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRequireRegistryWrites(t *testing.T) {
+	iss := testsupport.NewOIDCIssuer()
+	defer iss.Close()
+	h := NewBearerOIDC(iss.URL, []string{"artifactapi"}).RequireRegistryWrites(ok, func(*http.Request) string { return "https://reg.example/v2/token" })
+	valid := iss.Token(nil, "artifactapi", "ci", time.Hour)
+	do := func(method, path, authz string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, nil)
+		if authz != "" {
+			r.Header.Set("Authorization", authz)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	challenge := `Bearer realm="https://reg.example/v2/token",service="artifactapi"`
+
+	w := do(http.MethodGet, "/v2/", "")
+	if w.Code != http.StatusUnauthorized || w.Header().Get("WWW-Authenticate") != challenge {
+		t.Errorf("anonymous ping: %d %q", w.Code, w.Header().Get("WWW-Authenticate"))
+	}
+	if w := do(http.MethodGet, "/v2/", "Bearer anonymous"); w.Code != http.StatusNoContent {
+		t.Errorf("ping with token: %d", w.Code)
+	}
+	if w := do(http.MethodGet, "/v2/token", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"token":"anonymous"`) {
+		t.Errorf("anonymous token: %d %s", w.Code, w.Body)
+	}
+	if w := do(http.MethodGet, "/v2/token", basic("ci", valid)); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"token":"`+valid+`"`) {
+		t.Errorf("token exchange: %d %s", w.Code, w.Body)
+	}
+	expired := iss.Token(nil, "artifactapi", "ci", -time.Minute)
+	for _, authz := range []string{basic("ci", "bogus"), basic("ci", expired), "Bearer " + expired} {
+		if w := do(http.MethodGet, "/v2/token", authz); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"token":"anonymous"`) {
+			t.Errorf("rejected credential %q: %d %s", authz, w.Code, w.Body)
+		}
+	}
+	for _, m := range []string{http.MethodGet, http.MethodHead} {
+		if w := do(m, "/v2/repo/img/manifests/t", ""); w.Code != http.StatusNoContent {
+			t.Errorf("anonymous %s: %d", m, w.Code)
+		}
+	}
+	for _, m := range []string{http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete} {
+		w := do(m, "/v2/repo/img/blobs/uploads/", "Bearer anonymous")
+		if w.Code != http.StatusUnauthorized || w.Header().Get("WWW-Authenticate") != challenge {
+			t.Errorf("anonymous %s: %d %q", m, w.Code, w.Header().Get("WWW-Authenticate"))
+		}
+		for _, authz := range []string{"Bearer " + valid, basic("ci", valid)} {
+			if w := do(m, "/v2/repo/img/blobs/uploads/", authz); w.Code != http.StatusNoContent {
+				t.Errorf("authenticated %s: %d", m, w.Code)
+			}
+		}
+	}
+	if got := serve(NewBearerOIDC("", nil).RequireRegistryWrites(ok, nil), http.MethodPut, ""); got != http.StatusNoContent {
+		t.Errorf("disabled: status %d", got)
 	}
 }

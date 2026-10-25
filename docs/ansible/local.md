@@ -2,7 +2,7 @@
 
 A local `ansible` repo is a Galaxy v3 server: `ansible-galaxy collection publish`
 and `ansible-galaxy collection install` work against `/api/v1/local/<repo>`.
-`publish` needs an API key; any value works.
+`publish` needs an API key; any value works unless [uploads are gated](../common/auth.md).
 
 ```bash
 ansible-galaxy collection build

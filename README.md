@@ -23,6 +23,7 @@ API: `http://localhost:8000` | Frontend: `http://localhost:5173`
 Providers classify paths automatically. Users only configure what to proxy and TTLs.
 
 Classification precedence, TTLs and eviction for every remote: [docs/common/caching.md](docs/common/caching.md).
+Write authentication and per-client token usage: [docs/common/auth.md](docs/common/auth.md).
 
 Each type's paths, Terraform examples and local/virtual behaviour are in `docs/<type>/`:
 
@@ -208,8 +209,9 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
-| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com:8200/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals` and `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` require `Authorization: Bearer <jwt>` verified against the issuer's JWKS. Uploads, object/file deletes, probe, reads and `/v2` stay open. Unset = no auth |
+| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals` and `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
 | `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
+| `ARTIFACTAPI_AUTH_UPLOADS` | `false` | Also require a token for every local repo write: file uploads/deletes, object evictions, `/api/v1/local` publishes and `/v2` push. Requires `ARTIFACTAPI_OIDC_ISSUER` |
 
 ## Development
 

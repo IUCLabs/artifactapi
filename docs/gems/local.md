@@ -2,7 +2,7 @@
 
 A local `gems` repo is a RubyGems source: `gem push`, `gem yank`, `gem install`
 and `bundle install` work against `/api/v1/local/<repo>`. `gem push` needs an
-API key; any value works.
+API key; any value works unless [uploads are gated](../common/auth.md).
 
 ```bash
 GEM_HOST_API_KEY=unused gem push --host https://artifactapi.example.com/api/v1/local/<repo> mygem-1.0.0.gem

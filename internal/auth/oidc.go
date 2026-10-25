@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -104,42 +106,116 @@ func (b *BearerOIDC) discoverOnce(done chan struct{}) (v *oidc.IDTokenVerifier, 
 // Require gates every request through next on a valid token. A nil receiver
 // passes everything through.
 func (b *BearerOIDC) Require(next http.Handler) http.Handler {
+	return b.require(next, "Bearer")
+}
+
+func (b *BearerOIDC) require(next http.Handler, challenge string) http.Handler {
 	if b == nil {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		scheme, raw, _ := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " ")
-		raw = strings.TrimSpace(raw)
-		if !strings.EqualFold(scheme, "Bearer") || raw == "" {
-			unauthorized(w, "missing bearer token")
+		raw := token(r)
+		if raw == "" {
+			unauthorized(w, challenge, "missing token")
 			return
 		}
-		v, err := b.getVerifier(r.Context())
-		if err != nil {
+		sub, err := b.verify(r.Context(), raw)
+		if errors.Is(err, errIssuerUnavailable) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"error":"token issuer unavailable"}`))
 			return
 		}
-		tok, err := v.Verify(r.Context(), raw)
 		if err != nil {
 			slog.Info("bearer token rejected", "error", err)
-			unauthorized(w, "invalid token")
+			unauthorized(w, challenge, "invalid token")
 			return
 		}
-		if len(b.audiences) > 0 && !slices.ContainsFunc(tok.Audience, func(a string) bool { return slices.Contains(b.audiences, a) }) {
-			slog.Info("bearer token rejected", "error", "audience not allowed", "aud", tok.Audience)
-			unauthorized(w, "invalid token")
-			return
-		}
-		slog.Info("bearer token accepted", "sub", tok.Subject, "method", r.Method, "path", r.URL.Path)
+		slog.Info("bearer token accepted", "sub", sub, "method", r.Method, "path", r.URL.Path)
 		next.ServeHTTP(w, r)
 	})
 }
 
+func (b *BearerOIDC) verify(ctx context.Context, raw string) (string, error) {
+	v, err := b.getVerifier(ctx)
+	if err != nil {
+		return "", errIssuerUnavailable
+	}
+	tok, err := v.Verify(ctx, raw)
+	if err != nil {
+		return "", err
+	}
+	if len(b.audiences) > 0 && !slices.ContainsFunc(tok.Audience, func(a string) bool { return slices.Contains(b.audiences, a) }) {
+		return "", fmt.Errorf("audience %v not allowed", tok.Audience)
+	}
+	return tok.Subject, nil
+}
+
+// token reads the JWT from `Bearer`/`Token` credentials, the password of
+// `Basic` credentials (any username), or a bare header value as `gem push`
+// sends its API key.
+func token(r *http.Request) string {
+	if _, pass, ok := r.BasicAuth(); ok {
+		return pass
+	}
+	scheme, raw, found := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " ")
+	if !found {
+		return scheme
+	}
+	if strings.EqualFold(scheme, "Bearer") || strings.EqualFold(scheme, "Token") {
+		return strings.TrimSpace(raw)
+	}
+	return ""
+}
+
 // RequireWrites gates only mutating methods.
 func (b *BearerOIDC) RequireWrites(next http.Handler) http.Handler {
-	gated := b.Require(next)
+	return writesOnly(next, b.Require(next))
+}
+
+// RequireRegistryWrites gates Docker Registry V2 writes behind the token flow
+// Docker clients need: an unauthenticated ping gets a Bearer challenge naming
+// realm, which serves the Basic password back as the token once verified, or
+// an anonymous token so pulls stay open.
+func (b *BearerOIDC) RequireRegistryWrites(next http.Handler, realm func(*http.Request) string) http.Handler {
+	if b == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		challenge := `Bearer realm="` + realm(r) + `",service="artifactapi"`
+		hasAuth := r.Header.Get("Authorization") != ""
+		switch {
+		case r.URL.Path == "/v2/token":
+			writeToken(w, b.registryToken(r))
+		case r.URL.Path == "/v2/" && !hasAuth:
+			unauthorized(w, challenge, "authentication required")
+		default:
+			writesOnly(next, b.require(next, challenge)).ServeHTTP(w, r)
+		}
+	})
+}
+
+// registryToken echoes a valid credential back as the registry token. Missing
+// or invalid credentials (e.g. an expired `docker login`) get the anonymous
+// token so pulls keep working; writes are still verified per request.
+func (b *BearerOIDC) registryToken(r *http.Request) string {
+	raw := token(r)
+	if raw == "" {
+		return "anonymous"
+	}
+	if _, err := b.verify(r.Context(), raw); err != nil {
+		slog.Info("registry credential rejected, issuing anonymous token", "error", err)
+		return "anonymous"
+	}
+	return raw
+}
+
+func writeToken(w http.ResponseWriter, tok string) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": tok, "access_token": tok})
+}
+
+func writesOnly(next, gated http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead, http.MethodOptions:
@@ -150,9 +226,9 @@ func (b *BearerOIDC) RequireWrites(next http.Handler) http.Handler {
 	})
 }
 
-func unauthorized(w http.ResponseWriter, msg string) {
+func unauthorized(w http.ResponseWriter, challenge, msg string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("WWW-Authenticate", "Bearer")
+	w.Header().Set("WWW-Authenticate", challenge)
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
 }

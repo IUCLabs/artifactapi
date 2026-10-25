@@ -2,7 +2,8 @@
 
 A local `npm` repo is a real npm registry: `npm publish` (scoped and unscoped)
 and `npm install` work against `/api/v1/local/<repo>/`. npm requires an
-`_authToken` for the registry before it will publish; any value works.
+`_authToken` for the registry before it will publish; any value works unless
+[uploads are gated](../common/auth.md).
 
 ```ini
 # .npmrc

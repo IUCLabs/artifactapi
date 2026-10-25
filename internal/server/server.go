@@ -169,8 +169,17 @@ func (s *Server) routes() chi.Router {
 	s.virtEngine.NPMLocal = proxyHandler.LocalNPMPackument
 	s.virtEngine.GemsLocal = proxyHandler.LocalGemsIndex
 	s.virtEngine.AnsibleLocal = proxyHandler.LocalAnsible
-	r.Mount("/api/v1", proxyHandler.Routes())
-	r.Mount("/v2", proxyHandler.DockerV2Routes())
+	writeAuth := auth.NewBearerOIDC(s.cfg.OIDCIssuer, s.cfg.OIDCAudiences)
+	uploadAuth := passthrough
+	dockerV2 := http.Handler(proxyHandler.DockerV2Routes())
+	if s.cfg.AuthUploads {
+		uploadAuth = writeAuth.RequireWrites
+		dockerV2 = writeAuth.RequireRegistryWrites(dockerV2, func(r *http.Request) string {
+			return v1.Scheme(r) + "://" + r.Host + "/v2/token"
+		})
+	}
+	r.Mount("/api/v1", uploadAuth(proxyHandler.Routes()))
+	r.Mount("/v2", dockerV2)
 
 	remotesHandler := v2.NewRemotesHandler(s.db, s.cache, map[models.PackageType]v2.Primer{
 		models.PackageGitHubRPM:    s.syncer,
@@ -182,7 +191,6 @@ func (s *Server) routes() chi.Router {
 	statsHandler := v2.NewStatsHandler(s.db)
 	eventsHandler := v2.NewEventsHandler()
 	probeHandler := v2.NewProbeHandler(s.engine, s.db)
-	writeAuth := auth.NewBearerOIDC(s.cfg.OIDCIssuer, s.cfg.OIDCAudiences)
 
 	r.Route("/api/v2", func(r chi.Router) {
 		r.Mount("/remotes", writeAuth.RequireWrites(remotesHandler.Routes()))
@@ -192,19 +200,19 @@ func (s *Server) routes() chi.Router {
 		r.Mount("/events", eventsHandler.Routes())
 		r.Mount("/probe", probeHandler.Routes())
 
-		r.Route("/remotes/{name}/objects", func(r chi.Router) {
+		r.With(uploadAuth).Route("/remotes/{name}/objects", func(r chi.Router) {
 			objHandler := v2.NewObjectsHandler(s.db)
 			r.Get("/", objHandler.Routes(s.engine).ServeHTTP)
 			r.Delete("/*", objHandler.Routes(s.engine).ServeHTTP)
 		})
 
-		r.Route("/locals/{name}/objects", func(r chi.Router) {
+		r.With(uploadAuth).Route("/locals/{name}/objects", func(r chi.Router) {
 			objHandler := v2.NewObjectsHandler(s.db)
 			r.Get("/", objHandler.LocalRoutes().ServeHTTP)
 			r.Delete("/*", objHandler.LocalRoutes().ServeHTTP)
 		})
 
-		r.Route("/remotes/{name}/files", func(r chi.Router) {
+		r.With(uploadAuth).Route("/remotes/{name}/files", func(r chi.Router) {
 			r.Put("/*", s.localHandler.Routes().ServeHTTP)
 			r.Get("/*", s.localHandler.Routes().ServeHTTP)
 			r.Delete("/*", s.localHandler.Routes().ServeHTTP)
@@ -213,6 +221,8 @@ func (s *Server) routes() chi.Router {
 
 	return r
 }
+
+func passthrough(h http.Handler) http.Handler { return h }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

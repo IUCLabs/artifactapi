@@ -61,6 +61,8 @@ type Config struct {
 	// Bearer-JWT auth on configuration writes; empty issuer disables it.
 	OIDCIssuer    string
 	OIDCAudiences []string
+	// AuthUploads extends that auth to local repo uploads, deletes and evictions.
+	AuthUploads bool
 }
 
 func (c *Config) DatabaseDSN() string {
@@ -105,6 +107,13 @@ func Load() (*Config, error) {
 	if oidcIssuer != "" && len(oidcAudiences) == 0 {
 		return nil, fmt.Errorf("ARTIFACTAPI_OIDC_AUDIENCE is required when ARTIFACTAPI_OIDC_ISSUER is set")
 	}
+	authUploads, err := strconv.ParseBool(getenv("ARTIFACTAPI_AUTH_UPLOADS", "false"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid ARTIFACTAPI_AUTH_UPLOADS: %w", err)
+	}
+	if authUploads && oidcIssuer == "" {
+		return nil, fmt.Errorf("ARTIFACTAPI_OIDC_ISSUER is required when ARTIFACTAPI_AUTH_UPLOADS is set")
+	}
 
 	cfg := &Config{
 		ListenAddr: getenv("LISTEN_ADDR", ":8000"),
@@ -142,6 +151,7 @@ func Load() (*Config, error) {
 
 		OIDCIssuer:    oidcIssuer,
 		OIDCAudiences: oidcAudiences,
+		AuthUploads:   authUploads,
 	}
 
 	return cfg, nil

@@ -10,6 +10,9 @@ docker push        artifactapi.example.com/docker-internal/myapp:latest
 docker pull        artifactapi.example.com/docker-internal/myapp:latest
 ```
 
+With [uploads gated](../common/auth.md), `docker login` with any username and
+a token as the password before pushing; pulls stay anonymous.
+
 The first path segment after `/v2/` is the artifactapi repo name; the remainder
 is the image name. Blobs and manifests are stored through the shared
 content-addressable store (deduplicated by digest, reaped by GC once

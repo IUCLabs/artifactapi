@@ -81,3 +81,23 @@ func TestLoadOIDC(t *testing.T) {
 		t.Error("expected error for issuer without audience")
 	}
 }
+
+func TestLoadAuthUploads(t *testing.T) {
+	cfg, err := Load()
+	if err != nil || cfg.AuthUploads {
+		t.Fatalf("default: %v, AuthUploads=%v", err, cfg.AuthUploads)
+	}
+	t.Setenv("ARTIFACTAPI_AUTH_UPLOADS", "true")
+	if _, err := Load(); err == nil {
+		t.Error("expected error for AUTH_UPLOADS without issuer")
+	}
+	t.Setenv("ARTIFACTAPI_OIDC_ISSUER", "https://vault.example/v1/identity/oidc")
+	t.Setenv("ARTIFACTAPI_OIDC_AUDIENCE", "artifactapi")
+	if cfg, err := Load(); err != nil || !cfg.AuthUploads {
+		t.Fatalf("enabled: %v, AuthUploads=%v", err, cfg.AuthUploads)
+	}
+	t.Setenv("ARTIFACTAPI_AUTH_UPLOADS", "maybe")
+	if _, err := Load(); err == nil {
+		t.Error("expected error for invalid ARTIFACTAPI_AUTH_UPLOADS")
+	}
+}

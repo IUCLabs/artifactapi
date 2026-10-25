@@ -29,7 +29,7 @@ func TestGitHubDebSyncLease(t *testing.T) {
 	const lease = 15 * time.Minute
 	freshness := time.Hour
 
-	claimed, etag, err := testDB.ClaimGitHubDebSyncLease(ctx(), name, "replica-1", freshness, lease)
+	claimed, etag, err := testDB.ClaimGitHubDebSyncLease(ctx(), name, "replica-1", freshness, lease, 0, 0)
 	if err != nil || !claimed {
 		t.Fatalf("replica-1 first claim: claimed=%v err=%v", claimed, err)
 	}
@@ -37,7 +37,7 @@ func TestGitHubDebSyncLease(t *testing.T) {
 		t.Fatalf("initial etag should be empty, got %q", etag)
 	}
 
-	claimed2, _, err := testDB.ClaimGitHubDebSyncLease(ctx(), name, "replica-2", freshness, lease)
+	claimed2, _, err := testDB.ClaimGitHubDebSyncLease(ctx(), name, "replica-2", freshness, lease, 0, 0)
 	if err != nil {
 		t.Fatalf("replica-2 claim err: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestGitHubDebSyncLease(t *testing.T) {
 		t.Fatalf("release: %v", err)
 	}
 
-	claimed3, _, err := testDB.ClaimGitHubDebSyncLease(ctx(), name, "replica-2", freshness, lease)
+	claimed3, _, err := testDB.ClaimGitHubDebSyncLease(ctx(), name, "replica-2", freshness, lease, 0, 0)
 	if err != nil {
 		t.Fatalf("replica-2 recency claim err: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestGitHubDebSyncLease(t *testing.T) {
 		t.Fatal("periodic claim succeeded inside the freshness window")
 	}
 
-	claimed4, etag4, err := testDB.ClaimGitHubDebSyncLease(ctx(), name, "replica-2", 0, lease)
+	claimed4, etag4, err := testDB.ClaimGitHubDebSyncLease(ctx(), name, "replica-2", 0, lease, 0, 0)
 	if err != nil || !claimed4 {
 		t.Fatalf("prime claim: claimed=%v err=%v", claimed4, err)
 	}

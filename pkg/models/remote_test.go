@@ -2,8 +2,10 @@ package models
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRemote_ValidatePatterns(t *testing.T) {
@@ -121,5 +123,68 @@ func TestValidateMirrorlist(t *testing.T) {
 				t.Errorf("ValidateMirrorlist() err = %v, wantErr = %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestSyncPeriod(t *testing.T) {
+	const def = 5 * time.Minute
+	for _, tc := range []struct {
+		interval, ttl int
+		want          time.Duration
+	}{
+		{0, 0, def},
+		{0, 600, 10 * time.Minute},
+		{3600, 600, time.Hour},
+	} {
+		r := Remote{SyncInterval: tc.interval, MutableTTL: tc.ttl}
+		if got := r.SyncPeriod(def); got != tc.want {
+			t.Errorf("SyncPeriod(interval=%d, ttl=%d) = %v, want %v", tc.interval, tc.ttl, got, tc.want)
+		}
+	}
+}
+
+func TestValidateSyncInterval(t *testing.T) {
+	for _, tc := range []struct {
+		pt       PackageType
+		interval int
+		ok       bool
+	}{
+		{PackageGitHubRPM, 3600, true},
+		{PackageGitHubDeb, 3600, true},
+		{PackageGitHubAlpine, 3600, true},
+		{PackageGitHubRPM, -1, false},
+		{PackageRPM, 0, true},
+		{PackageRPM, 60, false},
+	} {
+		r := Remote{PackageType: tc.pt, SyncInterval: tc.interval}
+		if err := r.ValidateSyncInterval(); (err == nil) != tc.ok {
+			t.Errorf("%s interval=%d: err=%v, want ok=%v", tc.pt, tc.interval, err, tc.ok)
+		}
+	}
+}
+
+func TestSyncSchedule(t *testing.T) {
+	if i, p := (Remote{Name: "x", MutableTTL: 60}).SyncSchedule(); i != 0 || p != 0 {
+		t.Fatalf("unset sync_interval schedule = %v/%v, want 0/0", i, p)
+	}
+
+	const period = 5 * time.Minute
+	phases := map[time.Duration]bool{}
+	var lo, hi time.Duration = period, 0
+	for i := 0; i < 13; i++ {
+		r := Remote{Name: fmt.Sprintf("github-rpm-%02d", i), SyncInterval: int(period.Seconds())}
+		interval, p := r.SyncSchedule()
+		if interval != period || p < 0 || p >= period {
+			t.Fatalf("%s: schedule %v/%v outside [0, %v)", r.Name, interval, p, period)
+		}
+		if _, again := r.SyncSchedule(); again != p {
+			t.Fatalf("%s: phase not stable", r.Name)
+		}
+		p = p.Truncate(time.Second)
+		phases[p] = true
+		lo, hi = min(lo, p), max(hi, p)
+	}
+	if len(phases) != 13 || hi-lo < period/2 {
+		t.Fatalf("phases bunched: %d distinct, spread %v of %v", len(phases), hi-lo, period)
 	}
 }

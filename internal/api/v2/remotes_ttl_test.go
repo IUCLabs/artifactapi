@@ -56,6 +56,51 @@ func TestMutableTTLOmittedVsZero(t *testing.T) {
 	}
 }
 
+// sync_interval round-trips through the API and DB on github_* remotes and is
+// rejected when negative or on a type without a background syncer.
+func TestSyncIntervalAPI(t *testing.T) {
+	if testDSN == "" {
+		t.Skip("Docker unavailable")
+	}
+	db, err := database.New(testDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	h := NewRemotesHandler(db, nil, nil).Routes()
+	interval := func(name string) int {
+		t.Helper()
+		r, err := db.GetRemote(context.Background(), name)
+		if err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		return r.SyncInterval
+	}
+	const gh = `"package_type":"github_deb","base_url":"https://api.github.com/repos/acme/tools","releases_remote":"github"`
+
+	if c := do(t, h, "POST", "/", `{"name":"si-gh",`+gh+`}`); c != 201 {
+		t.Fatalf("create unset = %d", c)
+	}
+	if got := interval("si-gh"); got != 0 {
+		t.Fatalf("unset sync_interval stored as %d", got)
+	}
+	if c := do(t, h, "PUT", "/si-gh", `{`+gh+`,"sync_interval":3600}`); c != 200 {
+		t.Fatalf("update = %d", c)
+	}
+	if got := interval("si-gh"); got != 3600 {
+		t.Fatalf("sync_interval = %d, want 3600", got)
+	}
+
+	for _, body := range []string{
+		`{"name":"si-neg",` + gh + `,"sync_interval":-1}`,
+		`{"name":"si-rpm","package_type":"rpm","base_url":"https://example.com/repo","sync_interval":60}`,
+	} {
+		if c := do(t, h, "POST", "/", body); c != 400 {
+			t.Errorf("%s = %d, want 400", body, c)
+		}
+	}
+}
+
 func TestQuarantineDaysDefault(t *testing.T) {
 	if testDSN == "" {
 		t.Skip("Docker unavailable")

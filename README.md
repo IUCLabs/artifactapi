@@ -203,7 +203,7 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_SYNC_RATE` | `1` | `github_rpm` syncer global GitHub request rate (req/s), shared across all remotes. `1`/s = 3600/hr, under an authenticated token's ~5000/hr; unauthenticated (~60/hr) relies on ETag/304 |
 | `GITHUB_SYNC_BURST` | `5` | Token-bucket burst for the shared limiter |
 | `GITHUB_SYNC_WORKERS` | `3` | Concurrent `github_rpm` scan workers |
-| `GITHUB_SYNC_POLL_INTERVAL` | `60` | Base scheduler tick in seconds; per-remote cadence is its `mutable_ttl`, enforced by the DB lease |
+| `GITHUB_SYNC_POLL_INTERVAL` | `60` | Base scheduler tick in seconds; per-remote cadence is its `sync_interval` (phase-spread), else `mutable_ttl`, enforced by the DB lease |
 | `GITHUB_TOKEN` | | Server-level GitHub PAT (fine-grained or classic), sent as `Authorization: Bearer`. Applies to every GitHub request; per-remote creds override it. See [GitHub authentication](#github-authentication) |
 | `GITHUB_APP_ID` | | GitHub App id (App auth mode; mutually exclusive with `GITHUB_TOKEN`) |
 | `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |

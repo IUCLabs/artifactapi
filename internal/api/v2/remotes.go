@@ -104,6 +104,10 @@ func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := remote.ValidateSyncInterval(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if err := remote.ValidateQuarantine(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -146,6 +150,10 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := remote.ValidatePatterns(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := remote.ValidateSyncInterval(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}

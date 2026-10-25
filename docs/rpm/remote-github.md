@@ -32,8 +32,12 @@ derived metadata current off the client request path:
   The first `dnf` request is served from cache. If a request arrives before the
   prime lands, it returns a retryable `503` (with `Retry-After`) rather than
   serving an empty repo or blocking on a multi-minute derive.
-- **Periodic re-check, driven by `mutable_ttl`.** Each remote is re-checked for
-  new or changed releases no more often than its `mutable_ttl`. New/changed
+- **Periodic re-check, driven by `sync_interval` or `mutable_ttl`.** With
+  `sync_interval` (seconds) set, a remote re-checks once per interval at a
+  stable per-remote offset, so remotes on the same interval spread out instead
+  of syncing together; its first scheduled sync waits for that slot (a
+  cold-cache request still primes at once). Unset, it re-checks no more often
+  than its `mutable_ttl`. New/changed
   assets are derived incrementally; assets already cached are never re-fetched,
   and assets that disappear upstream are pruned.
 - **ETag / 304 conditional requests.** The releases-list `ETag` is stored per
@@ -50,7 +54,7 @@ derived metadata current off the client request path:
   periodic scan a replica must atomically claim a per-remote lease
   (`github_rpm_sync_state`: `last_synced_at`, `etag`, `sync_lease_owner`,
   `sync_lease_expires`); only the winner scans. This bounds total GitHub load to
-  ~once per `mutable_ttl` regardless of replica count, and the shared `etag`
+  ~once per `sync_interval` (else `mutable_ttl`) regardless of replica count, and the shared `etag`
   lets any replica issue the conditional request.
 
 ```hcl

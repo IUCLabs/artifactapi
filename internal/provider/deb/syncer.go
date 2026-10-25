@@ -27,7 +27,7 @@ const (
 type SyncStore interface {
 	provider.RemoteMetadataStore
 	ListGitHubDebRemotes(ctx context.Context) ([]models.Remote, error)
-	ClaimGitHubDebSyncLease(ctx context.Context, remoteName, owner string, freshness, lease time.Duration) (claimed bool, etag string, err error)
+	ClaimGitHubDebSyncLease(ctx context.Context, remoteName, owner string, freshness, lease, interval, phase time.Duration) (claimed bool, etag string, err error)
 	ReleaseGitHubDebSyncLease(ctx context.Context, remoteName, owner string, res provider.SyncResult) error
 }
 
@@ -129,7 +129,8 @@ func (s *Syncer) Run(ctx context.Context) {
 }
 
 // schedule enqueues a periodic check for every github_deb remote. The DB lease
-// enforces the per-remote mutable_ttl cadence and cross-replica coordination.
+// enforces the per-remote sync_interval (else mutable_ttl) cadence and
+// cross-replica coordination.
 func (s *Syncer) schedule(ctx context.Context) {
 	remotes, err := s.store.ListGitHubDebRemotes(ctx)
 	if err != nil {
@@ -142,8 +143,10 @@ func (s *Syncer) schedule(ctx context.Context) {
 }
 
 // EnqueuePrime queues an immediate background prime for a freshly created remote.
+// A sync_interval remote skips it and syncs in its first slot, so remotes
+// created together do not burst.
 func (s *Syncer) EnqueuePrime(remote models.Remote) {
-	if s == nil {
+	if s == nil || remote.SyncInterval > 0 {
 		return
 	}
 	s.enqueue(remote, true)
@@ -189,16 +192,16 @@ func (s *Syncer) process(ctx context.Context, job syncJob) {
 		s.mu.Unlock()
 	}()
 
-	ttl := time.Duration(job.remote.MutableTTL) * time.Second
-	if ttl <= 0 {
-		ttl = defaultSyncFreshness
-	}
+	ttl := job.remote.SyncPeriod(defaultSyncFreshness)
 	freshness := ttl
+	var interval, phase time.Duration
 	if job.prime {
 		freshness = 0
+	} else {
+		interval, phase = job.remote.SyncSchedule()
 	}
 
-	claimed, etag, err := s.store.ClaimGitHubDebSyncLease(ctx, job.remote.Name, s.owner, freshness, syncLeaseDuration)
+	claimed, etag, err := s.store.ClaimGitHubDebSyncLease(ctx, job.remote.Name, s.owner, freshness, syncLeaseDuration, interval, phase)
 	if err != nil {
 		slog.Error("github_deb syncer: claim lease", "remote", job.remote.Name, "error", err)
 		return

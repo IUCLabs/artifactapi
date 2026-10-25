@@ -28,6 +28,10 @@ type fakeSyncStore struct {
 	lastSynced map[string]time.Time
 	etags      map[string]string
 	retryAt    map[string]time.Time
+	freshness  time.Duration
+	interval   time.Duration
+	phase      time.Duration
+	attempts   int
 }
 
 func newFakeSyncStore() *fakeSyncStore {
@@ -47,9 +51,11 @@ func (f *fakeSyncStore) ListGitHubAlpineRemotes(_ context.Context) ([]models.Rem
 	return append([]models.Remote(nil), f.remotes...), nil
 }
 
-func (f *fakeSyncStore) ClaimGitHubAlpineSyncLease(_ context.Context, name, owner string, freshness, lease time.Duration) (bool, string, error) {
+func (f *fakeSyncStore) ClaimGitHubAlpineSyncLease(_ context.Context, name, owner string, freshness, lease, interval, phase time.Duration) (bool, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.freshness, f.interval, f.phase = freshness, interval, phase
+	f.attempts++
 	now := time.Now()
 	ls, hasLS := f.lastSynced[name]
 	exp, hasExp := f.leaseExp[name]
@@ -223,7 +229,7 @@ func TestSyncerLeasePreventsSecondReplica(t *testing.T) {
 	s := newSyncer(store, p, testSyncConfig())
 	remote := fx.remote()
 
-	claimed, _, err := store.ClaimGitHubAlpineSyncLease(context.Background(), remote.Name, "replica-1", time.Duration(remote.MutableTTL)*time.Second, syncLeaseDuration)
+	claimed, _, err := store.ClaimGitHubAlpineSyncLease(context.Background(), remote.Name, "replica-1", time.Duration(remote.MutableTTL)*time.Second, syncLeaseDuration, 0, 0)
 	if err != nil || !claimed {
 		t.Fatalf("replica-1 claim: claimed=%v err=%v", claimed, err)
 	}
@@ -361,5 +367,39 @@ func TestSyncerFailedAssetRetry(t *testing.T) {
 				t.Fatalf("retry did not derive the failed asset: %d rows", len(rows))
 			}
 		})
+	}
+}
+
+// A periodic check claims with sync_interval as its freshness and passes the
+// remote's slot schedule; unset, it falls back to mutable_ttl with no schedule.
+func TestSyncerHonoursSyncInterval(t *testing.T) {
+	for _, interval := range []int{0, 7200} {
+		store := newFakeSyncStore()
+		s := newSyncer(store, newTestProvider(), testSyncConfig())
+		store.lastSynced["sched"] = time.Now()
+		remote := models.Remote{Name: "sched", MutableTTL: 90, SyncInterval: interval}
+		wantInterval, wantPhase := remote.SyncSchedule()
+		s.process(context.Background(), syncJob{remote: remote})
+		if want := remote.SyncPeriod(0); store.freshness != want || store.interval != wantInterval || store.phase != wantPhase {
+			t.Errorf("sync_interval=%d: claim freshness/interval/phase = %v/%v/%v, want %v/%v/%v",
+				interval, store.freshness, store.interval, store.phase, want, wantInterval, wantPhase)
+		}
+	}
+}
+
+// Create-time primes are skipped for a scheduled remote so remotes created
+// together spread out; a cold-cache prime still claims with no schedule.
+func TestSyncerScheduledPrime(t *testing.T) {
+	store := newFakeSyncStore()
+	s := newSyncer(store, newTestProvider(), testSyncConfig())
+	remote := models.Remote{Name: "fresh", SyncInterval: 3600}
+
+	s.EnqueuePrime(remote)
+	if len(s.jobs) != 0 {
+		t.Fatal("create-time prime enqueued for a sync_interval remote")
+	}
+	s.process(context.Background(), syncJob{remote: remote, prime: true})
+	if store.attempts != 1 || store.freshness != 0 || store.interval != 0 {
+		t.Fatalf("cold-cache prime: attempts=%d freshness=%v interval=%v, want 1/0/0", store.attempts, store.freshness, store.interval)
 	}
 }

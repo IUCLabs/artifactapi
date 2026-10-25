@@ -34,8 +34,8 @@ func (db *DB) ListGitHubRPMRemotes(ctx context.Context) ([]models.Remote, error)
 
 // ClaimGitHubSyncLease atomically claims the per-remote github_rpm sync lease.
 // See claimSyncLease.
-func (db *DB) ClaimGitHubSyncLease(ctx context.Context, remoteName, owner string, freshness, lease time.Duration) (bool, string, error) {
-	return db.claimSyncLease(ctx, "github_rpm_sync_state", remoteName, owner, freshness, lease)
+func (db *DB) ClaimGitHubSyncLease(ctx context.Context, remoteName, owner string, freshness, lease, interval, phase time.Duration) (bool, string, error) {
+	return db.claimSyncLease(ctx, "github_rpm_sync_state", remoteName, owner, freshness, lease, interval, phase)
 }
 
 // ReleaseGitHubSyncLease records a github_rpm scan outcome and frees the lease.
@@ -48,22 +48,30 @@ func (db *DB) ReleaseGitHubSyncLease(ctx context.Context, remoteName, owner stri
 // (claimed=true) only when the remote is due and no live lease is held by
 // another replica. Due means: a pending retry after a failed scan has reached
 // next_retry_at, or, with no retry pending, the remote was never synced or was
-// synced longer than freshness ago. A zero freshness (prime scans) ignores the
-// recency gate but still honours a pending retry's backoff. The returned etag is
-// the stored releases-list ETag, shared across replicas so a conditional request
+// last synced before the current slot (interval set) or longer than freshness
+// ago (otherwise). With interval set, slots start at phase past each multiple
+// of interval and a remote created inside the current slot waits for the next.
+// Slots are computed from the DB clock so replicas agree whatever their own
+// clocks say. A zero freshness and interval (prime scans) ignores the recency
+// gate but still honours a pending retry's backoff. The returned etag is the
+// stored releases-list ETag, shared across replicas so a conditional request
 // can short-circuit an unchanged repo.
-func (db *DB) claimSyncLease(ctx context.Context, table, remoteName, owner string, freshness, lease time.Duration) (bool, string, error) {
+func (db *DB) claimSyncLease(ctx context.Context, table, remoteName, owner string, freshness, lease, interval, phase time.Duration) (bool, string, error) {
+	const slot = `to_timestamp(floor((extract(epoch FROM now())::float8 - $6::float8) / NULLIF($5::float8, 0)) * $5::float8 + $6::float8)`
 	row := db.Pool.QueryRow(ctx, `
 		INSERT INTO `+table+` AS s (remote_name, sync_lease_owner, sync_lease_expires)
-		VALUES ($1, $2, now() + make_interval(secs => $4))
+		SELECT r.name, $2, now() + make_interval(secs => $4)
+		  FROM remotes r
+		 WHERE r.name = $1
+		   AND ($5::float8 <= 0 OR COALESCE(r.created_at, '-infinity') < `+slot+`)
 		ON CONFLICT (remote_name) DO UPDATE
 			SET sync_lease_owner   = $2,
 			    sync_lease_expires = now() + make_interval(secs => $4)
 			WHERE (CASE WHEN s.next_retry_at IS NOT NULL THEN s.next_retry_at <= now()
-			            ELSE s.last_synced_at IS NULL OR s.last_synced_at < now() - make_interval(secs => $3) END)
+			            ELSE s.last_synced_at IS NULL OR s.last_synced_at < COALESCE(`+slot+`, now() - make_interval(secs => $3)) END)
 			  AND (s.sync_lease_expires IS NULL OR s.sync_lease_expires < now())
 		RETURNING s.etag
-	`, remoteName, owner, freshness.Seconds(), lease.Seconds())
+	`, remoteName, owner, freshness.Seconds(), lease.Seconds(), interval.Seconds(), phase.Seconds())
 
 	var etag string
 	if err := row.Scan(&etag); err != nil {

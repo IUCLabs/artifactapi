@@ -1,6 +1,10 @@
 package database
 
 import (
+	"context"
+	"fmt"
+	"math"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,7 +34,7 @@ func TestGitHubSyncLease(t *testing.T) {
 	freshness := time.Hour
 
 	// First claim on a never-synced remote wins; etag starts empty.
-	claimed, etag, err := testDB.ClaimGitHubSyncLease(ctx(), name, "replica-1", freshness, lease)
+	claimed, etag, err := testDB.ClaimGitHubSyncLease(ctx(), name, "replica-1", freshness, lease, 0, 0)
 	if err != nil || !claimed {
 		t.Fatalf("replica-1 first claim: claimed=%v err=%v", claimed, err)
 	}
@@ -39,7 +43,7 @@ func TestGitHubSyncLease(t *testing.T) {
 	}
 
 	// A second replica cannot claim while the lease is held.
-	claimed2, _, err := testDB.ClaimGitHubSyncLease(ctx(), name, "replica-2", freshness, lease)
+	claimed2, _, err := testDB.ClaimGitHubSyncLease(ctx(), name, "replica-2", freshness, lease, 0, 0)
 	if err != nil {
 		t.Fatalf("replica-2 claim err: %v", err)
 	}
@@ -53,7 +57,7 @@ func TestGitHubSyncLease(t *testing.T) {
 	}
 
 	// A periodic re-claim inside the freshness window is blocked by recency.
-	claimed3, _, err := testDB.ClaimGitHubSyncLease(ctx(), name, "replica-2", freshness, lease)
+	claimed3, _, err := testDB.ClaimGitHubSyncLease(ctx(), name, "replica-2", freshness, lease, 0, 0)
 	if err != nil {
 		t.Fatalf("replica-2 recency claim err: %v", err)
 	}
@@ -62,7 +66,7 @@ func TestGitHubSyncLease(t *testing.T) {
 	}
 
 	// A prime (freshness 0) bypasses recency and reads the persisted etag.
-	claimed4, etag4, err := testDB.ClaimGitHubSyncLease(ctx(), name, "replica-2", 0, lease)
+	claimed4, etag4, err := testDB.ClaimGitHubSyncLease(ctx(), name, "replica-2", 0, lease, 0, 0)
 	if err != nil || !claimed4 {
 		t.Fatalf("prime claim: claimed=%v err=%v", claimed4, err)
 	}
@@ -108,7 +112,7 @@ func TestGitHubSyncLeaseFailureBackoff(t *testing.T) {
 	freshness := time.Hour
 	claim := func(f time.Duration) (bool, string) {
 		t.Helper()
-		ok, etag, err := testDB.ClaimGitHubSyncLease(ctx(), name, "r1", f, lease)
+		ok, etag, err := testDB.ClaimGitHubSyncLease(ctx(), name, "r1", f, lease, 0, 0)
 		if err != nil {
 			t.Fatalf("claim: %v", err)
 		}
@@ -220,21 +224,21 @@ func TestGitHubSyncStateDeletedWithRemote(t *testing.T) {
 	}{
 		{"github_rpm_sync_state", models.PackageGitHubRPM,
 			func(n string) (bool, string, error) {
-				return testDB.ClaimGitHubSyncLease(ctx(), n, "r1", time.Hour, time.Minute)
+				return testDB.ClaimGitHubSyncLease(ctx(), n, "r1", time.Hour, time.Minute, 0, 0)
 			},
 			func(n string, res provider.SyncResult) error {
 				return testDB.ReleaseGitHubSyncLease(ctx(), n, "r1", res)
 			}},
 		{"github_deb_sync_state", models.PackageGitHubDeb,
 			func(n string) (bool, string, error) {
-				return testDB.ClaimGitHubDebSyncLease(ctx(), n, "r1", time.Hour, time.Minute)
+				return testDB.ClaimGitHubDebSyncLease(ctx(), n, "r1", time.Hour, time.Minute, 0, 0)
 			},
 			func(n string, res provider.SyncResult) error {
 				return testDB.ReleaseGitHubDebSyncLease(ctx(), n, "r1", res)
 			}},
 		{"github_alpine_sync_state", models.PackageGitHubAlpine,
 			func(n string) (bool, string, error) {
-				return testDB.ClaimGitHubAlpineSyncLease(ctx(), n, "r1", time.Hour, time.Minute)
+				return testDB.ClaimGitHubAlpineSyncLease(ctx(), n, "r1", time.Hour, time.Minute, 0, 0)
 			},
 			func(n string, res provider.SyncResult) error {
 				return testDB.ReleaseGitHubAlpineSyncLease(ctx(), n, "r1", res)
@@ -272,6 +276,126 @@ func TestGitHubSyncStateDeletedWithRemote(t *testing.T) {
 			ok, etag, err := tc.claim(name)
 			if err != nil || !ok || etag != "" {
 				t.Fatalf("recreated remote claim ok=%v etag=%q err=%v, want a fresh claim with no etag", ok, etag, err)
+			}
+		})
+	}
+}
+
+type syncTable struct {
+	table string
+	pt    models.PackageType
+	claim func(name, owner string, freshness, interval, phase time.Duration) (bool, error)
+}
+
+func syncTables() []syncTable {
+	wrap := func(fn func(context.Context, string, string, time.Duration, time.Duration, time.Duration, time.Duration) (bool, string, error)) func(string, string, time.Duration, time.Duration, time.Duration) (bool, error) {
+		return func(name, owner string, freshness, interval, phase time.Duration) (bool, error) {
+			ok, _, err := fn(ctx(), name, owner, freshness, 15*time.Minute, interval, phase)
+			return ok, err
+		}
+	}
+	return []syncTable{
+		{"github_rpm_sync_state", models.PackageGitHubRPM, wrap(testDB.ClaimGitHubSyncLease)},
+		{"github_deb_sync_state", models.PackageGitHubDeb, wrap(testDB.ClaimGitHubDebSyncLease)},
+		{"github_alpine_sync_state", models.PackageGitHubAlpine, wrap(testDB.ClaimGitHubAlpineSyncLease)},
+	}
+}
+
+var syncSeq atomic.Int64
+
+// seedSynced creates a remote of tc's type created createdAgo before the DB
+// clock and, when syncedAgo >= 0, a released lease last synced syncedAgo before it.
+func seedSynced(t *testing.T, tc syncTable, createdAgo, syncedAgo time.Duration) string {
+	t.Helper()
+	name := fmt.Sprintf("sync-%s-%d", tc.table, syncSeq.Add(1))
+	if err := testDB.CreateRemote(ctx(), &models.Remote{
+		Name: name, PackageType: tc.pt, RepoType: models.RepoTypeRemote,
+		BaseURL: "https://api.github.com/repos/acme/tools", ReleasesRemote: "github",
+	}); err != nil {
+		t.Fatalf("create remote: %v", err)
+	}
+	if _, err := testDB.Pool.Exec(ctx(), `UPDATE remotes SET created_at = now() - make_interval(secs => $2) WHERE name = $1`, name, createdAgo.Seconds()); err != nil {
+		t.Fatalf("seed created_at: %v", err)
+	}
+	if syncedAgo >= 0 {
+		if _, err := testDB.Pool.Exec(ctx(), `INSERT INTO `+tc.table+` (remote_name, last_synced_at) VALUES ($1, now() - make_interval(secs => $2))`, name, syncedAgo.Seconds()); err != nil {
+			t.Fatalf("seed sync state: %v", err)
+		}
+	}
+	return name
+}
+
+func mustClaim(t *testing.T, tc syncTable, name, owner string, freshness, interval, phase time.Duration) bool {
+	t.Helper()
+	ok, err := tc.claim(name, owner, freshness, interval, phase)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	return ok
+}
+
+const neverSynced = -1
+
+// With no interval the claim keeps the freshness-since-last-sync predicate and
+// a new remote is due at once.
+func TestSyncLeaseUnsetIntervalFreshness(t *testing.T) {
+	requireDB(t)
+	const ttl = time.Hour
+	for _, tc := range syncTables() {
+		t.Run(tc.table, func(t *testing.T) {
+			for _, c := range []struct {
+				ago       time.Duration
+				freshness time.Duration
+				due       bool
+			}{
+				{neverSynced, ttl, true},
+				{ttl + time.Minute, ttl, true},
+				{ttl - time.Minute, ttl, false},
+				{time.Second, ttl, false},
+				{time.Second, 0, true},
+			} {
+				name := seedSynced(t, tc, time.Second, c.ago)
+				if got := mustClaim(t, tc, name, "r1", c.freshness, 0, 0); got != c.due {
+					t.Errorf("synced %v ago, freshness %v: claimed=%v, want %v", c.ago, c.freshness, got, c.due)
+				}
+			}
+		})
+	}
+}
+
+// With an interval the slot comes from the DB clock: a remote is due only when
+// created and last synced before the current slot, regardless of freshness,
+// and still one replica at a time.
+func TestSyncLeaseSlot(t *testing.T) {
+	requireDB(t)
+	var epoch float64
+	if err := testDB.Pool.QueryRow(ctx(), `SELECT extract(epoch FROM now())::float8`).Scan(&epoch); err != nil {
+		t.Fatalf("db now: %v", err)
+	}
+	const interval = time.Hour
+	// Pick the phase that puts the current slot's start 30m before the DB now.
+	phase := time.Duration(math.Mod(epoch-1800, interval.Seconds()) * float64(time.Second))
+	const day = 24 * time.Hour
+	for _, tc := range syncTables() {
+		t.Run(tc.table, func(t *testing.T) {
+			for _, c := range []struct {
+				desc            string
+				createdAgo, ago time.Duration
+				freshness       time.Duration
+				due             bool
+			}{
+				{"created inside the slot", 10 * time.Second, neverSynced, 0, false},
+				{"created before the slot", 35 * time.Minute, neverSynced, 0, true},
+				{"synced inside the slot", day, 25 * time.Minute, 0, false},
+				{"synced before the slot", day, 35 * time.Minute, 10 * 365 * day, true},
+			} {
+				name := seedSynced(t, tc, c.createdAgo, c.ago)
+				if got := mustClaim(t, tc, name, "r1", c.freshness, interval, phase); got != c.due {
+					t.Errorf("%s: claimed=%v, want %v", c.desc, got, c.due)
+				}
+				if c.due && mustClaim(t, tc, name, "r2", 0, interval, phase) {
+					t.Errorf("%s: second replica claimed a held lease", c.desc)
+				}
 			}
 		})
 	}

@@ -9,7 +9,7 @@ import (
 )
 
 const remoteCols = `name, package_type, repo_type, base_url, mirrorlist, mirror_strategy, description, username, password,
-	immutable_ttl, mutable_ttl, check_mutable,
+	immutable_ttl, mutable_ttl, check_mutable, sync_interval,
 	patterns, blocklist, mutable_patterns, immutable_patterns,
 	ban_tags_enabled, ban_tags,
 	quarantine_enabled, quarantine_days, stale_on_error,
@@ -29,7 +29,7 @@ func normalizeMirrorStrategy(s string) string {
 func scanRemote(scanner interface{ Scan(...any) error }, r *models.Remote) error {
 	return scanner.Scan(
 		&r.Name, &r.PackageType, &r.RepoType, &r.BaseURL, &r.Mirrorlist, &r.MirrorStrategy, &r.Description, &r.Username, &r.Password,
-		&r.ImmutableTTL, &r.MutableTTL, &r.CheckMutable,
+		&r.ImmutableTTL, &r.MutableTTL, &r.CheckMutable, &r.SyncInterval,
 		&r.Patterns, &r.Blocklist, &r.MutablePatterns, &r.ImmutablePatterns,
 		&r.BanTagsEnabled, &r.BanTags,
 		&r.QuarantineEnabled, &r.QuarantineDays, &r.StaleOnError,
@@ -76,8 +76,8 @@ func (db *DB) CreateRemote(ctx context.Context, r *models.Remote) error {
 			quarantine_enabled, quarantine_days, stale_on_error,
 			releases_remote, managed_by,
 			upstream_dial_timeout, upstream_tls_timeout, upstream_response_header_timeout,
-			mirror_strategy, serve_stale
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+			mirror_strategy, sync_interval, serve_stale
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
 	`,
 		r.Name, r.PackageType, r.RepoType, r.BaseURL, r.Mirrorlist, r.Description, r.Username, r.Password,
 		r.ImmutableTTL, r.MutableTTL, r.CheckMutable,
@@ -86,7 +86,7 @@ func (db *DB) CreateRemote(ctx context.Context, r *models.Remote) error {
 		r.QuarantineEnabled, r.QuarantineDays, r.StaleOnError,
 		r.ReleasesRemote, r.ManagedBy,
 		r.UpstreamDialTimeout, r.UpstreamTLSTimeout, r.UpstreamResponseHeaderTimeout,
-		normalizeMirrorStrategy(r.MirrorStrategy), r.ServeStale,
+		normalizeMirrorStrategy(r.MirrorStrategy), r.SyncInterval, r.ServeStale,
 	)
 	return err
 }
@@ -101,7 +101,7 @@ func (db *DB) UpdateRemote(ctx context.Context, r *models.Remote) error {
 			quarantine_enabled=$17, quarantine_days=$18, stale_on_error=$19,
 			releases_remote=$20, managed_by=$21,
 			upstream_dial_timeout=$22, upstream_tls_timeout=$23, upstream_response_header_timeout=$24,
-			mirror_strategy=$26, serve_stale=$27,
+			mirror_strategy=$26, sync_interval=$27, serve_stale=$28,
 			updated_at=NOW()
 		WHERE name=$1
 	`,
@@ -113,7 +113,7 @@ func (db *DB) UpdateRemote(ctx context.Context, r *models.Remote) error {
 		r.ReleasesRemote, r.ManagedBy,
 		r.UpstreamDialTimeout, r.UpstreamTLSTimeout, r.UpstreamResponseHeaderTimeout,
 		r.Mirrorlist,
-		normalizeMirrorStrategy(r.MirrorStrategy), r.ServeStale,
+		normalizeMirrorStrategy(r.MirrorStrategy), r.SyncInterval, r.ServeStale,
 	)
 	return err
 }

@@ -30,8 +30,8 @@ func (db *DB) ListGitHubDebRemotes(ctx context.Context) ([]models.Remote, error)
 
 // ClaimGitHubDebSyncLease atomically claims the per-remote github_deb sync
 // lease. See claimSyncLease.
-func (db *DB) ClaimGitHubDebSyncLease(ctx context.Context, remoteName, owner string, freshness, lease time.Duration) (bool, string, error) {
-	return db.claimSyncLease(ctx, "github_deb_sync_state", remoteName, owner, freshness, lease)
+func (db *DB) ClaimGitHubDebSyncLease(ctx context.Context, remoteName, owner string, freshness, lease, interval, phase time.Duration) (bool, string, error) {
+	return db.claimSyncLease(ctx, "github_deb_sync_state", remoteName, owner, freshness, lease, interval, phase)
 }
 
 // ReleaseGitHubDebSyncLease records a github_deb scan outcome and frees the

@@ -21,7 +21,7 @@ const (
 	// scan never loses its lease, while a crashed replica's lease still expires.
 	syncLeaseDuration = 15 * time.Minute
 	// defaultSyncFreshness is the periodic re-check interval used when a remote's
-	// mutable_ttl is unset.
+	// sync_interval and mutable_ttl are unset.
 	defaultSyncFreshness = 5 * time.Minute
 	// jobQueueDepth bounds the pending work queue; enqueues past it are dropped
 	// (a later poll re-enqueues), never blocking the caller.
@@ -34,7 +34,7 @@ const (
 type SyncStore interface {
 	provider.RemoteMetadataStore
 	ListGitHubRPMRemotes(ctx context.Context) ([]models.Remote, error)
-	ClaimGitHubSyncLease(ctx context.Context, remoteName, owner string, freshness, lease time.Duration) (claimed bool, etag string, err error)
+	ClaimGitHubSyncLease(ctx context.Context, remoteName, owner string, freshness, lease, interval, phase time.Duration) (claimed bool, etag string, err error)
 	ReleaseGitHubSyncLease(ctx context.Context, remoteName, owner string, res provider.SyncResult) error
 }
 
@@ -43,7 +43,7 @@ type SyncConfig struct {
 	RatePerSec   float64       // global GitHub request rate (req/s)
 	Burst        int           // token-bucket burst
 	Workers      int           // concurrent scan workers
-	PollInterval time.Duration // base scheduler tick; per-remote cadence is mutable_ttl
+	PollInterval time.Duration // base scheduler tick; per-remote cadence is sync_interval or mutable_ttl
 }
 
 type syncJob struct {
@@ -139,9 +139,9 @@ func (s *Syncer) Run(ctx context.Context) {
 }
 
 // schedule enqueues a periodic check for every github_rpm remote. The DB lease
-// (claimed in the worker) enforces the per-remote mutable_ttl cadence and cross
-// replica coordination, so enqueuing every tick is cheap: a not-yet-due remote
-// simply fails to claim and is skipped.
+// (claimed in the worker) enforces the per-remote sync_interval (else
+// mutable_ttl) cadence and cross replica coordination, so enqueuing every tick
+// is cheap: a not-yet-due remote simply fails to claim and is skipped.
 func (s *Syncer) schedule(ctx context.Context) {
 	remotes, err := s.store.ListGitHubRPMRemotes(ctx)
 	if err != nil {
@@ -155,8 +155,10 @@ func (s *Syncer) schedule(ctx context.Context) {
 
 // EnqueuePrime queues an immediate background prime for a freshly created
 // remote so its metadata is derived without blocking the create call.
+// A sync_interval remote skips it and syncs in its first slot, so remotes
+// created together do not burst.
 func (s *Syncer) EnqueuePrime(remote models.Remote) {
-	if s == nil {
+	if s == nil || remote.SyncInterval > 0 {
 		return
 	}
 	s.enqueue(remote, true)
@@ -205,16 +207,16 @@ func (s *Syncer) process(ctx context.Context, job syncJob) {
 		s.mu.Unlock()
 	}()
 
-	ttl := time.Duration(job.remote.MutableTTL) * time.Second
-	if ttl <= 0 {
-		ttl = defaultSyncFreshness
-	}
+	ttl := job.remote.SyncPeriod(defaultSyncFreshness)
 	freshness := ttl
+	var interval, phase time.Duration
 	if job.prime {
 		freshness = 0 // prime ignores the recency gate but still respects a live lease
+	} else {
+		interval, phase = job.remote.SyncSchedule()
 	}
 
-	claimed, etag, err := s.store.ClaimGitHubSyncLease(ctx, job.remote.Name, s.owner, freshness, syncLeaseDuration)
+	claimed, etag, err := s.store.ClaimGitHubSyncLease(ctx, job.remote.Name, s.owner, freshness, syncLeaseDuration, interval, phase)
 	if err != nil {
 		slog.Error("github_rpm syncer: claim lease", "remote", job.remote.Name, "error", err)
 		return

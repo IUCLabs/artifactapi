@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net/url"
 	"regexp"
 	"time"
@@ -55,6 +56,9 @@ type Remote struct {
 	ImmutableTTL int  `json:"immutable_ttl"`
 	MutableTTL   int  `json:"mutable_ttl"`
 	CheckMutable bool `json:"check_mutable"`
+	// SyncInterval (seconds) sets how often a github_* remote rescans releases
+	// and rebuilds its index; 0 falls back to mutable_ttl.
+	SyncInterval int `json:"sync_interval,omitempty"`
 
 	// Upstream HTTP timeouts in seconds. 0 means use the server default.
 	UpstreamDialTimeout           int `json:"upstream_dial_timeout,omitempty"`
@@ -148,6 +152,51 @@ func (r *Remote) ValidateMirrorStrategy() error {
 	}
 	if r.MirrorStrategy == MirrorStrategyLeastConn && len(r.Mirrorlist) == 0 {
 		return fmt.Errorf("mirror_strategy %q requires a non-empty mirrorlist", r.MirrorStrategy)
+	}
+	return nil
+}
+
+// SyncPeriod is the background sync cadence: sync_interval, else mutable_ttl,
+// else def.
+func (r Remote) SyncPeriod(def time.Duration) time.Duration {
+	if r.SyncInterval > 0 {
+		return time.Duration(r.SyncInterval) * time.Second
+	}
+	if r.MutableTTL > 0 {
+		return time.Duration(r.MutableTTL) * time.Second
+	}
+	return def
+}
+
+// SyncSchedule is the sync_interval and the stable per-remote phase offsetting
+// its slots, so remotes sharing an interval spread across it; both zero when
+// sync_interval is unset.
+func (r Remote) SyncSchedule() (interval, phase time.Duration) {
+	if r.SyncInterval <= 0 {
+		return 0, 0
+	}
+	interval = time.Duration(r.SyncInterval) * time.Second
+	return interval, syncPhase(r.Name, interval)
+}
+
+func syncPhase(name string, period time.Duration) time.Duration {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(name))
+	return time.Duration(h.Sum64() % uint64(period))
+}
+
+// ValidateSyncInterval rejects a negative sync_interval, or one set on a type
+// without a background syncer.
+func (r *Remote) ValidateSyncInterval() error {
+	if r.SyncInterval < 0 {
+		return fmt.Errorf("sync_interval must be >= 0, got %d", r.SyncInterval)
+	}
+	switch r.PackageType {
+	case PackageGitHubRPM, PackageGitHubDeb, PackageGitHubAlpine:
+	default:
+		if r.SyncInterval > 0 {
+			return fmt.Errorf("sync_interval is only valid on github_rpm, github_deb and github_alpine remotes")
+		}
 	}
 	return nil
 }

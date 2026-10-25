@@ -30,8 +30,8 @@ func (db *DB) ListGitHubAlpineRemotes(ctx context.Context) ([]models.Remote, err
 
 // ClaimGitHubAlpineSyncLease atomically claims the per-remote github_alpine sync
 // lease. See claimSyncLease.
-func (db *DB) ClaimGitHubAlpineSyncLease(ctx context.Context, remoteName, owner string, freshness, lease time.Duration) (bool, string, error) {
-	return db.claimSyncLease(ctx, "github_alpine_sync_state", remoteName, owner, freshness, lease)
+func (db *DB) ClaimGitHubAlpineSyncLease(ctx context.Context, remoteName, owner string, freshness, lease, interval, phase time.Duration) (bool, string, error) {
+	return db.claimSyncLease(ctx, "github_alpine_sync_state", remoteName, owner, freshness, lease, interval, phase)
 }
 
 // ReleaseGitHubAlpineSyncLease records a github_alpine scan outcome and frees the

@@ -8,6 +8,7 @@ export interface Remote {
   immutable_ttl: number;
   mutable_ttl: number;
   check_mutable: boolean;
+  sync_interval?: number;
   patterns: string[];
   blocklist: string[];
   mutable_patterns: string[];

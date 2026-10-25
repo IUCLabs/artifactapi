@@ -55,9 +55,14 @@ func fetchRepomd(t *testing.T, e *Engine) string {
 
 func TestServeStaleMemberDoesNotBlockMerge(t *testing.T) {
 	release := make(chan struct{})
+	refreshing := make(chan struct{}, 1)
 	var slow atomic.Bool
 	e, calls := staleEngine(true, func() *RPMMember {
 		if slow.Load() {
+			select {
+			case refreshing <- struct{}{}:
+			default:
+			}
 			<-release
 			return rpmPkgMember("a", "2")
 		}
@@ -78,12 +83,17 @@ func TestServeStaleMemberDoesNotBlockMerge(t *testing.T) {
 			t.Fatal("merge blocked on a serve_stale member refresh")
 		}
 	}
+	select {
+	case <-refreshing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background refresh never started")
+	}
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("member fetched %d times, want 2 (cold + one single-flighted refresh)", n)
 	}
 
 	close(release)
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for fetchRepomd(t, e) == v1 {
 		if time.Now().After(deadline) {
 			t.Fatal("background refresh never reached a merge")

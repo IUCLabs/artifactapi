@@ -109,8 +109,12 @@ func (m *model) viewVirtualsList() string {
 	}
 
 	for i, v := range m.virtuals {
-		line := fmt.Sprintf("  %-25s %-12s %d members  %s",
-			v.Name, v.PackageType, len(v.Members), v.Description)
+		parallel := "-"
+		if v.ParallelFetch {
+			parallel = "parallel"
+		}
+		line := fmt.Sprintf("  %-25s %-12s %3d members  %-8s  %s",
+			v.Name, v.PackageType, len(v.Members), parallel, v.Description)
 		if i == m.cursor {
 			sb.WriteString(selStyle.Render(line))
 		} else {

@@ -32,6 +32,7 @@ export interface Virtual {
   description: string;
   members: string[];
   managed_by: string;
+  parallel_fetch: boolean;
   created_at: string;
   updated_at: string;
 }

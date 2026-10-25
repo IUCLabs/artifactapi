@@ -26,6 +26,8 @@ export function Virtuals() {
       .finally(() => setLoading(false));
   }, []);
 
+  const selected = virtuals.find(x => x.name === expanded);
+
   function memberLink(name: string) {
     const remote = remoteMap[name];
     if (remote?.repo_type === 'local') {
@@ -68,6 +70,13 @@ export function Virtuals() {
               render: (v: Virtual) => v.description || <span className="text-muted">—</span>,
             },
             {
+              key: 'parallel',
+              header: 'Parallel',
+              render: (v: Virtual) =>
+                v.parallel_fetch ? <Badge variant="yellow">parallel</Badge> : <span className="text-muted">—</span>,
+              width: '100px',
+            },
+            {
               key: 'managed',
               header: 'Managed',
               render: (v: Virtual) =>
@@ -81,30 +90,23 @@ export function Virtuals() {
         />
       )}
 
-      {expanded && (
+      {selected && (
         <div className="virtual-detail-panel">
-          <h3 className="section-label">Members of {expanded}</h3>
+          <h3 className="section-label">Members of {selected.name}</h3>
           <ul className="member-list">
-            {virtuals
-              .find(v => v.name === expanded)
-              ?.members?.map((m, i) => {
-                const remote = remoteMap[m];
-                const typeLabel = remote?.repo_type === 'local' ? 'local' : 'remote';
-                return (
-                  <li key={m}>
-                    <span className="member-priority">{i + 1}</span>
-                    <Link to={memberLink(m)} className="mono">{m}</Link>
-                    <Badge variant={typeLabel === 'local' ? 'yellow' : 'default'}>{typeLabel}</Badge>
-                  </li>
-                );
-              })}
+            {selected.members?.map((m, i) => {
+              const remote = remoteMap[m];
+              const typeLabel = remote?.repo_type === 'local' ? 'local' : 'remote';
+              return (
+                <li key={m}>
+                  <span className="member-priority">{i + 1}</span>
+                  <Link to={memberLink(m)} className="mono">{m}</Link>
+                  <Badge variant={typeLabel === 'local' ? 'yellow' : 'default'}>{typeLabel}</Badge>
+                </li>
+              );
+            })}
           </ul>
-          {(() => {
-            const v = virtuals.find(x => x.name === expanded);
-            return v ? (
-              <UsageInstructions packageType={v.package_type} repoClass="virtual" name={v.name} defaultOpen />
-            ) : null;
-          })()}
+          <UsageInstructions packageType={selected.package_type} repoClass="virtual" name={selected.name} defaultOpen />
         </div>
       )}
     </div>

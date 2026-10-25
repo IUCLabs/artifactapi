@@ -92,4 +92,6 @@ Repodata is regenerated from the metadata rows on every request by default. Set
 `cache_repodata = true` on the remote to keep the generated `repomd.xml` and its
 `primary`/`filelists`/`other` files in memory per replica. Each request checks a
 cheap row fingerprint (count + newest id) in the database and rebuilds only when
-it moved, so every replica picks up a scan's changes on its next request.
+it moved, so every replica picks up a scan's changes on its next request. The
+fingerprint relies on only one scan writing a remote's rows at a time; in the
+deployed server, the sync lease serialises scans across replicas.

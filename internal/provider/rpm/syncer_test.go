@@ -510,3 +510,9 @@ func TestSyncerScheduledPrime(t *testing.T) {
 		t.Fatalf("cold-cache prime: attempts=%d freshness=%v interval=%v, want 1/0/0", store.attempts, store.freshness, store.interval)
 	}
 }
+
+func TestSyncLeaseOutlivesScanTimeout(t *testing.T) {
+	if syncLeaseDuration <= defaultScanTimeout {
+		t.Fatalf("syncLeaseDuration %v must exceed defaultScanTimeout %v so scans stay serialised", syncLeaseDuration, defaultScanTimeout)
+	}
+}

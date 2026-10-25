@@ -50,6 +50,8 @@ export function RemoteDetail() {
             <dd>{remote.check_mutable ? 'enabled' : 'disabled'}</dd>
             <dt>Stale on Error</dt>
             <dd>{remote.stale_on_error ? 'enabled' : 'disabled'}</dd>
+            <dt>Serve Stale</dt>
+            <dd>{remote.serve_stale ? 'enabled' : 'disabled'}</dd>
             {remote.releases_remote && (
               <>
                 <dt>Releases Remote</dt>

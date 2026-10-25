@@ -17,6 +17,7 @@ export interface Remote {
   quarantine_enabled: boolean;
   quarantine_days: number;
   stale_on_error: boolean;
+  serve_stale: boolean;
   releases_remote: string;
   managed_by: string;
   created_at: string;

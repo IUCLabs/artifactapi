@@ -57,7 +57,19 @@ type Engine struct {
 	sf   singleflight.Group
 	mu   sync.Mutex
 	gens map[string]*repoGen
+	// stale holds the last good fetch of each serve_stale member, keyed by
+	// merge key and member name.
+	stale map[string]*staleEntry
 }
+
+type staleEntry struct {
+	m  any
+	at time.Time
+}
+
+// maxStaleAge bounds how old a serve_stale member copy may be before merges
+// block on the member again and surface its error.
+const maxStaleAge = time.Hour
 
 // mergedRepo is a merged index document plus the files it references.
 type mergedRepo interface {
@@ -328,6 +340,7 @@ func (e *Engine) merged(ctx context.Context, key string, merge func(context.Cont
 	e.mu.Unlock()
 
 	v, err, _ := e.sf.Do(key, func() (any, error) {
+		e.pruneStale()
 		repo, err := merge(context.WithoutCancel(ctx))
 		if err != nil {
 			return nil, err
@@ -356,7 +369,9 @@ func (e *Engine) merged(ctx context.Context, key string, merge func(context.Cont
 }
 
 func (e *Engine) mergeRPM(ctx context.Context, virt models.Virtual) (*RPMRepo, error) {
-	members, err := fetchMembers(virt, func(name string) (*RPMMember, error) { return e.rpmMember(ctx, name, virt.ParallelFetch) })
+	members, err := fetchMembers(virt, func(name string) (*RPMMember, error) {
+		return staleMember(ctx, e, "rpm\x00"+virt.Name, name, func(ctx context.Context) (*RPMMember, error) { return e.rpmMember(ctx, name, virt.ParallelFetch) })
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +420,9 @@ func (e *Engine) fetchDeb(ctx context.Context, virt models.Virtual, reqPath stri
 	}
 
 	repo, err := e.merged(ctx, key, func(ctx context.Context) (mergedRepo, error) {
-		members, err := fetchMembers(virt, func(name string) (*DebMember, error) { return e.debMember(ctx, name, base, virt.ParallelFetch) })
+		members, err := fetchMembers(virt, func(name string) (*DebMember, error) {
+			return staleMember(ctx, e, key, name, func(ctx context.Context) (*DebMember, error) { return e.debMember(ctx, name, base, virt.ParallelFetch) })
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -452,8 +469,11 @@ func (e *Engine) fetchDebMember(ctx context.Context, name, base string, parallel
 }
 
 func (e *Engine) mergedAlpine(ctx context.Context, virt models.Virtual, dir string) (mergedRepo, error) {
-	repo, err := e.merged(ctx, "alpine\x00"+virt.Name+"\x00"+dir, func(ctx context.Context) (mergedRepo, error) {
-		members, err := fetchMembers(virt, func(name string) (*AlpineMember, error) { return e.apkMember(ctx, name, dir) })
+	key := "alpine\x00" + virt.Name + "\x00" + dir
+	repo, err := e.merged(ctx, key, func(ctx context.Context) (mergedRepo, error) {
+		members, err := fetchMembers(virt, func(name string) (*AlpineMember, error) {
+			return staleMember(ctx, e, key, name, func(ctx context.Context) (*AlpineMember, error) { return e.apkMember(ctx, name, dir) })
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -523,6 +543,69 @@ func (e *Engine) fetchAlpineMember(ctx context.Context, name, dir string) (*Alpi
 	return &AlpineMember{RemoteName: name, Index: idx}, nil
 }
 
+// staleMember fetches member name for the merge under key. A serve_stale member
+// with a good fetch younger than maxStaleAge returns it at once and refreshes in
+// the background, one refresh per member at a time; the next merge picks it up.
+func staleMember[T any](ctx context.Context, e *Engine, key, name string, fetch func(context.Context) (*T, error)) (*T, error) {
+	sk := key + "\x00" + name
+	remote, err := e.getRemote(ctx, name)
+	if err != nil || !remote.ServeStale {
+		e.mu.Lock()
+		delete(e.stale, sk)
+		e.mu.Unlock()
+		return fetch(ctx)
+	}
+	e.mu.Lock()
+	if e.stale == nil {
+		e.stale = map[string]*staleEntry{}
+	}
+	prev := e.stale[sk]
+	// A cold fetch holds a placeholder so eviction or toggle-off during it is seen.
+	token := prev
+	if prev == nil || prev.m == nil {
+		prev, token = nil, &staleEntry{at: time.Now()}
+		e.stale[sk] = token
+	}
+	e.mu.Unlock()
+	refresh := func() (any, error) {
+		m, err := fetch(ctx)
+		e.mu.Lock()
+		// An evicted or replaced entry means this refresh is no longer wanted.
+		if e.stale[sk] == token {
+			if err == nil {
+				e.stale[sk] = &staleEntry{m: m, at: time.Now()}
+			} else if prev == nil {
+				delete(e.stale, sk)
+			}
+		}
+		e.mu.Unlock()
+		return m, err
+	}
+	if prev == nil {
+		m, err := refresh()
+		return m.(*T), err
+	}
+	ch := e.sf.DoChan("stale\x00"+sk, refresh)
+	go func() {
+		if r := <-ch; r.Err != nil {
+			slog.Warn("virtual member background refresh failed", "member", name, "error", r.Err)
+		}
+	}()
+	return prev.m.(*T), nil
+}
+
+// pruneStale drops serve_stale copies past maxStaleAge, including those of
+// removed members and virtuals.
+func (e *Engine) pruneStale() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for k, se := range e.stale {
+		if time.Since(se.at) >= maxStaleAge {
+			delete(e.stale, k)
+		}
+	}
+}
+
 // evictLRU drops the least recently used merges under prefix beyond keep.
 func (e *Engine) evictLRU(prefix string, keep int) {
 	e.mu.Lock()
@@ -536,6 +619,11 @@ func (e *Engine) evictLRU(prefix string, keep int) {
 	slices.SortFunc(keys, func(a, b string) int { return e.gens[b].used.Compare(e.gens[a].used) })
 	for _, k := range keys[min(len(keys), keep):] {
 		delete(e.gens, k)
+		for sk := range e.stale {
+			if strings.HasPrefix(sk, k+"\x00") {
+				delete(e.stale, sk)
+			}
+		}
 	}
 }
 

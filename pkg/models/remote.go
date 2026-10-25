@@ -73,6 +73,9 @@ type Remote struct {
 	QuarantineDays    int  `json:"quarantine_days,omitempty"`
 
 	StaleOnError bool `json:"stale_on_error"`
+	// ServeStale lets an rpm/deb/alpine virtual merge this member's previous
+	// index while it refreshes in the background.
+	ServeStale bool `json:"serve_stale"`
 
 	ReleasesRemote string `json:"releases_remote,omitempty"`
 	ManagedBy      string `json:"managed_by,omitempty"`

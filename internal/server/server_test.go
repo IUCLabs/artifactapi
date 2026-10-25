@@ -416,6 +416,25 @@ func TestServerRemoteUpdateAndVirtualCRUD(t *testing.T) {
 	}
 }
 
+func TestServerRemoteServeStaleRoundTrip(t *testing.T) {
+	requireStack(t)
+	if resp, b := req(t, "POST", "/api/v2/remotes", `{"name":"srv-ss","package_type":"rpm","repo_type":"remote","base_url":"https://a.example.com","serve_stale":true}`); resp.StatusCode != 201 {
+		t.Fatalf("create remote: %d %s", resp.StatusCode, b)
+	}
+	defer req(t, "DELETE", "/api/v2/remotes/srv-ss", "")
+	get := func(want string) {
+		t.Helper()
+		if _, b := req(t, "GET", "/api/v2/remotes/srv-ss", ""); !strings.Contains(string(b), want) {
+			t.Errorf("get remote: want %s in %s", want, b)
+		}
+	}
+	get(`"serve_stale":true`)
+	if resp, b := req(t, "PUT", "/api/v2/remotes/srv-ss", `{"package_type":"rpm","base_url":"https://a.example.com"}`); resp.StatusCode != 200 {
+		t.Fatalf("update remote: %d %s", resp.StatusCode, b)
+	}
+	get(`"serve_stale":false`)
+}
+
 func TestServerLocalRemoveAndMissing(t *testing.T) {
 	requireStack(t)
 	req(t, "POST", "/api/v2/remotes", `{"name":"srv-rm","package_type":"generic","repo_type":"local"}`)

@@ -335,6 +335,40 @@ func TestDeleteRemoteDropsLocalFiles(t *testing.T) {
 	}
 }
 
+func TestVirtualParallelFetchRoundTrip(t *testing.T) {
+	requireDB(t)
+	if err := testDB.CreateVirtual(ctx(), &models.Virtual{
+		Name: "v-parallel", PackageType: models.PackageRPM, Members: []string{"a"}, ParallelFetch: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = testDB.DeleteVirtual(ctx(), "v-parallel") }()
+	v, err := testDB.GetVirtual(ctx(), "v-parallel")
+	if err != nil || !v.ParallelFetch {
+		t.Fatalf("created parallel_fetch = %v, %v; want true", v, err)
+	}
+	v.ParallelFetch = false
+	if err := testDB.UpdateVirtual(ctx(), v); err != nil {
+		t.Fatal(err)
+	}
+	vs, err := testDB.ListVirtuals(ctx())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range vs {
+		if l.Name == "v-parallel" && l.ParallelFetch {
+			t.Fatal("updated parallel_fetch not persisted")
+		}
+	}
+	if err := testDB.CreateVirtual(ctx(), &models.Virtual{Name: "v-serial", PackageType: models.PackageRPM, Members: []string{"a"}}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = testDB.DeleteVirtual(ctx(), "v-serial") }()
+	if v, err := testDB.GetVirtual(ctx(), "v-serial"); err != nil || v.ParallelFetch {
+		t.Fatalf("default parallel_fetch = %v, %v; want false", v, err)
+	}
+}
+
 func TestVirtualsCRUD(t *testing.T) {
 	requireDB(t)
 	if err := testDB.CreateVirtual(ctx(), &models.Virtual{

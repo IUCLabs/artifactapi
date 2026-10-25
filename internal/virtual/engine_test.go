@@ -19,7 +19,7 @@ func fakeEngine(members map[string]*RPMMember) *Engine {
 		getRemote: func(_ context.Context, name string) (*models.Remote, error) {
 			return &models.Remote{Name: name, RepoType: models.RepoTypeRemote}, nil
 		},
-		rpmMember: func(_ context.Context, name string) (*RPMMember, error) {
+		rpmMember: func(_ context.Context, name string, _ bool) (*RPMMember, error) {
 			if m := members[name]; m != nil {
 				return m, nil
 			}
@@ -75,7 +75,7 @@ func TestFetchRPMLocalMemberWithoutRepodataIsUpstreamError(t *testing.T) {
 	e := fakeEngine(map[string]*RPMMember{
 		"a": {RemoteName: "a", Data: map[string][]byte{"primary": primaryXML(primaryPkgXML("foo", "1", "aaa", "foo.rpm"))}},
 	})
-	e.rpmMember = func(_ context.Context, name string) (*RPMMember, error) {
+	e.rpmMember = func(_ context.Context, name string, _ bool) (*RPMMember, error) {
 		if name == "local" {
 			return nil, fmt.Errorf("local/repodata/repomd.xml: %w", ErrNotFound)
 		}
@@ -91,7 +91,7 @@ func TestFetchRPMMergeIsShared(t *testing.T) {
 	var calls atomic.Int32
 	e := fakeEngine(nil)
 	e.mergeTTL = time.Minute
-	e.rpmMember = func(_ context.Context, name string) (*RPMMember, error) {
+	e.rpmMember = func(_ context.Context, name string, _ bool) (*RPMMember, error) {
 		calls.Add(1)
 		time.Sleep(20 * time.Millisecond)
 		return &RPMMember{RemoteName: name, Data: map[string][]byte{"primary": primaryXML(primaryPkgXML("foo", "1", "aaa", "foo.rpm"))}}, nil
@@ -160,7 +160,7 @@ func TestMemberRedirect(t *testing.T) {
 
 func debEngine(members map[string]*DebMember) *Engine {
 	e := fakeEngine(nil)
-	e.debMember = func(_ context.Context, name, base string) (*DebMember, error) {
+	e.debMember = func(_ context.Context, name, base string, _ bool) (*DebMember, error) {
 		if m := members[name]; m != nil && base == "" {
 			return m, nil
 		}
@@ -213,7 +213,7 @@ func TestFetchDebMergeIsSharedPerSuite(t *testing.T) {
 	var calls atomic.Int32
 	e := fakeEngine(nil)
 	e.mergeTTL = time.Minute
-	e.debMember = func(_ context.Context, name, base string) (*DebMember, error) {
+	e.debMember = func(_ context.Context, name, base string, _ bool) (*DebMember, error) {
 		calls.Add(1)
 		m := flatDebMember(name, "", debStanza("foo", "1", "amd64", "pool/foo.deb"))
 		return &m, nil
@@ -307,7 +307,9 @@ func suiteDebMember(name, version string) *DebMember {
 func TestFetchDebByHashSurvivesRemerge(t *testing.T) {
 	version := "1"
 	e := fakeEngine(nil)
-	e.debMember = func(_ context.Context, name, _ string) (*DebMember, error) { return suiteDebMember(name, version), nil }
+	e.debMember = func(_ context.Context, name, _ string, _ bool) (*DebMember, error) {
+		return suiteDebMember(name, version), nil
+	}
 	virt := debVirt("a")
 	fetch := func(p string) []byte {
 		body, _, err := e.Fetch(context.Background(), virt, p, "")
@@ -340,7 +342,9 @@ func TestFetchDebByHashSurvivesRemerge(t *testing.T) {
 func TestFetchDebBoundsSuitesPerVirtual(t *testing.T) {
 	e := fakeEngine(nil)
 	e.mergeTTL = time.Minute
-	e.debMember = func(_ context.Context, name, _ string) (*DebMember, error) { return suiteDebMember(name, "1"), nil }
+	e.debMember = func(_ context.Context, name, _ string, _ bool) (*DebMember, error) {
+		return suiteDebMember(name, "1"), nil
+	}
 	other := models.Virtual{Name: "other", PackageType: models.PackageDeb, Members: []string{"a"}}
 	if _, _, err := e.Fetch(context.Background(), other, "dists/keep/Release", ""); err != nil {
 		t.Fatal(err)
@@ -365,5 +369,205 @@ func TestFetchDebBoundsSuitesPerVirtual(t *testing.T) {
 	}
 	if e.gens["deb\x00other\x00dists/keep/"] == nil {
 		t.Fatal("another virtual's suites must not be evicted")
+	}
+}
+
+func fetchFilesInput(n int) map[string]string {
+	files := map[string]string{}
+	for i := range n {
+		files[fmt.Sprintf("k%d", i)] = fmt.Sprintf("f%d", i)
+	}
+	return files
+}
+
+func TestFetchFilesParallelRunsConcurrently(t *testing.T) {
+	var inFlight, peak atomic.Int32
+	release := make(chan struct{})
+	go func() {
+		for peak.Load() < maxFileFetches {
+			time.Sleep(time.Millisecond)
+		}
+		close(release)
+	}()
+	got, err := fetchFiles(context.Background(), true, fetchFilesInput(6), func(_ context.Context, f string) ([]byte, error) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("fetches never overlapped")
+		}
+		return []byte(f), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peak.Load() != maxFileFetches {
+		t.Fatalf("peak concurrency %d, want %d", peak.Load(), maxFileFetches)
+	}
+	for k, f := range fetchFilesInput(6) {
+		if string(got[k]) != f {
+			t.Fatalf("%s = %q, want %q", k, got[k], f)
+		}
+	}
+}
+
+func TestFetchFilesSerialByDefault(t *testing.T) {
+	var inFlight atomic.Int32
+	_, err := fetchFiles(context.Background(), false, fetchFilesInput(4), func(_ context.Context, f string) ([]byte, error) {
+		defer inFlight.Add(-1)
+		if inFlight.Add(1) > 1 {
+			return nil, errors.New("concurrent fetch")
+		}
+		time.Sleep(time.Millisecond)
+		return []byte(f), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFetchFilesErrorFailsMember(t *testing.T) {
+	boom := errors.New("boom")
+	for _, parallel := range []bool{false, true} {
+		got, err := fetchFiles(context.Background(), parallel, fetchFilesInput(5), func(_ context.Context, f string) ([]byte, error) {
+			if f == "f2" {
+				return nil, boom
+			}
+			return []byte(f), nil
+		})
+		if !errors.Is(err, boom) || got != nil {
+			t.Fatalf("parallel=%v: got %v, %v; want boom and no files", parallel, got, err)
+		}
+	}
+}
+
+func TestMergeRPMPassesParallelFetchAndKeepsMemberOrder(t *testing.T) {
+	e := fakeEngine(nil)
+	var sawParallel atomic.Bool
+	e.rpmMember = func(_ context.Context, name string, parallel bool) (*RPMMember, error) {
+		sawParallel.Store(parallel)
+		if name == "a" {
+			time.Sleep(20 * time.Millisecond)
+		}
+		return &RPMMember{RemoteName: name, Data: map[string][]byte{"primary": primaryXML(primaryPkgXML("foo", "1", name+"sum", name+".rpm"))}}, nil
+	}
+	virt := rpmVirt("a", "b")
+	virt.ParallelFetch = true
+	repo, err := e.mergeRPM(context.Background(), virt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawParallel.Load() {
+		t.Fatal("parallel_fetch not passed to member fetch")
+	}
+	primary := regexp.MustCompile(`repodata/[0-9a-f]+-primary\.xml\.gz`).FindString(string(repo.Repomd))
+	body := string(gunzip(t, repo.Files[primary]))
+	if a, b := strings.Index(body, "a.rpm"), strings.Index(body, "b.rpm"); a < 0 || b >= 0 && b < a {
+		t.Fatalf("member priority order lost:\n%s", body)
+	}
+}
+
+func TestFetchFilesErrorCancelsRest(t *testing.T) {
+	boom := errors.New("boom")
+	var calls atomic.Int32
+	_, err := fetchFiles(context.Background(), true, fetchFilesInput(8), func(ctx context.Context, _ string) ([]byte, error) {
+		if calls.Add(1) == 1 {
+			return nil, boom
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return nil, errors.New("in-flight fetch not cancelled")
+		}
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("got %v, want boom", err)
+	}
+	if n := calls.Load(); n > maxFileFetches {
+		t.Fatalf("%d fetches started after the first error, want at most %d", n, maxFileFetches)
+	}
+}
+
+// overlapEngine serves fixed member index paths and records the peak number of
+// index file fetches in flight. Each fetch blocks until want are in flight (or
+// fails after 5s); with want 1 it also holds briefly so a stray overlap shows.
+func overlapEngine(index map[string][]byte, want int32, peak *atomic.Int32) *Engine {
+	e := fakeEngine(nil)
+	var inFlight atomic.Int32
+	e.memberPath = func(_ context.Context, _ models.Remote, path string) ([]byte, error) {
+		body, ok := index[path]
+		if !ok {
+			return nil, fmt.Errorf("%s: %w", path, ErrNotFound)
+		}
+		if strings.HasSuffix(path, "Release") || strings.HasSuffix(path, "repomd.xml") {
+			return body, nil
+		}
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+		}
+		for deadline := time.Now().Add(5 * time.Second); peak.Load() < want; {
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("%s: only %d of %d fetches in flight", path, peak.Load(), want)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if want == 1 {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return body, nil
+	}
+	return e
+}
+
+func TestFetchRPMMemberHonoursParallelFetch(t *testing.T) {
+	index := map[string][]byte{
+		"repodata/repomd.xml": []byte(`<repomd>` +
+			`<data type="primary"><location href="repodata/p.xml"/></data>` +
+			`<data type="filelists"><location href="repodata/f.xml"/></data>` +
+			`<data type="other"><location href="repodata/o.xml"/></data></repomd>`),
+		"repodata/p.xml": []byte("P"), "repodata/f.xml": []byte("F"), "repodata/o.xml": []byte("O"),
+	}
+	for parallel, want := range map[bool]int32{false: 1, true: 3} {
+		var peak atomic.Int32
+		m, err := overlapEngine(index, want, &peak).fetchRPMMember(context.Background(), "a", parallel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if peak.Load() != want {
+			t.Errorf("parallel=%v: peak concurrency %d, want %d", parallel, peak.Load(), want)
+		}
+		if string(m.Data["primary"]) != "P" || string(m.Data["filelists"]) != "F" || string(m.Data["other"]) != "O" {
+			t.Errorf("parallel=%v: data %q", parallel, m.Data)
+		}
+	}
+}
+
+func TestFetchDebMemberHonoursParallelFetch(t *testing.T) {
+	index := map[string][]byte{
+		"dists/s/Release": []byte("Suite: s\nSHA256:\n" +
+			" aa 1 main/binary-amd64/Packages\n" +
+			" bb 1 contrib/binary-amd64/Packages\n" +
+			" cc 1 non-free/binary-amd64/Packages\n"),
+		"dists/s/main/binary-amd64/Packages":     []byte("M"),
+		"dists/s/contrib/binary-amd64/Packages":  []byte("C"),
+		"dists/s/non-free/binary-amd64/Packages": []byte("N"),
+	}
+	for parallel, want := range map[bool]int32{false: 1, true: 3} {
+		var peak atomic.Int32
+		m, err := overlapEngine(index, want, &peak).fetchDebMember(context.Background(), "a", "dists/s/", parallel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if peak.Load() != want {
+			t.Errorf("parallel=%v: peak concurrency %d, want %d", parallel, peak.Load(), want)
+		}
+		if string(m.Packages["main/binary-amd64/"]) != "M" || string(m.Packages["non-free/binary-amd64/"]) != "N" {
+			t.Errorf("parallel=%v: packages %q", parallel, m.Packages)
+		}
 	}
 }

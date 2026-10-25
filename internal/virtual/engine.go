@@ -19,6 +19,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/pkg/models"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -26,10 +27,11 @@ type Engine struct {
 	db          *database.DB
 	proxyEngine *proxy.Engine
 	getRemote   func(context.Context, string) (*models.Remote, error)
-	rpmMember   func(context.Context, string) (*RPMMember, error)
-	debMember   func(ctx context.Context, name, base string) (*DebMember, error)
+	rpmMember   func(ctx context.Context, name string, parallel bool) (*RPMMember, error)
+	debMember   func(ctx context.Context, name, base string, parallel bool) (*DebMember, error)
 	apkMember   func(ctx context.Context, name, dir string) (*AlpineMember, error)
 	npmMember   func(ctx context.Context, name, pkg string) (*NPMMember, error)
+	memberPath  func(ctx context.Context, remote models.Remote, path string) ([]byte, error)
 
 	// NPMLocal returns a local npm repo's packument with tarball paths relative
 	// to the repo, or ErrNotFound.
@@ -91,6 +93,7 @@ func NewEngine(db *database.DB, proxyEngine *proxy.Engine) *Engine {
 	e.ansibleDoc = e.ansibleMemberDoc
 	e.goMember = e.fetchGoMember
 	e.puppetDoc = e.fetchMemberPath
+	e.memberPath = e.fetchMemberPath
 	return e
 }
 
@@ -353,7 +356,7 @@ func (e *Engine) merged(ctx context.Context, key string, merge func(context.Cont
 }
 
 func (e *Engine) mergeRPM(ctx context.Context, virt models.Virtual) (*RPMRepo, error) {
-	members, err := fetchMembers(virt, func(name string) (*RPMMember, error) { return e.rpmMember(ctx, name) })
+	members, err := fetchMembers(virt, func(name string) (*RPMMember, error) { return e.rpmMember(ctx, name, virt.ParallelFetch) })
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +405,7 @@ func (e *Engine) fetchDeb(ctx context.Context, virt models.Virtual, reqPath stri
 	}
 
 	repo, err := e.merged(ctx, key, func(ctx context.Context) (mergedRepo, error) {
-		members, err := fetchMembers(virt, func(name string) (*DebMember, error) { return e.debMember(ctx, name, base) })
+		members, err := fetchMembers(virt, func(name string) (*DebMember, error) { return e.debMember(ctx, name, base, virt.ParallelFetch) })
 		if err != nil {
 			return nil, err
 		}
@@ -430,26 +433,22 @@ func debContentType(name string) string {
 
 // fetchDebMember reads a member's Release under base and each binary Packages
 // index it lists.
-func (e *Engine) fetchDebMember(ctx context.Context, name, base string) (*DebMember, error) {
+func (e *Engine) fetchDebMember(ctx context.Context, name, base string, parallel bool) (*DebMember, error) {
 	remote, err := e.getRemote(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("remote %q: %w", name, err)
 	}
-	rel, err := e.fetchMemberPath(ctx, *remote, base+"Release")
+	rel, err := e.memberPath(ctx, *remote, base+"Release")
 	if err != nil {
 		return nil, err
 	}
-	m := &DebMember{RemoteName: name, Release: rel, Packages: map[string][]byte{}}
-	for dir, file := range debIndexFiles(parseDebRelease(rel)) {
-		raw, err := e.fetchMemberPath(ctx, *remote, base+file)
-		if err != nil {
-			return nil, err
-		}
-		if m.Packages[dir], err = decompress(file, raw); err != nil {
-			return nil, fmt.Errorf("decompress %s: %w", file, err)
-		}
+	pkgs, err := fetchFiles(ctx, parallel, debIndexFiles(parseDebRelease(rel)), func(ctx context.Context, file string) ([]byte, error) {
+		return e.fetchDecompressed(ctx, *remote, base, file)
+	})
+	if err != nil {
+		return nil, err
 	}
-	return m, nil
+	return &DebMember{RemoteName: name, Release: rel, Packages: pkgs}, nil
 }
 
 func (e *Engine) mergedAlpine(ctx context.Context, virt models.Virtual, dir string) (mergedRepo, error) {
@@ -559,12 +558,12 @@ func (e *Engine) cachedFile(key, path string) ([]byte, bool) {
 	return nil, false
 }
 
-func (e *Engine) fetchRPMMember(ctx context.Context, name string) (*RPMMember, error) {
+func (e *Engine) fetchRPMMember(ctx context.Context, name string, parallel bool) (*RPMMember, error) {
 	remote, err := e.getRemote(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("remote %q: %w", name, err)
 	}
-	repomd, err := e.fetchMemberPath(ctx, *remote, "repodata/repomd.xml")
+	repomd, err := e.memberPath(ctx, *remote, "repodata/repomd.xml")
 	if err != nil {
 		return nil, err
 	}
@@ -572,17 +571,66 @@ func (e *Engine) fetchRPMMember(ctx context.Context, name string) (*RPMMember, e
 	if err != nil {
 		return nil, err
 	}
-	m := &RPMMember{RemoteName: name, Bases: remote.UpstreamPool(), Timestamp: ts, Data: map[string][]byte{}}
-	for t, href := range locs {
-		raw, err := e.fetchMemberPath(ctx, *remote, href)
-		if err != nil {
-			return nil, err
-		}
-		if m.Data[t], err = decompress(href, raw); err != nil {
-			return nil, fmt.Errorf("decompress %s: %w", href, err)
-		}
+	data, err := fetchFiles(ctx, parallel, locs, func(ctx context.Context, href string) ([]byte, error) {
+		return e.fetchDecompressed(ctx, *remote, "", href)
+	})
+	if err != nil {
+		return nil, err
 	}
-	return m, nil
+	return &RPMMember{RemoteName: name, Bases: remote.UpstreamPool(), Timestamp: ts, Data: data}, nil
+}
+
+func (e *Engine) fetchDecompressed(ctx context.Context, remote models.Remote, base, file string) ([]byte, error) {
+	raw, err := e.memberPath(ctx, remote, base+file)
+	if err != nil {
+		return nil, err
+	}
+	body, err := decompress(file, raw)
+	if err != nil {
+		return nil, fmt.Errorf("decompress %s: %w", file, err)
+	}
+	return body, nil
+}
+
+// maxFileFetches bounds the concurrent index file fetches per member.
+const maxFileFetches = 4
+
+// fetchFiles fetches each key's file, one at a time or up to maxFileFetches at
+// once, failing on the first error and cancelling the rest.
+func fetchFiles(ctx context.Context, parallel bool, files map[string]string, fetch func(ctx context.Context, file string) ([]byte, error)) (map[string][]byte, error) {
+	out := make(map[string][]byte, len(files))
+	if !parallel {
+		for k, f := range files {
+			body, err := fetch(ctx, f)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = body
+		}
+		return out, nil
+	}
+	var mu sync.Mutex
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxFileFetches)
+	for k, f := range files {
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			body, err := fetch(gctx, f)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			out[k] = body
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // fetchMemberPath reads one path from a member the same way its own route

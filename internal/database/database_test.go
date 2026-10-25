@@ -79,13 +79,19 @@ func TestRemotesCRUD(t *testing.T) {
 	if err != nil || got.BaseURL != "https://example.com" {
 		t.Fatalf("get: %v %v", got, err)
 	}
+	if got.CacheRepodata {
+		t.Error("cache_repodata should default to false")
+	}
 	got.BaseURL = "https://updated.example.com"
+	got.CacheRepodata = true
+	got.SyncInterval = 600
+	got.ServeStale = true
 	if err := testDB.UpdateRemote(ctx(), got); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	got, _ = testDB.GetRemote(ctx(), "r-crud")
-	if got.BaseURL != "https://updated.example.com" {
-		t.Errorf("update not applied: %v", got.BaseURL)
+	if got.BaseURL != "https://updated.example.com" || !got.CacheRepodata || got.SyncInterval != 600 || !got.ServeStale {
+		t.Errorf("update not applied: %v %v %v %v", got.BaseURL, got.CacheRepodata, got.SyncInterval, got.ServeStale)
 	}
 	list, err := testDB.ListRemotes(ctx())
 	if err != nil || len(list) == 0 {
@@ -485,5 +491,46 @@ func TestRPMMetadata(t *testing.T) {
 	}
 	if rows, err := testDB.ListRPMMetadata(ctx(), "r-rpm"); err != nil || len(rows) != 1 {
 		t.Fatalf("list rpm rows: %v %v", len(rows), err)
+	}
+}
+
+func TestRPMMetadataFingerprint(t *testing.T) {
+	requireDB(t)
+	seedRemote(t, "r-rpm-fp")
+	fp := func() [2]int64 {
+		t.Helper()
+		c, m, err := testDB.RPMMetadataFingerprint(ctx(), "r-rpm-fp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return [2]int64{c, m}
+	}
+	insert := func(path string) {
+		t.Helper()
+		if err := testDB.InsertRPMMetadata(ctx(), &provider.RPMMetadata{
+			RepoName: "r-rpm-fp", FilePath: path, ContentHash: "sha256:" + path,
+			Name: path, Version: "1", Release: "1", Arch: "noarch",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := fp(); got != [2]int64{0, 0} {
+		t.Fatalf("empty fingerprint = %v", got)
+	}
+	insert("a.rpm")
+	one := fp()
+	insert("a.rpm")
+	if fp() != one {
+		t.Fatal("conflicting insert changed fingerprint")
+	}
+	insert("b.rpm")
+	two := fp()
+	if err := testDB.DeleteRPMMetadata(ctx(), "r-rpm-fp", "a.rpm"); err != nil {
+		t.Fatal(err)
+	}
+	afterDelete := fp()
+	if one[0] != 1 || two[0] != 2 || afterDelete[0] != 1 || afterDelete == one || afterDelete == two {
+		t.Fatalf("fingerprints did not track changes: %v %v %v", one, two, afterDelete)
 	}
 }

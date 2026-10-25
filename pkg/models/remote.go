@@ -84,6 +84,10 @@ type Remote struct {
 	ReleasesRemote string `json:"releases_remote,omitempty"`
 	ManagedBy      string `json:"managed_by,omitempty"`
 
+	// CacheRepodata keeps a github_rpm remote's generated repodata in memory,
+	// rebuilding it only when its metadata rows change.
+	CacheRepodata bool `json:"cache_repodata"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

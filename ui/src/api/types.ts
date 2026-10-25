@@ -19,6 +19,7 @@ export interface Remote {
   quarantine_days: number;
   stale_on_error: boolean;
   serve_stale: boolean;
+  cache_repodata: boolean;
   releases_remote: string;
   managed_by: string;
   created_at: string;

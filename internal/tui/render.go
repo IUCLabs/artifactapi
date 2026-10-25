@@ -59,6 +59,7 @@ func (m *model) viewRemoteDetail() string {
 	sb.WriteString(fmt.Sprintf("  Revalidation:   %v\n", r.CheckMutable))
 	sb.WriteString(fmt.Sprintf("  Stale on Error: %v\n", r.StaleOnError))
 	fmt.Fprintf(&sb, "  Serve Stale:    %v\n", r.ServeStale)
+	fmt.Fprintf(&sb, "  Cache Repodata: %v\n", r.CacheRepodata)
 
 	if len(r.Patterns) > 0 {
 		sb.WriteString(fmt.Sprintf("  Patterns:       %s\n", strings.Join(r.Patterns, ", ")))

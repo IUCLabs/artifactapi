@@ -250,15 +250,23 @@ func (p *Provider) GenerateLocalIndex(ctx context.Context, files provider.FileSt
 func readMetadataEntries(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) ([]provider.RPMMetadata, bool) {
 	metas, err := reader.ListRPMMetadataEntries(r.Context(), repoName)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			slog.Warn("rpm: metadata read canceled", "repo", repoName, "error", err)
-			http.Error(w, "metadata read canceled", http.StatusServiceUnavailable)
-			return nil, false
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeMetadataError(w, repoName, err)
 		return nil, false
 	}
 	return metas, true
+}
+
+// writeMetadataError maps a metadata read failure to a response without leaking
+// DB error text: a canceled/expired context is a retryable 503, anything else a 500.
+func writeMetadataError(w http.ResponseWriter, repoName string, err error) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		slog.Warn("rpm: metadata read canceled", "repo", repoName, "error", err)
+		w.Header().Set("Retry-After", "5")
+		http.Error(w, "metadata read canceled", http.StatusServiceUnavailable)
+		return
+	}
+	slog.Error("rpm: metadata read failed", "repo", repoName, "error", err)
+	http.Error(w, "metadata read failed", http.StatusInternalServerError)
 }
 
 func (p *Provider) serveRepomd(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {
@@ -267,19 +275,27 @@ func (p *Provider) serveRepomd(w http.ResponseWriter, r *http.Request, reader pr
 		return
 	}
 
-	primary := generatePrimaryXMLGZ(metas)
-	filelists := generateFilelistsXMLGZ(metas)
-	other := generateOtherXMLGZ(metas)
-
-	primaryHash := sha256Hex(primary)
-	filelistsHash := sha256Hex(filelists)
-	otherHash := sha256Hex(other)
-
-	repomd := generateRepomd(repomdRevision(metas), primaryHash, len(primary), filelistsHash, len(filelists), otherHash, len(other))
-
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
-	w.Write(repomd)
+	_, _ = w.Write(buildRepodata(metas).repomd)
+}
+
+// repodata is a complete generated index: repomd.xml plus the three gz files it references.
+type repodata struct {
+	repomd, primary, filelists, other []byte
+}
+
+func buildRepodata(metas []provider.RPMMetadata) *repodata {
+	rd := &repodata{
+		primary:   generatePrimaryXMLGZ(metas),
+		filelists: generateFilelistsXMLGZ(metas),
+		other:     generateOtherXMLGZ(metas),
+	}
+	rd.repomd = generateRepomd(repomdRevision(metas),
+		sha256Hex(rd.primary), len(rd.primary),
+		sha256Hex(rd.filelists), len(rd.filelists),
+		sha256Hex(rd.other), len(rd.other))
+	return rd
 }
 
 func (p *Provider) servePrimary(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {

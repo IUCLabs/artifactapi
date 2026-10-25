@@ -40,6 +40,13 @@ func (db *DB) DeleteRPMMetadata(ctx context.Context, repoName, filePath string) 
 	return err
 }
 
+// RPMMetadataFingerprint is a cheap change detector for a repo's rows: they are
+// only ever inserted or deleted, so (count, max id) moves whenever they change.
+func (db *DB) RPMMetadataFingerprint(ctx context.Context, repoName string) (count, maxID int64, err error) {
+	err = db.Pool.QueryRow(ctx, `SELECT count(*), coalesce(max(id), 0) FROM rpm_metadata WHERE repo_name = $1`, repoName).Scan(&count, &maxID)
+	return count, maxID, err
+}
+
 type RPMMetadataRow struct {
 	RepoName      string
 	FilePath      string

@@ -52,6 +52,8 @@ export function RemoteDetail() {
             <dd>{remote.stale_on_error ? 'enabled' : 'disabled'}</dd>
             <dt>Serve Stale</dt>
             <dd>{remote.serve_stale ? 'enabled' : 'disabled'}</dd>
+            <dt>Cache Repodata</dt>
+            <dd>{remote.cache_repodata ? 'enabled' : 'disabled'}</dd>
             {remote.releases_remote && (
               <>
                 <dt>Releases Remote</dt>

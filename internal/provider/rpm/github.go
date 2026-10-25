@@ -15,9 +15,11 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	rpmlib "github.com/cavaliergopher/rpm"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
@@ -52,6 +54,9 @@ const (
 	// retryable 503. Kept short so a client never hangs on a rate-limited derive
 	// of a large repo; small repos usually prime within this window.
 	defaultColdWait = 8 * time.Second
+	// repodataIdleTTL evicts cached indexes of remotes deleted or switched off.
+	repodataIdleTTL    = time.Hour
+	repodataSweepEvery = time.Minute
 )
 
 // GitHubProvider is a metadata-only remote: it scans a GitHub repo's releases
@@ -84,6 +89,26 @@ type GitHubProvider struct {
 	mu       sync.Mutex
 	scanning map[string]bool
 	lastScan map[string]time.Time
+
+	// repodata caches generated indexes for cache_repodata remotes, keyed by remote name.
+	repodataMu    sync.Mutex
+	repodataCache map[string]cachedRepodata
+	repodataGroup singleflight.Group
+	repodataSeq   atomic.Int64
+	repodataSwept time.Time
+}
+
+// rpmFingerprinter is a cheap change detector over a remote's metadata rows.
+// Rows are insert-or-delete only, so (count, max id) changes whenever they do.
+type rpmFingerprinter interface {
+	RPMMetadataFingerprint(ctx context.Context, repoName string) (count, maxID int64, err error)
+}
+
+type cachedRepodata struct {
+	count, maxID int64
+	seq          int64 // build order, so a slow older build never replaces a newer one
+	used         time.Time
+	*repodata
 }
 
 func newGitHubProvider() *GitHubProvider {
@@ -97,6 +122,7 @@ func newGitHubProvider() *GitHubProvider {
 		coldWait:      defaultColdWait,
 		scanning:      map[string]bool{},
 		lastScan:      map[string]time.Time{},
+		repodataCache: map[string]cachedRepodata{},
 	}
 }
 
@@ -170,6 +196,11 @@ func (p *GitHubProvider) ServeRemote(w http.ResponseWriter, r *http.Request, rem
 		}
 
 		tail := strings.TrimPrefix(path, "repodata/")
+		if fp, ok := store.(rpmFingerprinter); ok && remote.CacheRepodata {
+			p.serveCachedRepodata(w, sr, store, fp, remote.Name, tail)
+			return true
+		}
+		p.dropRepodata(remote.Name)
 		lp := &Provider{}
 		switch {
 		case tail == "repomd.xml":
@@ -239,7 +270,104 @@ func (p *GitHubProvider) ensurePrimed(ctx context.Context, remote models.Remote,
 	return false
 }
 
+// serveCachedRepodata serves a file from the generated index, rebuilding it
+// only when the rows' fingerprint moved. The fingerprint is read from the shared
+// database on every request, so each replica rebuilds as soon as any replica's
+// scan changes rows and repomd never outlives the files it references.
+func (p *GitHubProvider) serveCachedRepodata(w http.ResponseWriter, r *http.Request, store provider.RPMMetadataReader, fp rpmFingerprinter, name, tail string) {
+	var pick func(*repodata) []byte
+	contentType := "application/gzip"
+	switch {
+	case tail == "repomd.xml":
+		pick, contentType = func(rd *repodata) []byte { return rd.repomd }, "application/xml"
+	case strings.HasSuffix(tail, "-primary.xml.gz"):
+		pick = func(rd *repodata) []byte { return rd.primary }
+	case strings.HasSuffix(tail, "-filelists.xml.gz"):
+		pick = func(rd *repodata) []byte { return rd.filelists }
+	case strings.HasSuffix(tail, "-other.xml.gz"):
+		pick = func(rd *repodata) []byte { return rd.other }
+	default:
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	rd, err := p.cachedRepodata(r.Context(), store, fp, name)
+	if err != nil {
+		writeMetadataError(w, name, err)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(pick(rd))
+}
+
+// cachedRepodata returns the index for the current fingerprint, building it at
+// most once per fingerprint. ctx is ServeRemote's detached serve context, so a
+// leader's client disconnect cannot fail the build for coalesced waiters.
+func (p *GitHubProvider) cachedRepodata(ctx context.Context, store provider.RPMMetadataReader, fp rpmFingerprinter, name string) (*repodata, error) {
+	seq := p.repodataSeq.Add(1)
+	count, maxID, err := fp.RPMMetadataFingerprint(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	p.repodataMu.Lock()
+	p.sweepRepodataLocked(now)
+	c, ok := p.repodataCache[name]
+	if ok {
+		c.used = now
+		p.repodataCache[name] = c
+	}
+	p.repodataMu.Unlock()
+	if ok && c.count == count && c.maxID == maxID {
+		return c.repodata, nil
+	}
+
+	v, err, _ := p.repodataGroup.Do(fmt.Sprintf("%s\x00%d\x00%d", name, count, maxID), func() (any, error) {
+		metas, err := store.ListRPMMetadataEntries(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		// Rows read after the fingerprint can only be newer than it, so the
+		// worst case is one extra rebuild on the next request.
+		rd := buildRepodata(metas)
+		p.repodataMu.Lock()
+		if cur, ok := p.repodataCache[name]; !ok || cur.seq < seq {
+			p.repodataCache[name] = cachedRepodata{count: count, maxID: maxID, seq: seq, used: time.Now(), repodata: rd}
+		}
+		p.repodataMu.Unlock()
+		return rd, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*repodata), nil
+}
+
+func (p *GitHubProvider) dropRepodata(name string) {
+	p.repodataMu.Lock()
+	delete(p.repodataCache, name)
+	p.sweepRepodataLocked(time.Now())
+	p.repodataMu.Unlock()
+}
+
+// sweepRepodataLocked evicts idle entries, at most once per repodataSweepEvery.
+func (p *GitHubProvider) sweepRepodataLocked(now time.Time) {
+	if now.Sub(p.repodataSwept) < repodataSweepEvery {
+		return
+	}
+	p.repodataSwept = now
+	for name, c := range p.repodataCache {
+		if now.Sub(c.used) > repodataIdleTTL {
+			delete(p.repodataCache, name)
+		}
+	}
+}
+
 func (p *GitHubProvider) cacheEmpty(ctx context.Context, store provider.RemoteMetadataStore, name string) bool {
+	if fp, ok := store.(rpmFingerprinter); ok {
+		count, _, err := fp.RPMMetadataFingerprint(ctx, name)
+		return err == nil && count == 0
+	}
 	rows, err := store.ListRPMMetadataEntries(ctx, name)
 	if err != nil {
 		// Treat a failed read as "not empty" so a transient DB error becomes a

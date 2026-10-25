@@ -72,6 +72,7 @@ resource "artifactapi_remote_github_rpm" "acme-tools" {
   base_url        = "https://api.github.com/repos/acme/tools" # the releases API root
   releases_remote = "github"                                  # backend for downloads
   mutable_ttl     = 3600                                      # release re-scan interval
+  cache_repodata  = true                                      # keep generated repodata in memory
 
   # Optional: restrict which release assets become packages (regex on filename).
   patterns = [".*\\.x86_64\\.rpm$", ".*\\.noarch\\.rpm$"]
@@ -84,3 +85,11 @@ resource "artifactapi_remote_github_rpm" "acme-tools" {
 `dnf` config: `baseurl=https://artifactapi.example/api/v1/remote/acme-tools`.
 The repo is multi-arch (no `$basearch` needed) — `dnf` selects matching packages
 from the synthesized metadata.
+
+### Repodata cache
+
+Repodata is regenerated from the metadata rows on every request by default. Set
+`cache_repodata = true` on the remote to keep the generated `repomd.xml` and its
+`primary`/`filelists`/`other` files in memory per replica. Each request checks a
+cheap row fingerprint (count + newest id) in the database and rebuilds only when
+it moved, so every replica picks up a scan's changes on its next request.

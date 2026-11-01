@@ -172,3 +172,45 @@ func TestQuarantineDaysValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestRepoTypeKeptOnUpdate(t *testing.T) {
+	if testDSN == "" {
+		t.Skip("Docker unavailable")
+	}
+	db, err := database.New(testDSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	h := NewRemotesHandler(db, nil, nil).Routes()
+	repoType := func(name string) string {
+		t.Helper()
+		r, err := db.GetRemote(context.Background(), name)
+		if err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		return string(r.RepoType)
+	}
+	const body = `"package_type":"rpm","base_url":"https://example.com/repo"`
+	for i, s := range []struct {
+		method, path, json string
+		code               int
+		name, want         string
+	}{
+		{"POST", "/", `{"name":"rt-remote",` + body + `}`, 201, "rt-remote", "remote"},
+		{"PUT", "/rt-remote", `{` + body + `}`, 200, "rt-remote", "remote"},
+		{"POST", "/", `{"name":"rt-local","package_type":"rpm","repo_type":"local"}`, 201, "rt-local", "local"},
+		{"PUT", "/rt-local", `{"package_type":"rpm","description":"x"}`, 200, "rt-local", "local"},
+		{"PUT", "/rt-local", `{"package_type":"rpm","repo_type":""}`, 200, "rt-local", "local"},
+		{"PUT", "/rt-local", `{"package_type":"rpm","repo_type":"bogus"}`, 400, "rt-local", "local"},
+		{"PUT", "/rt-local", `{"package_type":"rpm","repo_type":"remote"}`, 400, "rt-local", "local"},
+		{"PUT", "/rt-remote", `{"package_type":"rpm","repo_type":"local"}`, 200, "rt-remote", "local"},
+	} {
+		if c := do(t, h, s.method, s.path, s.json); c != s.code {
+			t.Fatalf("step %d %s %s = %d, want %d", i, s.method, s.path, c, s.code)
+		}
+		if got := repoType(s.name); got != s.want {
+			t.Errorf("step %d: repo_type = %q, want %q", i, got, s.want)
+		}
+	}
+}

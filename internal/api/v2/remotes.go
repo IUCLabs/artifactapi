@@ -141,6 +141,20 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	remote.Name = name
+	if remote.RepoType == "" && oldKnown {
+		remote.RepoType = existing.RepoType
+	}
+	if remote.RepoType == "" {
+		remote.RepoType = models.RepoTypeRemote
+	}
+	if !remote.RepoType.Valid() {
+		http.Error(w, fmt.Sprintf("invalid repo type: %q", remote.RepoType), http.StatusBadRequest)
+		return
+	}
+	if remote.RepoType == models.RepoTypeRemote && remote.BaseURL == "" {
+		http.Error(w, "base_url is required for remote repositories", http.StatusBadRequest)
+		return
+	}
 	if err := remote.ValidateMirrorlist(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

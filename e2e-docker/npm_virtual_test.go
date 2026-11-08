@@ -38,7 +38,7 @@ func TestVirtualNPMInstall(t *testing.T) {
 pub() { d="/w/src/$2-$3-$1"; mkdir -p "$d"; cd "$d"
   printf '{"name":"%s","version":"%s","main":"index.js"}' "$2" "$3" > package.json
   echo "module.exports = '$1:$2@$3';" > index.js
-  printf 'registry=%s\n%s:_authToken=unused\n' "$BASE/api/v1/local/$1/" "${BASE#http:}/api/v1/local/$1/" > .npmrc
+  printf 'registry=%s\n%s:_authToken=%s\n' "$BASE/api/v1/local/$1/" "${BASE#http:}/api/v1/local/$1/" "$TOKEN" > .npmrc
   npm publish; }
 pub "$A" @e2e/virt 1.0.0
 pub "$B" @e2e/virt 1.0.0
@@ -51,7 +51,7 @@ node -e "console.log('REQ', require('@e2e/virt'))"
 echo "RESOLVED $(node -p "require('./package-lock.json').packages['node_modules/@e2e/virt'].resolved")"`
 
 	out, err := exec.Command("docker", "run", "--rm", "--network", network,
-		"-e", "BASE="+base, "-e", "A="+a, "-e", "B="+b, "-e", "V="+virt,
+		"-e", "BASE="+base, "-e", "A="+a, "-e", "B="+b, "-e", "V="+virt, "-e", "TOKEN="+authToken,
 		"node:22", "bash", "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("npm client run failed: %v\n%s", err, out)

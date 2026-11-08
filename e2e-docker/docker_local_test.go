@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -79,8 +81,12 @@ func TestLocalDockerPushPull(t *testing.T) {
 	const image = "team/app"
 	const tag = "v1.0.0"
 
-	// /v2/ version check.
-	resp, _ := doRequest(t, http.MethodGet, api("/v2/"), nil, "")
+	// /v2/ version check: anonymous gets the token challenge, a token passes.
+	resp, _ := doRequestAuth(t, http.MethodGet, api("/v2/"), nil, "", "")
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(resp.Header.Get("WWW-Authenticate"), "/v2/token") {
+		t.Fatalf("anonymous /v2/ ping: status %d, challenge %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+	}
+	resp, _ = doRequest(t, http.MethodGet, api("/v2/"), nil, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/v2/ ping: status %d", resp.StatusCode)
 	}
@@ -169,9 +175,66 @@ func TestLocalDockerPushPull(t *testing.T) {
 		t.Fatalf("tags/list wrong repository name: %s", body)
 	}
 
+	assertWriteGated(t, http.MethodPut, api("/v2/docker-internal/"+image+"/manifests/v2"), manifest, manifestType, api("/v2/docker-internal/"+image+"/manifests/"+tag))
+
 	// A now-present blob HEAD should succeed (client would skip re-upload).
 	resp, _ = doRequest(t, http.MethodHead, api("/v2/docker-internal/"+image+"/blobs/"+layerDigest), nil, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("post-push blob HEAD: expected 200, got %d", resp.StatusCode)
 	}
+}
+
+// TestLocalDockerCLIPushPull drives the host docker CLI: docker login with the
+// token as password then push, a push without login rejected, an anonymous
+// pull, and a buildx (buildkit) push.
+func TestLocalDockerCLIPushPull(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available on the test host")
+	}
+	createRepo(t, `{"name":"docker-cli","package_type":"docker","repo_type":"local"}`)
+	defer deleteRepo(t, "docker-cli")
+
+	reg := strings.TrimPrefix(baseURL(), "http://")
+	img := reg + "/docker-cli/e2e/hello"
+	cfg := t.TempDir()
+	docker := func(stdin []byte, args ...string) (string, error) {
+		cmd := exec.Command("docker", args...)
+		cmd.Env = append(os.Environ(), "DOCKER_CONFIG="+cfg)
+		cmd.Stdin = bytes.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	must := func(t *testing.T, stdin []byte, args ...string) {
+		t.Helper()
+		if out, err := docker(stdin, args...); err != nil {
+			t.Fatalf("docker %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	defer func() { _, _ = docker(nil, "rmi", "-f", img+":v1", img+":anon", img+":buildx") }()
+
+	must(t, make([]byte, 1024), "import", "-", img+":v1") // an empty tar
+
+	must(t, []byte(authToken), "login", reg, "-u", "ci", "--password-stdin")
+	must(t, nil, "push", img+":v1")
+
+	must(t, nil, "logout", reg)
+	must(t, nil, "tag", img+":v1", img+":anon")
+	if out, err := docker(nil, "push", img+":anon"); err == nil {
+		t.Fatalf("push without login accepted:\n%s", out)
+	}
+	must(t, nil, "rmi", img+":v1", img+":anon")
+	must(t, nil, "pull", img+":v1")
+
+	t.Run("buildx", func(t *testing.T) {
+		t.Skip("buildkit fetches the registry token with an OAuth2 POST form the server ignores; fixed by myorg/artifactapi#180")
+		conf := cfg + "/buildkitd.toml"
+		if err := os.WriteFile(conf, []byte(fmt.Sprintf("[registry.%q]\n  http = true\n", reg)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		builder := fmt.Sprintf("e2e-%d", os.Getpid())
+		must(t, nil, "buildx", "create", "--name", builder, "--driver", "docker-container", "--driver-opt", "network=host", "--buildkitd-config", conf)
+		defer func() { _, _ = docker(nil, "buildx", "rm", "-f", builder) }()
+		must(t, []byte(authToken), "login", reg, "-u", "ci", "--password-stdin")
+		must(t, []byte("FROM "+img+":v1\nLABEL e2e=buildx\n"), "buildx", "build", "--builder", builder, "--push", "-t", img+":buildx", "-")
+	})
 }

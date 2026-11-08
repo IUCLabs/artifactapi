@@ -37,6 +37,8 @@ func TestLocalGoProxy(t *testing.T) {
 		uploadFile(t, "local-go", mod+"/@v/"+ver+".mod", gomod, "text/plain")
 	}
 
+	assertWriteGated(t, http.MethodPut, api("/api/v2/remotes/local-go/files/"+mod+"/@v/v0.3.0.mod"), gomod, "text/plain", api("/api/v1/local/local-go/"+mod+"/@v/list"))
+
 	resp, body := doRequest(t, http.MethodPut, api("/api/v2/remotes/local-go/files/"+mod+"/@v/v0.3.0.zip"), []byte("junk"), "application/zip")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid zip: status %d: %s", resp.StatusCode, body)

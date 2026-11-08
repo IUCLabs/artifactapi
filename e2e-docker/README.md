@@ -21,6 +21,13 @@ already-running stack.
 
 ## Coverage
 
+- **Write auth** — the stack runs with `ARTIFACTAPI_AUTH_UPLOADS=true` against a
+  static `mockoidc` issuer (`oidc/`); `TestMain` generates the signing key, writes
+  `oidc/jwks.json` and mints the tokens. Every local publish authenticates the way
+  its real client does (curl Bearer/Basic, `docker login`, npm `_authToken`,
+  `GEM_HOST_API_KEY`, `ansible-galaxy --api-key`), and each type checks a
+  publish without a token or with a foreign-key token is refused while
+  anonymous reads still work.
 - **Repository lifecycle** — add / change / delete for remote, local and virtual repos.
 - **Caching** — one immutable artifact per remote package type (one
   `caching_<type>_test.go` case each) proxied through the mock upstream: first fetch `X-Artifact-Source: remote`, second `cache`, bytes

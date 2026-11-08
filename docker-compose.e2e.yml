@@ -21,7 +21,17 @@ services:
     volumes:
       - ./e2e-docker/mirror-conf/b.conf:/etc/nginx/conf.d/default.conf:ro,z
 
+  # Static OIDC issuer gating writes; the suite's TestMain writes jwks.json.
+  mockoidc:
+    image: nginx:alpine
+    volumes:
+      - ./e2e-docker/oidc:/usr/share/nginx/html:ro,z
+
   artifactapi:
+    environment:
+      ARTIFACTAPI_OIDC_ISSUER: http://mockoidc
+      ARTIFACTAPI_OIDC_AUDIENCE: artifactapi
+      ARTIFACTAPI_AUTH_UPLOADS: "true"
     # The host port is set via ARTIFACTAPI_PORT (see scripts/docker-e2e.sh),
     # defaulting to 8000; the e2e run uses 8001 to avoid colliding with a
     # locally-running instance.
@@ -31,4 +41,6 @@ services:
       mockupstreama:
         condition: service_started
       mockupstreamb:
+        condition: service_started
+      mockoidc:
         condition: service_started

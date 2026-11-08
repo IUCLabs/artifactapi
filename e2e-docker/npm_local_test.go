@@ -30,7 +30,7 @@ func TestLocalNPMPublishInstall(t *testing.T) {
 
 	reg := strings.TrimRight(internal, "/") + "/api/v1/local/" + name + "/"
 	script := `set -euo pipefail
-printf 'registry=%s\n%s:_authToken=unused\n' "$REG" "${REG#http:}" > ~/.npmrc
+printf 'registry=%s\n%s:_authToken=%s\n' "$REG" "${REG#http:}" "$TOKEN" > ~/.npmrc
 mk() { d="/w/src/$1-$2"; mkdir -p "$d"; cd "$d"
   printf '{"name":"%s","version":"%s","main":"index.js"}' "$1" "$2" > package.json
   echo "module.exports = '$1@$2';" > index.js; }
@@ -43,10 +43,15 @@ npm install --no-audit --cache /tmp/fresh-cache e2e-npm-plain @e2e/npm-scoped
 node -e "console.log('REQ', require('e2e-npm-plain'), require('@e2e/npm-scoped'))"
 mk e2e-npm-plain 1.1.0 && npm publish
 echo "VERSIONS $(npm view e2e-npm-plain versions --json | tr -d ' \n')"
-echo "LATEST $(npm view e2e-npm-plain dist-tags.latest)"`
+echo "LATEST $(npm view e2e-npm-plain dist-tags.latest)"
+printf 'registry=%s\n%s:_authToken=%s\n' "$REG" "${REG#http:}" "$BAD" > ~/.npmrc
+mk e2e-npm-plain 2.0.0
+if npm publish; then echo "invalid token publish accepted"; exit 1; fi
+printf 'registry=%s\n' "$REG" > ~/.npmrc
+echo "ANON $(npm view e2e-npm-plain dist-tags.latest)"`
 
 	out, err := exec.Command("docker", "run", "--rm", "--network", network,
-		"-e", "REG="+reg, "node:22", "bash", "-c", script).CombinedOutput()
+		"-e", "REG="+reg, "-e", "TOKEN="+authToken, "-e", "BAD="+badToken, "node:22", "bash", "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("npm client run failed: %v\n%s", err, out)
 	}
@@ -54,6 +59,8 @@ echo "LATEST $(npm view e2e-npm-plain dist-tags.latest)"`
 		"REQ e2e-npm-plain@1.0.0 @e2e/npm-scoped@1.0.0",
 		`VERSIONS ["1.0.0","1.1.0"]`,
 		"LATEST 1.1.0",
+		"code E401",
+		"ANON 1.1.0",
 	} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("missing %q in npm output:\n%s", want, out)

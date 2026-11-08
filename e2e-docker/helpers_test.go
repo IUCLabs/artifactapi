@@ -7,14 +7,66 @@ package e2edocker
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 )
+
+// authToken is accepted by the stack's write gate; badToken carries the same
+// claims signed by a key the issuer never published.
+var authToken, badToken string
+
+// TestMain publishes a fresh signing key through the static mockoidc issuer
+// (e2e-docker/oidc, served by docker-compose.e2e.yml) and mints both tokens.
+func TestMain(m *testing.M) {
+	key := mustRSAKey()
+	jwks, _ := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "e2e", Algorithm: "RS256", Use: "sig"}}})
+	if err := os.WriteFile(filepath.Join("oidc", "jwks.json"), jwks, 0o644); err != nil {
+		log.Fatalf("write jwks: %v", err)
+	}
+	authToken, badToken = mintToken(key), mintToken(mustRSAKey())
+	os.Exit(m.Run())
+}
+
+func mustRSAKey() *rsa.PrivateKey {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		log.Fatalf("generate key: %v", err)
+	}
+	return key
+}
+
+func mintToken(key *rsa.PrivateKey) string {
+	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: key, KeyID: "e2e"}}, (&jose.SignerOptions{}).WithType("JWT"))
+	if err != nil {
+		log.Fatalf("signer: %v", err)
+	}
+	now := time.Now()
+	tok, err := jwt.Signed(sig).Claims(jwt.Claims{
+		Issuer: "http://mockoidc", Subject: "e2e", Audience: jwt.Audience{"artifactapi"},
+		IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(time.Hour)),
+	}).Serialize()
+	if err != nil {
+		log.Fatalf("sign token: %v", err)
+	}
+	return tok
+}
+
+func basicAuth(token string) string {
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte("ci:"+token))
+}
 
 func baseURL() string {
 	if v := os.Getenv("ARTIFACTAPI_URL"); v != "" {
@@ -43,7 +95,14 @@ func fixtureBytes(t *testing.T, rel string) []byte {
 	return b
 }
 
+// doRequest sends authToken as a Bearer token; doRequestAuth sends authz
+// verbatim, or no Authorization header when it is empty.
 func doRequest(t *testing.T, method, url string, body []byte, contentType string) (*http.Response, []byte) {
+	t.Helper()
+	return doRequestAuth(t, method, url, body, contentType, "Bearer "+authToken)
+}
+
+func doRequestAuth(t *testing.T, method, url string, body []byte, contentType, authz string) (*http.Response, []byte) {
 	t.Helper()
 	var r io.Reader
 	if body != nil {
@@ -55,6 +114,9 @@ func doRequest(t *testing.T, method, url string, body []byte, contentType string
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	if authz != "" {
+		req.Header.Set("Authorization", authz)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -104,5 +166,19 @@ func getEventually(t *testing.T, url string, timeout time.Duration) (*http.Respo
 			return resp, body
 		}
 		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// assertWriteGated checks a write is refused with no token and with a token
+// from an unknown key, and that readURL still serves anonymously.
+func assertWriteGated(t *testing.T, method, url string, body []byte, contentType, readURL string) {
+	t.Helper()
+	for _, authz := range []string{"", "Bearer " + badToken, basicAuth(badToken)} {
+		if resp, b := doRequestAuth(t, method, url, body, contentType, authz); resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s %s with %.12q: status %d, want 401: %s", method, url, authz, resp.StatusCode, b)
+		}
+	}
+	if resp, b := doRequestAuth(t, http.MethodGet, readURL, nil, "", ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("anonymous GET %s: status %d: %s", readURL, resp.StatusCode, b)
 	}
 }

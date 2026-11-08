@@ -35,7 +35,7 @@ func TestVirtualGemsInstall(t *testing.T) {
 
 	base := strings.TrimRight(internal, "/")
 	script := `set -euo pipefail
-export GEM_HOST_API_KEY=unused
+export GEM_HOST_API_KEY="$TOKEN"
 pub() { d=/w/src-$1-$2; mkdir -p $d/lib; cd $d
   echo "module MyorgE2eHello; VERSION = '$1:$2'; end" > lib/myorg-e2e-hello.rb
   printf 'Gem::Specification.new { |s| s.name = "myorg-e2e-hello"; s.version = "%s"; s.summary = "e2e"; s.authors = ["e2e"]; s.files = ["lib/myorg-e2e-hello.rb"] }' "$2" > g.gemspec
@@ -52,7 +52,7 @@ bundle exec ruby -e 'require "myorg-e2e-hello"; puts "REQ #{MyorgE2eHello::VERSI
 echo "REDIRECT $(curl -s -o /dev/null -w '%{redirect_url}' "$V/gems/myorg-e2e-hello-0.2.0.gem")"`
 
 	out, err := exec.Command("docker", "run", "--rm", "--network", network,
-		"-e", "BASE="+base, "-e", "A="+a, "-e", "B="+b, "-e", "V="+virt,
+		"-e", "BASE="+base, "-e", "A="+a, "-e", "B="+b, "-e", "V="+virt, "-e", "TOKEN="+authToken,
 		"ruby:3.3", "bash", "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("bundler run failed: %v\n%s", err, out)

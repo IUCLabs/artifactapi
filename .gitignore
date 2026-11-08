@@ -4,3 +4,6 @@ bin/
 # e2e-docker fixtures are real package files (.rpm, .tgz, .whl, .zip, ...) that
 # are intentionally tracked, overriding any global ignore of those extensions.
 !e2e-docker/fixtures/**
+
+# Written per run by the dockerised e2e TestMain.
+e2e-docker/oidc/jwks.json

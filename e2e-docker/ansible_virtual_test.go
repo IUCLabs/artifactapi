@@ -35,7 +35,7 @@ func TestVirtualAnsibleInstall(t *testing.T) {
 
 	base := strings.TrimRight(internal, "/")
 	script := "set -euo pipefail\n" + ansibleHelloScript + `
-ansible-galaxy collection publish /w/dist/myorg-e2e_hello-1.0.0.tar.gz --server "$BASE/api/v1/local/$B/" --api-key unused
+ansible-galaxy collection publish /w/dist/myorg-e2e_hello-1.0.0.tar.gz --server "$BASE/api/v1/local/$B/" --api-key "$TOKEN"
 V="$BASE/api/v1/virtual/$VIRT"
 ansible-galaxy collection install myorg.e2e_hello --server "$V/" -p /w/coll
 DL=$(python3 -c 'import json,sys,urllib.request as u;print(json.load(u.urlopen(sys.argv[1]))["download_url"])' "$V/api/v3/collections/myorg/e2e_hello/versions/1.0.0/")
@@ -47,7 +47,7 @@ except u.HTTPError as e: print(e.code, e.headers["Location"])' "$DL")"
 ` + ansibleHelloPlay
 
 	out, err := exec.Command("docker", "run", "--rm", "--network", network,
-		"-e", "BASE="+base, "-e", "B="+b, "-e", "VIRT="+virt,
+		"-e", "BASE="+base, "-e", "B="+b, "-e", "VIRT="+virt, "-e", "TOKEN="+authToken,
 		"python:3.12-slim", "bash", "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("ansible-galaxy client run failed: %v\n%s", err, out)

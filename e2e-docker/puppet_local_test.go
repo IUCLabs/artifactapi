@@ -68,6 +68,7 @@ func TestLocalPuppetRealClient(t *testing.T) {
 	if resp, body := getEventually(t, api("/api/v1/local/local-puppet/v3/releases/myorg-hello-0.1.0"), 15*time.Second); resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"file_md5"`) {
 		t.Fatalf("release never indexed: %d %s", resp.StatusCode, body)
 	}
+	assertWriteGated(t, http.MethodPut, api("/api/v2/remotes/local-puppet/files/myorg-hello-0.2.0.tar.gz"), tarball, "application/gzip", api("/api/v1/local/local-puppet/v3/releases/myorg-hello-0.1.0"))
 
 	forge := internal + "/api/v1/local/local-puppet"
 	run := func(image, script string) string {

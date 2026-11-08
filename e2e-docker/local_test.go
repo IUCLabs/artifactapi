@@ -15,10 +15,11 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
 )
 
+// uploadFile PUTs with Basic credentials, as `curl -u ci:$TOKEN` does.
 func uploadFile(t *testing.T, repo, filePath string, body []byte, contentType string) {
 	t.Helper()
 	url := api("/api/v2/remotes/" + repo + "/files/" + filePath)
-	resp, respBody := doRequest(t, http.MethodPut, url, body, contentType)
+	resp, respBody := doRequestAuth(t, http.MethodPut, url, body, contentType, basicAuth(authToken))
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("upload %s: status %d: %s", filePath, resp.StatusCode, respBody)
 	}
@@ -31,6 +32,7 @@ func TestLocalGenericUpload(t *testing.T) {
 
 	content := []byte("artifactapi local generic upload payload")
 	uploadFile(t, "local-generic", "data/hello.bin", content, "application/octet-stream")
+	assertWriteGated(t, http.MethodPut, api("/api/v2/remotes/local-generic/files/data/other.bin"), content, "application/octet-stream", api("/api/v1/local/local-generic/data/hello.bin"))
 
 	resp, body := doRequest(t, http.MethodGet, api("/api/v1/local/local-generic/data/hello.bin"), nil, "")
 	if resp.StatusCode != http.StatusOK {
@@ -41,6 +43,18 @@ func TestLocalGenericUpload(t *testing.T) {
 	}
 }
 
+// TestLocalTerraformUpload uploads a provider zip the way a release pipeline
+// does and downloads it back anonymously.
+func TestLocalTerraformUpload(t *testing.T) {
+	createRepo(t, `{"name":"local-terraform","package_type":"terraform","repo_type":"local"}`)
+	defer deleteRepo(t, "local-terraform")
+
+	const path = "myorg/e2e/terraform-provider-e2e_1.0.0_linux_amd64.zip"
+	zip := []byte("PK\x05\x06" + strings.Repeat("\x00", 18))
+	uploadFile(t, "local-terraform", path, zip, "application/zip")
+	assertWriteGated(t, http.MethodPut, api("/api/v2/remotes/local-terraform/files/myorg/e2e/terraform-provider-e2e_1.1.0_linux_amd64.zip"), zip, "application/zip", api("/api/v2/remotes/local-terraform/files/"+path))
+}
+
 // TestLocalPyPIUpload uploads a wheel and validates the generated simple index.
 func TestLocalPyPIUpload(t *testing.T) {
 	createRepo(t, `{"name":"local-pypi","package_type":"pypi","repo_type":"local"}`)
@@ -48,6 +62,7 @@ func TestLocalPyPIUpload(t *testing.T) {
 
 	wheel := fixtureBytes(t, "packages/foo-1.0-py3-none-any.whl")
 	uploadFile(t, "local-pypi", "foo-1.0-py3-none-any.whl", wheel, "application/zip")
+	assertWriteGated(t, http.MethodPut, api("/api/v2/remotes/local-pypi/files/foo-2.0-py3-none-any.whl"), wheel, "application/zip", api("/api/v1/local/local-pypi/simple/foo/"))
 
 	// Root index lists the package.
 	resp, body := doRequest(t, http.MethodGet, api("/api/v1/local/local-pypi/simple/"), nil, "")
@@ -95,6 +110,7 @@ func TestLocalRPMRepodata(t *testing.T) {
 	if !strings.Contains(s, "<repomd") || !strings.Contains(s, "primary") {
 		t.Fatalf("repomd.xml not a valid repodata document: %s", s)
 	}
+	assertWriteGated(t, http.MethodPut, api("/api/v2/remotes/local-rpm/files/e2e-testpkg-1.0-1.noarch.rpm"), rpm, "application/x-rpm", api("/api/v1/local/local-rpm/repodata/repomd.xml"))
 }
 
 // TestLocalDebRepo uploads a .deb and validates that the flat apt index
@@ -142,6 +158,7 @@ func TestLocalDebRepo(t *testing.T) {
 	if !bytes.Equal(body, deb) {
 		t.Fatalf("deb content mismatch")
 	}
+	assertWriteGated(t, http.MethodPut, api("/api/v2/remotes/local-deb/files/e2e-testpkg_2.0.0_amd64.deb"), deb, "application/vnd.debian.binary-package", api("/api/v1/local/local-deb/Packages"))
 }
 
 // TestLocalAlpineIndex uploads an .apk to an alpine local repo and validates
@@ -178,6 +195,7 @@ func TestLocalAlpineIndex(t *testing.T) {
 	if !bytes.Equal(body, apk) {
 		t.Fatalf("apk content mismatch")
 	}
+	assertWriteGated(t, http.MethodPut, api("/api/v2/remotes/local-alpine/files/x86_64/e2e-testpkg-2.0-r0.apk"), apk, "application/vnd.android.package-archive", api("/api/v1/local/local-alpine/x86_64/APKINDEX.tar.gz"))
 }
 
 func apkIndexText(t *testing.T, body []byte) string {

@@ -47,18 +47,20 @@ func TestLocalAnsiblePublishInstall(t *testing.T) {
 	defer deleteRepo(t, name)
 
 	script := "set -euo pipefail\n" + ansibleHelloScript + `
-ansible-galaxy collection publish /w/dist/myorg-e2e_hello-1.0.0.tar.gz --server "$SRV" --api-key unused
-if ansible-galaxy collection publish /w/dist/myorg-e2e_hello-1.0.0.tar.gz --server "$SRV" --api-key unused; then echo "republish accepted"; exit 1; fi
+ansible-galaxy collection publish /w/dist/myorg-e2e_hello-1.0.0.tar.gz --server "$SRV" --api-key "$TOKEN"
+if ansible-galaxy collection publish /w/dist/myorg-e2e_hello-1.0.0.tar.gz --server "$SRV" --api-key "$TOKEN"; then echo "republish accepted"; exit 1; fi
+cd /w/myorg/e2e_hello && sed -i 's/^version: .*/version: 1.0.1/' galaxy.yml && ansible-galaxy collection build --output-path /w/dist >/dev/null
+if ansible-galaxy collection publish /w/dist/myorg-e2e_hello-1.0.1.tar.gz --server "$SRV" --api-key "$BAD"; then echo "invalid key publish accepted"; exit 1; fi
 ansible-galaxy collection install myorg.e2e_hello:==1.0.0 --server "$SRV" -p /w/coll
 ` + ansibleHelloPlay
 
 	srv := strings.TrimRight(internal, "/") + "/api/v1/local/" + name + "/"
 	out, err := exec.Command("docker", "run", "--rm", "--network", network,
-		"-e", "SRV="+srv, "python:3.12-slim", "bash", "-c", script).CombinedOutput()
+		"-e", "SRV="+srv, "-e", "TOKEN="+authToken, "-e", "BAD="+badToken, "python:3.12-slim", "bash", "-c", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("ansible-galaxy client run failed: %v\n%s", err, out)
 	}
-	for _, want := range []string{"successfully published and imported", "HTTP Code: 409", "myorg.e2e_hello:1.0.0 was installed successfully", "PLAY hello e2e"} {
+	for _, want := range []string{"successfully published and imported", "HTTP Code: 409", "HTTP Code: 401", "myorg.e2e_hello:1.0.0 was installed successfully", "PLAY hello e2e"} {
 		if !strings.Contains(string(out), want) {
 			t.Fatalf("missing %q in client output:\n%s", want, out)
 		}

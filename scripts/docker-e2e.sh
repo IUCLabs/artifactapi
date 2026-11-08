@@ -17,8 +17,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> building and starting stack (postgres, redis, minio, mockupstream(s), artifactapi)"
-"${COMPOSE[@]}" up -d --build postgres redis minio mockupstream mockupstreama mockupstreamb artifactapi
+echo "==> building and starting stack (postgres, redis, minio, mockupstream(s), mockoidc, artifactapi)"
+"${COMPOSE[@]}" up -d --build postgres redis minio mockupstream mockupstreama mockupstreamb mockoidc artifactapi
 
 echo "==> waiting for artifactapi health at ${API_URL}"
 for i in $(seq 1 60); do

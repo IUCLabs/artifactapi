@@ -107,19 +107,23 @@ func TestLocalDebRepo(t *testing.T) {
 	deb := testsupport.MinimalDeb("e2e-testpkg", "1.0.0", "amd64")
 	uploadFile(t, "local-deb", "e2e-testpkg_1.0.0_amd64.deb", deb, "application/vnd.debian.binary-package")
 
-	// The index is generated asynchronously after upload; poll for it.
-	resp, body := getEventually(t, api("/api/v1/local/local-deb/Packages"), 15*time.Second)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("Packages: status %d: %s", resp.StatusCode, body)
+	// The index is served (empty) at once and lists the package only once the
+	// upload is parsed asynchronously; poll until it does.
+	var pkgs string
+	for deadline := time.Now().Add(15 * time.Second); !strings.Contains(pkgs, "Package: e2e-testpkg") && time.Now().Before(deadline); time.Sleep(250 * time.Millisecond) {
+		resp, body := doRequest(t, http.MethodGet, api("/api/v1/local/local-deb/Packages"), nil, "")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("Packages: status %d: %s", resp.StatusCode, body)
+		}
+		pkgs = string(body)
 	}
-	pkgs := string(body)
 	for _, want := range []string{"Package: e2e-testpkg", "Version: 1.0.0", "Architecture: amd64", "Filename: pool/e2e-testpkg_1.0.0_amd64.deb", "SHA256:"} {
 		if !strings.Contains(pkgs, want) {
 			t.Fatalf("Packages missing %q:\n%s", want, pkgs)
 		}
 	}
 
-	resp, body = doRequest(t, http.MethodGet, api("/api/v1/local/local-deb/Release"), nil, "")
+	resp, body := doRequest(t, http.MethodGet, api("/api/v1/local/local-deb/Release"), nil, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("Release: status %d: %s", resp.StatusCode, body)
 	}

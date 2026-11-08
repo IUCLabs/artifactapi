@@ -186,7 +186,7 @@ func (b *BearerOIDC) RequireRegistryWrites(next http.Handler, realm func(*http.R
 		hasAuth := r.Header.Get("Authorization") != ""
 		switch {
 		case r.URL.Path == "/v2/token":
-			writeToken(w, b.registryToken(r))
+			writeToken(w, b.registryToken(w, r))
 		case r.URL.Path == "/v2/" && !hasAuth:
 			unauthorized(w, challenge, "authentication required")
 		default:
@@ -198,8 +198,18 @@ func (b *BearerOIDC) RequireRegistryWrites(next http.Handler, realm func(*http.R
 // registryToken echoes a valid credential back as the registry token. Missing
 // or invalid credentials (e.g. an expired `docker login`) get the anonymous
 // token so pulls keep working; writes are still verified per request.
-func (b *BearerOIDC) registryToken(r *http.Request) string {
+// containerd/buildkit POST an OAuth2 password or refresh_token grant form;
+// only a capped urlencoded body is read, never multipart.
+func (b *BearerOIDC) registryToken(w http.ResponseWriter, r *http.Request) string {
 	raw := token(r)
+	if raw == "" && r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, maxTokenForm)
+		if r.ParseForm() == nil {
+			if raw = r.PostForm.Get("password"); raw == "" {
+				raw = r.PostForm.Get("refresh_token")
+			}
+		}
+	}
 	if raw == "" {
 		return "anonymous"
 	}
@@ -209,6 +219,9 @@ func (b *BearerOIDC) registryToken(r *http.Request) string {
 	}
 	return raw
 }
+
+// maxTokenForm fits a large OIDC JWT plus the grant's other fields.
+const maxTokenForm = 16 << 10
 
 func writeToken(w http.ResponseWriter, tok string) {
 	w.Header().Set("Content-Type", "application/json")

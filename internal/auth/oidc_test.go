@@ -5,8 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/json"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,9 +18,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containerd/containerd/v2/core/remotes"
+	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/opencontainers/go-digest"
+	specs "github.com/opencontainers/image-spec/specs-go"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
 )
@@ -321,6 +330,47 @@ func TestRequireRegistryWrites(t *testing.T) {
 			t.Errorf("rejected credential %q: %d %s", authz, w.Code, w.Body)
 		}
 	}
+	post := func(form url.Values) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/v2/token", strings.NewReader(form.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	for _, tc := range []struct {
+		name string
+		form url.Values
+		want string
+	}{
+		{"password grant", url.Values{"grant_type": {"password"}, "username": {"ci"}, "password": {valid}, "service": {"artifactapi"}}, valid},
+		{"refresh grant", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {valid}}, valid},
+		{"bogus password", url.Values{"grant_type": {"password"}, "username": {"ci"}, "password": {"bogus"}}, "anonymous"},
+		{"expired refresh", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {expired}}, "anonymous"},
+		{"no credential", url.Values{"grant_type": {"password"}, "username": {"ci"}}, "anonymous"},
+	} {
+		if w := post(tc.form); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"access_token":"`+tc.want+`"`) {
+			t.Errorf("oauth %s: %d %s", tc.name, w.Code, w.Body)
+		}
+	}
+	var mp strings.Builder
+	mw := multipart.NewWriter(&mp)
+	_ = mw.WriteField("password", valid)
+	_ = mw.Close()
+	r := httptest.NewRequest(http.MethodPost, "/v2/token", strings.NewReader(mp.String()))
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if !strings.Contains(w.Body.String(), `"token":"anonymous"`) || r.MultipartForm != nil {
+		t.Errorf("multipart form honoured: %s", w.Body)
+	}
+	big := &countingReader{r: io.MultiReader(strings.NewReader("password="+valid+"&pad="), strings.NewReader(strings.Repeat("a", 1<<20)))}
+	r = httptest.NewRequest(http.MethodPost, "/v2/token", big)
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if !strings.Contains(w.Body.String(), `"token":"anonymous"`) || big.n > 2*maxTokenForm {
+		t.Errorf("oversized form: read %d bytes, %s", big.n, w.Body)
+	}
 	for _, m := range []string{http.MethodGet, http.MethodHead} {
 		if w := do(m, "/v2/repo/img/manifests/t", ""); w.Code != http.StatusNoContent {
 			t.Errorf("anonymous %s: %d", m, w.Code)
@@ -340,4 +390,121 @@ func TestRequireRegistryWrites(t *testing.T) {
 	if got := serve(NewBearerOIDC("", nil).RequireRegistryWrites(ok, nil), http.MethodPut, ""); got != http.StatusNoContent {
 		t.Errorf("disabled: status %d", got)
 	}
+}
+
+// stubRegistry is just enough of a Registry V2 for containerd to push a blob
+// and manifest and resolve/fetch them back.
+func stubRegistry() http.Handler {
+	var mu sync.Mutex
+	store := map[string][]byte{}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		p := r.URL.Path
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "/blobs/uploads/"):
+			w.Header().Set("Location", p+"u1")
+			w.WriteHeader(http.StatusAccepted)
+		case r.Method == http.MethodPut && strings.Contains(p, "/blobs/uploads/"):
+			dgst := r.URL.Query().Get("digest")
+			store[strings.SplitN(p, "/blobs/", 2)[0]+"/blobs/"+dgst], _ = io.ReadAll(r.Body)
+			w.Header().Set("Docker-Content-Digest", dgst)
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPut:
+			body, _ := io.ReadAll(r.Body)
+			store[p] = body
+			store[strings.SplitN(p, "/manifests/", 2)[0]+"/manifests/"+digest.FromBytes(body).String()] = body
+			w.Header().Set("Docker-Content-Digest", digest.FromBytes(body).String())
+			w.WriteHeader(http.StatusCreated)
+		default:
+			body, found := store[p]
+			if !found {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			if strings.Contains(p, "/manifests/") {
+				w.Header().Set("Content-Type", ocispec.MediaTypeImageManifest)
+			}
+			w.Header().Set("Docker-Content-Digest", digest.FromBytes(body).String())
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			if r.Method == http.MethodGet {
+				_, _ = w.Write(body)
+			}
+		}
+	})
+}
+
+// TestRegistryContainerdClient drives the real containerd resolver (used by
+// buildkit), which fetches tokens with an OAuth2 POST form.
+func TestRegistryContainerdClient(t *testing.T) {
+	iss := testsupport.NewOIDCIssuer()
+	defer iss.Close()
+	var srv *httptest.Server
+	srv = httptest.NewServer(NewBearerOIDC(iss.URL, []string{"artifactapi"}).RequireRegistryWrites(stubRegistry(), func(*http.Request) string { return srv.URL + "/v2/token" }))
+	defer srv.Close()
+	ref := strings.TrimPrefix(srv.URL, "http://") + "/repo/img:t"
+	ctx := context.Background()
+
+	resolver := func(secret string) remotes.Resolver {
+		return docker.NewResolver(docker.ResolverOptions{Hosts: docker.ConfigureDefaultRegistries(
+			docker.WithPlainHTTP(docker.MatchAllHosts),
+			docker.WithAuthorizer(docker.NewDockerAuthorizer(docker.WithAuthCreds(func(string) (string, string, error) { return "ci", secret, nil }))),
+		)})
+	}
+	push := func(res remotes.Resolver, mediaType string, data []byte) (ocispec.Descriptor, error) {
+		desc := ocispec.Descriptor{MediaType: mediaType, Digest: digest.FromBytes(data), Size: int64(len(data))}
+		p, err := res.Pusher(ctx, ref)
+		if err != nil {
+			return desc, err
+		}
+		cw, err := p.Push(ctx, desc)
+		if err != nil {
+			return desc, err
+		}
+		defer cw.Close()
+		if _, err := cw.Write(data); err != nil {
+			return desc, err
+		}
+		return desc, cw.Commit(ctx, desc.Size, desc.Digest)
+	}
+	pushImage := func(res remotes.Resolver, arch string) error {
+		cfg, err := push(res, ocispec.MediaTypeImageConfig, []byte(`{"architecture":"`+arch+`","os":"linux"}`))
+		if err != nil {
+			return err
+		}
+		manifest, _ := json.Marshal(ocispec.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest, Config: cfg, Layers: []ocispec.Descriptor{}})
+		_, err = push(res, ocispec.MediaTypeImageManifest, manifest)
+		return err
+	}
+
+	if err := pushImage(resolver(iss.Token(nil, "artifactapi", "ci", time.Hour)), "amd64"); err != nil {
+		t.Fatalf("push with valid credential: %v", err)
+	}
+	for name, secret := range map[string]string{"bogus": "bogus", "expired": iss.Token(nil, "artifactapi", "ci", -time.Minute)} {
+		if err := pushImage(resolver(secret), name); err == nil || !strings.Contains(err.Error(), "401") {
+			t.Errorf("push with %s credential: want 401, got %v", name, err)
+		}
+		res := resolver(secret)
+		_, desc, err := res.Resolve(ctx, ref)
+		if err != nil {
+			t.Fatalf("resolve with %s credential: %v", name, err)
+		}
+		f, _ := res.Fetcher(ctx, ref)
+		rc, err := f.Fetch(ctx, desc)
+		if err != nil {
+			t.Fatalf("pull with %s credential: %v", name, err)
+		}
+		_ = rc.Close()
+	}
+}
+
+type countingReader struct {
+	r io.Reader
+	n int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
 }

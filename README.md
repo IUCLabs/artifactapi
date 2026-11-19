@@ -223,22 +223,6 @@ make lint        # golangci-lint + go vet
 make fmt         # gofmt + goimports
 ```
 
-### `GOPRIVATE`
-
-artifactapi depends on `github.com/IUCLabs/golib`, which is served by Gitea and
-is unknown to `proxy.golang.org` / `sum.golang.org`. Module resolution therefore
-needs:
-
-```
-export GOPRIVATE=git.example.com
-```
-
-The `Makefile` exports it for every target, and the `Dockerfile` and the
-woodpecker Go steps set it themselves, so `make build|test|lint` and CI work on
-a clean checkout. Only bare `go` commands run outside `make` need it in your
-shell — set it there (or in your shell profile) rather than with `go env -w`,
-which is machine state this repo cannot carry.
-
 ### TUI
 
 ```bash

@@ -9,8 +9,6 @@ steps:
     commands:
       - go test -race -count=1 ./pkg/... ./internal/...
     environment:
-      # golib lives on Gitea; skip the public proxy/sum db.
-      GOPRIVATE: git.example.com
       GOCACHEPROG: "go-cache-plugin --cache-dir=/tmp/gocache"
       GOCACHE_S3_BUCKET: gocache
       # Explicit region skips a GetBucketLocation probe RGW handles poorly.

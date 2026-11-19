@@ -3,7 +3,7 @@ module github.com/IUCLabs/artifactapi
 go 1.25.9
 
 require (
-	github.com/IUCLabs/golib v0.1.0
+	github.com/IUCLabs/golib v0.3.0
 	github.com/cavaliergopher/rpm v1.3.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0

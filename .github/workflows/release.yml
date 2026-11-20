@@ -1,0 +1,49 @@
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  release:
+    runs-on: iuclabs-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: |
+          go install github.com/google/ko@v0.19.1
+          go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+      - run: echo "${GITHUB_TOKEN}" | crane auth login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: npm ci && npm run build
+        working-directory: ui
+        env:
+          BASE_PATH: /ui
+      - name: UI image
+        run: scripts/ui-image.sh "ghcr.io/iuclabs/artifactapi-ui:${GITHUB_REF_NAME}"
+        env:
+          BASE_PATH: /ui
+      - name: API image
+        run: >-
+          ko build --bare --sbom=none --platform linux/amd64 --tags "${GITHUB_REF_NAME}"
+          --image-label org.opencontainers.image.source=https://github.com/IUCLabs/artifactapi
+          ./cmd/artifactapi
+        env:
+          KO_DOCKER_REPO: ghcr.io/iuclabs/artifactapi
+          VERSION: ${{ github.ref_name }}
+      - name: Move latest
+        run: |
+          crane tag "ghcr.io/iuclabs/artifactapi-ui:${GITHUB_REF_NAME}" latest
+          crane tag "ghcr.io/iuclabs/artifactapi:${GITHUB_REF_NAME}" latest

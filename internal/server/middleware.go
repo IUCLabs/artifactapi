@@ -2,6 +2,7 @@ package server
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -31,6 +32,9 @@ func NewStructuredLogger() func(next http.Handler) http.Handler {
 				remote := middleware.GetClientIP(r.Context())
 				if remote == "" {
 					remote = r.RemoteAddr
+					if host, _, err := net.SplitHostPort(remote); err == nil {
+						remote = host
+					}
 				}
 				slog.Info("request",
 					"method", r.Method,

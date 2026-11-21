@@ -3,7 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
@@ -83,8 +83,15 @@ func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]pr
 	if err != nil {
 		return nil, err
 	}
-	result := make([]provider.RPMMetadata, len(rows))
-	for i, r := range rows {
+	return rpmEntriesFromRows(rows), nil
+}
+
+// rpmEntriesFromRows skips rows whose JSONB fails to decode so one bad row
+// cannot take down a whole repo's repodata.
+func rpmEntriesFromRows(rows []RPMMetadataRow) []provider.RPMMetadata {
+	result := make([]provider.RPMMetadata, 0, len(rows))
+rowLoop:
+	for _, r := range rows {
 		meta := provider.RPMMetadata{
 			RepoName:      r.RepoName,
 			FilePath:      r.FilePath,
@@ -122,12 +129,13 @@ func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]pr
 				continue
 			}
 			if err := json.Unmarshal(f.raw, f.dst); err != nil {
-				return nil, fmt.Errorf("decode rpm metadata %s/%s: %w", r.RepoName, r.FilePath, err)
+				slog.Warn("skipping rpm metadata row with undecodable JSON", "repo", r.RepoName, "file", r.FilePath, "package", r.Name, "error", err)
+				continue rowLoop
 			}
 		}
-		result[i] = meta
+		result = append(result, meta)
 	}
-	return result, nil
+	return result
 }
 
 func (db *DB) ListRPMMetadata(ctx context.Context, repoName string) ([]RPMMetadataRow, error) {

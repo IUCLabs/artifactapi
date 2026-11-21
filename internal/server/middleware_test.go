@@ -20,7 +20,7 @@ func TestRequestLogClientIP(t *testing.T) {
 	h := middleware.ClientIPFromXFFTrustedProxies(1)(NewStructuredLogger()(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})))
 	for _, tc := range []struct{ xff, want string }{
 		{"6.6.6.6, 203.0.113.7", "remote=203.0.113.7"},
-		{"", "remote=192.0.2.1:1234"},
+		{"", "remote=192.0.2.1 "},
 	} {
 		buf.Reset()
 		r := httptest.NewRequest(http.MethodGet, "/", nil)

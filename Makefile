@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt e2e docker-e2e docker docker-ui compose clean tidy check-go
+.PHONY: build test lint fmt e2e docker-e2e docker docker-ui compose clean tidy check-go patch minor major
 
 BINARY := bin/artifactapi
 MODULE := github.com/IUCLabs/artifactapi

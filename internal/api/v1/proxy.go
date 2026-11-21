@@ -130,7 +130,7 @@ func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote
 		http.Error(w, "bad gateway", http.StatusBadGateway)
 		return
 	}
-	defer result.Reader.Close()
+	defer func() { _ = result.Reader.Close() }()
 
 	var body io.Reader = result.Reader
 	if sr, ok := prov.(provider.ServeRewriter); ok && prov.Classify(path) == provider.Mutable {
@@ -148,7 +148,9 @@ func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote
 		w.Header().Set("X-Artifact-Size", fmt.Sprintf("%d", result.Size))
 	}
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, body)
+	if _, err := io.Copy(w, body); err != nil {
+		slog.Debug("response copy aborted", "path", r.URL.Path, "error", err)
+	}
 }
 
 // writeProxyError answers a quarantine refusal as JSON and anything else as text.
@@ -278,7 +280,7 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("X-Artifact-Source", "virtual")
 	w.WriteHeader(http.StatusOK)
-	w.Write(body)
+	_, _ = w.Write(body)
 }
 
 func (h *ProxyHandler) handleLocal(w http.ResponseWriter, r *http.Request) {
@@ -348,13 +350,15 @@ func (h *ProxyHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, re
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	w.Header().Set("Content-Type", info.ContentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
 	w.Header().Set("X-Artifact-Source", "local")
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	if _, err := io.Copy(w, reader); err != nil {
+		slog.Debug("response copy aborted", "path", r.URL.Path, "error", err)
+	}
 }
 
 // Scheme returns the client-facing scheme: TLS, else the first

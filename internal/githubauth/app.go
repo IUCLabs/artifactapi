@@ -121,7 +121,7 @@ func (a *appCredential) refreshLocked(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("github app: token exchange: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		// Never echo the body verbatim — it can contain sensitive material.

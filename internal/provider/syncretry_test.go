@@ -116,7 +116,7 @@ func TestReadPrefix(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if tc.cl == -1 && resp.ContentLength != -1 {
 				t.Fatalf("response not chunked: ContentLength=%d", resp.ContentLength)
 			}

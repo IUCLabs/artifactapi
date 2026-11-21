@@ -21,7 +21,7 @@ func init() {
 	// The Ryuk reaper container cannot start in this environment; each Start*
 	// returns an explicit terminate func for cleanup instead.
 	if _, ok := os.LookupEnv("TESTCONTAINERS_RYUK_DISABLED"); !ok {
-		os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
+		_ = os.Setenv("TESTCONTAINERS_RYUK_DISABLED", "true")
 	}
 }
 

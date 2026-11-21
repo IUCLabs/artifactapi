@@ -224,7 +224,7 @@ func (p *Provider) serveIndex(w http.ResponseWriter, r *http.Request, files prov
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(terraformIndex{Versions: versions})
+	_ = json.NewEncoder(w).Encode(terraformIndex{Versions: versions})
 }
 
 func (p *Provider) serveVersionDoc(w http.ResponseWriter, r *http.Request, files provider.FileStore, repoName, namespace, typeName, version string) {
@@ -256,5 +256,5 @@ func (p *Provider) serveVersionDoc(w http.ResponseWriter, r *http.Request, files
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(terraformVersionDoc{Archives: archives})
+	_ = json.NewEncoder(w).Encode(terraformVersionDoc{Archives: archives})
 }

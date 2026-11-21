@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -210,12 +211,14 @@ func (h *LocalHandler) download(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("download failed: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	w.Header().Set("Content-Type", info.ContentType)
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size))
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	if _, err := io.Copy(w, reader); err != nil {
+		slog.Debug("response copy aborted", "path", r.URL.Path, "error", err)
+	}
 }
 
 func (h *LocalHandler) remove(w http.ResponseWriter, r *http.Request) {

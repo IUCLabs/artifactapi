@@ -13,9 +13,9 @@ func TestLoadDefaults(t *testing.T) {
 		"MINIO_BUCKET", "MINIO_SECURE", "MINIO_REGION",
 	} {
 		old, ok := os.LookupEnv(k)
-		os.Unsetenv(k)
+		_ = os.Unsetenv(k)
 		if ok {
-			t.Cleanup(func() { os.Setenv(k, old) })
+			t.Cleanup(func() { _ = os.Setenv(k, old) })
 		}
 	}
 

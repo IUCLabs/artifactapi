@@ -60,7 +60,7 @@ func (m *PyPIMerger) MergeIndexes(members []MemberIndex, proxyBaseURL string) ([
 	var sb strings.Builder
 	sb.WriteString("<!DOCTYPE html>\n<html><body>\n")
 	for _, name := range keys {
-		sb.WriteString(fmt.Sprintf("  <a href=\"%s\">%s</a>\n", links[name], name))
+		fmt.Fprintf(&sb, "  <a href=\"%s\">%s</a>\n", links[name], name)
 	}
 	sb.WriteString("</body></html>\n")
 

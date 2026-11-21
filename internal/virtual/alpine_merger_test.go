@@ -23,16 +23,16 @@ func apkTarGz(t *testing.T, name string, body []byte, closeTar bool) []byte {
 	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
 	}
-	tw.Write(body)
+	_, _ = tw.Write(body)
 	if closeTar {
-		tw.Close()
+		_ = tw.Close()
 	} else {
-		tw.Flush()
+		_ = tw.Flush()
 	}
 	var gb bytes.Buffer
 	gz := gzip.NewWriter(&gb)
-	gz.Write(tb.Bytes())
-	gz.Close()
+	_, _ = gz.Write(tb.Bytes())
+	_ = gz.Close()
 	return gb.Bytes()
 }
 

@@ -68,7 +68,7 @@ func (s *S3) Download(ctx context.Context, key string) (io.ReadCloser, *minio.Ob
 
 	info, err := obj.Stat()
 	if err != nil {
-		obj.Close()
+		_ = obj.Close()
 		return nil, nil, err
 	}
 

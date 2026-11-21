@@ -29,8 +29,8 @@ func (c *CAS) Store(ctx context.Context, reader io.Reader, contentType string) (
 	if err != nil {
 		return nil, fmt.Errorf("create temp file: %w", err)
 	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	defer func() { _ = tmp.Close() }()
 
 	hasher := sha256.New()
 	size, err := io.Copy(io.MultiWriter(tmp, hasher), reader)

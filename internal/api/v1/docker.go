@@ -61,17 +61,17 @@ func (h *ProxyHandler) appendUpload(ctx context.Context, id string, chunk io.Rea
 
 	tmp, err := os.CreateTemp("", "docker-upload-*")
 	if err != nil {
-		reader.Close()
+		_ = reader.Close()
 		return 0, err
 	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	defer func() { _ = tmp.Close() }()
 
 	if _, err := io.Copy(tmp, reader); err != nil {
-		reader.Close()
+		_ = reader.Close()
 		return 0, err
 	}
-	reader.Close()
+	_ = reader.Close()
 
 	n, err := io.Copy(tmp, chunk)
 	if err != nil {
@@ -135,7 +135,7 @@ func dockerError(w http.ResponseWriter, status int, code, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Docker-Distribution-Api-Version", dockerAPIVersionHeader)
 	w.WriteHeader(status)
-	fmt.Fprintf(w, `{"errors":[{"code":%q,"message":%q}]}`, code, msg)
+	_, _ = fmt.Fprintf(w, `{"errors":[{"code":%q,"message":%q}]}`, code, msg)
 }
 
 // dockerGet dispatches a registry GET to the local handler for local docker
@@ -274,7 +274,7 @@ func (h *ProxyHandler) dockerServeRef(w http.ResponseWriter, r *http.Request, re
 		dockerError(w, http.StatusInternalServerError, "UNKNOWN", err.Error())
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	contentType := info.ContentType
 	if contentType == "" {
@@ -294,7 +294,9 @@ func (h *ProxyHandler) dockerServeRef(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	if _, err := io.Copy(w, reader); err != nil {
+		slog.Debug("response copy aborted", "path", r.URL.Path, "error", err)
+	}
 }
 
 func (h *ProxyHandler) dockerTagsList(w http.ResponseWriter, r *http.Request, remote *models.Remote, image string) {
@@ -316,20 +318,20 @@ func (h *ProxyHandler) dockerTagsList(w http.ResponseWriter, r *http.Request, re
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Docker-Distribution-Api-Version", dockerAPIVersionHeader)
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"name":%q,"tags":`, remote.Name+"/"+image)
+	_, _ = fmt.Fprintf(w, `{"name":%q,"tags":`, remote.Name+"/"+image)
 	writeJSONStringList(w, tags)
-	fmt.Fprint(w, "}")
+	_, _ = fmt.Fprint(w, "}")
 }
 
 func writeJSONStringList(w io.Writer, items []string) {
-	fmt.Fprint(w, "[")
+	_, _ = fmt.Fprint(w, "[")
 	for i, s := range items {
 		if i > 0 {
-			fmt.Fprint(w, ",")
+			_, _ = fmt.Fprint(w, ",")
 		}
-		fmt.Fprintf(w, "%q", s)
+		_, _ = fmt.Fprintf(w, "%q", s)
 	}
-	fmt.Fprint(w, "]")
+	_, _ = fmt.Fprint(w, "]")
 }
 
 // dockerStartUpload begins a blob upload. It honours a monolithic
@@ -404,10 +406,14 @@ func (h *ProxyHandler) dockerFinishUpload(w http.ResponseWriter, r *http.Request
 		dockerError(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "unknown upload")
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	// Drop the staging object once we're done, regardless of outcome; a fresh
 	// context so cleanup still runs if the client disconnects.
-	defer h.store.Delete(context.Background(), key)
+	defer func() {
+		if err := h.store.Delete(context.Background(), key); err != nil {
+			slog.Warn("docker upload staging cleanup failed", "key", key, "error", err)
+		}
+	}()
 
 	// Stream the staged bytes plus any trailing PUT body through the CAS in one
 	// pass — no extra round trip to re-assemble.

@@ -243,7 +243,7 @@ func (h *ProxyHandler) readLocalBlob(ctx context.Context, contentHash string) ([
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	return io.ReadAll(reader)
 }
 

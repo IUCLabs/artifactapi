@@ -236,7 +236,7 @@ func (h *Handler) sha256sums(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Write(sums)
+	_, _ = w.Write(sums)
 }
 
 func (h *Handler) sha256sumsSig(w http.ResponseWriter, r *http.Request) {
@@ -250,7 +250,7 @@ func (h *Handler) sha256sumsSig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Write(sig)
+	_, _ = w.Write(sig)
 }
 
 // buildSums renders the SHA256SUMS body for one version: one "<hex>  <filename>"
@@ -287,7 +287,7 @@ func (h *Handler) buildSums(w http.ResponseWriter, r *http.Request) ([]byte, boo
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func baseURL(r *http.Request) string {

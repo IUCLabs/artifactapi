@@ -384,7 +384,7 @@ func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, pat
 		return nil, &UpstreamError{Err: err}
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		token, _, terr := fetchBearerToken(ctx, resp.Header.Get("Www-Authenticate"), remote)
 		if terr == nil && token != "" {
 			resp, err = doHead(http.Header{"Authorization": []string{"Bearer " + token}})
@@ -395,7 +395,7 @@ func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, pat
 			return nil, &ProxyError{Status: http.StatusUnauthorized, Message: "upstream returned 401"}
 		}
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, &ProxyError{Status: resp.StatusCode, Message: fmt.Sprintf("upstream returned %d", resp.StatusCode)}
@@ -468,7 +468,7 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		token, err := e.cachedBearerToken(ctx, resp.Header.Get("Www-Authenticate"), remote)
 		if err == nil && token != "" {
 			req2, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -488,7 +488,7 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, &ProxyError{Status: resp.StatusCode, Message: fmt.Sprintf("upstream returned %d", resp.StatusCode)}
 	}
 
@@ -500,7 +500,7 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	// Mutable indexes are small and may be rewritten, so buffer them in memory.
 	if class == ClassMutable {
 		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read upstream body: %w", err)
 		}
@@ -541,7 +541,7 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	// (tempfile -> sha256 -> S3) so arbitrarily large artifacts never sit
 	// fully in memory. Immutable content is never rewritten in the proxy path.
 	casResult, err := e.cas.Store(ctx, resp.Body, contentType)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("store blob: %w", err)
 	}
@@ -668,7 +668,7 @@ func (e *Engine) checkUpstreamOnce(ctx context.Context, remote models.Remote, pa
 	if err != nil {
 		return false, &UpstreamError{Err: err}
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	return resp.StatusCode == http.StatusNotModified, nil
 }
@@ -843,7 +843,7 @@ func fetchBearerToken(ctx context.Context, wwwAuth string, remote models.Remote)
 	if err != nil {
 		return "", 0, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", 0, fmt.Errorf("token endpoint returned %d", resp.StatusCode)

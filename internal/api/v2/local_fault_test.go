@@ -65,7 +65,7 @@ func TestLocalUploadStoreFailure(t *testing.T) {
 		if err != nil {
 			t.Fatalf("put: %v", err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return resp.StatusCode
 	}
 

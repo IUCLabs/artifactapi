@@ -83,7 +83,7 @@ func TestS3RoundTrip(t *testing.T) {
 		t.Fatalf("download: %v", err)
 	}
 	got, _ := io.ReadAll(reader)
-	reader.Close()
+	_ = reader.Close()
 	if !bytes.Equal(got, content) {
 		t.Errorf("content mismatch: %q", got)
 	}
@@ -157,7 +157,7 @@ func TestCASStore(t *testing.T) {
 		t.Fatalf("download stored blob: %v", err)
 	}
 	got, _ := io.ReadAll(reader)
-	reader.Close()
+	_ = reader.Close()
 	if string(got) != content {
 		t.Errorf("stored content mismatch: %q", got)
 	}

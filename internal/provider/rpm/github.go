@@ -571,13 +571,13 @@ func (p *GitHubProvider) fetchReleases(ctx context.Context, remote models.Remote
 			return nil, "", false, err
 		}
 		if page == 1 && resp.StatusCode == http.StatusNotModified {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
 			return nil, etag, true, nil
 		}
 		body, err := io.ReadAll(resp.Body)
 		respEtag := resp.Header.Get("ETag")
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, "", false, err
 		}
@@ -729,7 +729,7 @@ func (p *GitHubProvider) rangeGet(ctx context.Context, remote models.Remote, dow
 	if err != nil {
 		return nil, false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		return nil, false, fmt.Errorf("range GET: %w", provider.AssetStatusError(downloadURL, resp))
 	}
@@ -754,7 +754,7 @@ func (p *GitHubProvider) computeSHA256(ctx context.Context, remote models.Remote
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GET: %w", provider.AssetStatusError(downloadURL, resp))
 	}

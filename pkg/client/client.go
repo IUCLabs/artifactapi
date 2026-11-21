@@ -59,7 +59,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if err != nil {
 		return fmt.Errorf("do: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)

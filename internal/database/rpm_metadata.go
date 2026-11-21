@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
@@ -106,12 +107,24 @@ func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]pr
 			Packager:      r.Packager,
 			CreatedAt:     r.CreatedAt,
 		}
-		json.Unmarshal(r.Requires, &meta.Requires)
-		json.Unmarshal(r.Provides, &meta.Provides)
-		json.Unmarshal(r.Conflicts, &meta.Conflicts)
-		json.Unmarshal(r.Obsoletes, &meta.Obsoletes)
-		json.Unmarshal(r.Files, &meta.Files)
-		json.Unmarshal(r.Changelogs, &meta.Changelogs)
+		for _, f := range []struct {
+			raw json.RawMessage
+			dst any
+		}{
+			{r.Requires, &meta.Requires},
+			{r.Provides, &meta.Provides},
+			{r.Conflicts, &meta.Conflicts},
+			{r.Obsoletes, &meta.Obsoletes},
+			{r.Files, &meta.Files},
+			{r.Changelogs, &meta.Changelogs},
+		} {
+			if len(f.raw) == 0 {
+				continue
+			}
+			if err := json.Unmarshal(f.raw, f.dst); err != nil {
+				return nil, fmt.Errorf("decode rpm metadata %s/%s: %w", r.RepoName, r.FilePath, err)
+			}
+		}
 		result[i] = meta
 	}
 	return result, nil

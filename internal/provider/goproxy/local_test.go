@@ -98,14 +98,18 @@ func TestValidateContentZip(t *testing.T) {
 	sp := "myorg.example.net/hello/@v/v0.1.0.zip"
 
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module myorg.example.net/hello\n"), 0o600)
-	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o600)
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module myorg.example.net/hello\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	good := filepath.Join(t.TempDir(), "good.zip")
 	f, _ := os.Create(good)
 	if err := modzip.CreateFromDir(f, module.Version{Path: "myorg.example.net/hello", Version: "v0.1.0"}, dir); err != nil {
 		t.Fatal(err)
 	}
-	f.Close()
+	_ = f.Close()
 	if err := p.ValidateContent(sp, good); err != nil {
 		t.Errorf("valid zip rejected: %v", err)
 	}

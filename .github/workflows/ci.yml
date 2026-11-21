@@ -5,71 +5,59 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  pre-commit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with:
-          go-version-file: go.mod
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - run: uvx pre-commit run --all-files --show-diff-on-failure
+  ci:
+    uses: IUCLabs/workflows/.github/workflows/pre-commit.yml@v0.1.0
+    permissions:
+      contents: read
+    with:
+      go_version_file: go.mod
 
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with:
-          go-version-file: go.mod
-      - run: go vet ./...
+  actions:
+    uses: IUCLabs/workflows/.github/workflows/actions.yml@v0.1.0
+    permissions:
+      contents: read
+
+  go:
+    uses: IUCLabs/workflows/.github/workflows/go-ci.yml@v0.1.0
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      golangci_lint_version: v2.15.0
       # existing findings predate this job; gate new code only
-      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          version: v2.15.0
-          only-new-issues: true
+      golangci_lint_only_new_issues: true
+      # no docker on the runner, so testcontainers tests skip
+      test_args: -count=1 ./pkg/... ./internal/...
+      strip: false
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with:
-          go-version-file: go.mod
-      # runner image has no C toolchain (no -race) and no docker (testcontainers tests skip)
-      - run: go test -count=1 ./pkg/... ./internal/...
-
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with:
-          go-version-file: go.mod
-      - run: go build ./...
-      - run: go install github.com/google/ko@v0.19.1
-        env:
-          GOTOOLCHAIN: auto
-      - run: ko build --push=false --bare --platform linux/amd64 ./cmd/artifactapi
-        env:
-          KO_DOCKER_REPO: ghcr.io/iuclabs/artifactapi
-          VERSION: dev
+  image:
+    uses: IUCLabs/workflows/.github/workflows/release-go-image.yml@v0.1.0
+    # the called job declares packages: write for the push; push: false uses none of it
+    permissions:
+      contents: read
+      packages: write
+    with:
+      push: false
+      runs_on: ubuntu-latest
 
   ui:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: ui
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22

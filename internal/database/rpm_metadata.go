@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"reflect"
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
@@ -86,11 +87,10 @@ func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]pr
 	return rpmEntriesFromRows(rows), nil
 }
 
-// rpmEntriesFromRows skips rows whose JSONB fails to decode so one bad row
-// cannot take down a whole repo's repodata.
+// rpmEntriesFromRows keeps every row (callers diff/prune on the full set); an
+// undecodable JSONB field is left empty rather than failing the repo.
 func rpmEntriesFromRows(rows []RPMMetadataRow) []provider.RPMMetadata {
 	result := make([]provider.RPMMetadata, 0, len(rows))
-rowLoop:
 	for _, r := range rows {
 		meta := provider.RPMMetadata{
 			RepoName:      r.RepoName,
@@ -115,22 +115,23 @@ rowLoop:
 			CreatedAt:     r.CreatedAt,
 		}
 		for _, f := range []struct {
-			raw json.RawMessage
-			dst any
+			name string
+			raw  json.RawMessage
+			dst  any
 		}{
-			{r.Requires, &meta.Requires},
-			{r.Provides, &meta.Provides},
-			{r.Conflicts, &meta.Conflicts},
-			{r.Obsoletes, &meta.Obsoletes},
-			{r.Files, &meta.Files},
-			{r.Changelogs, &meta.Changelogs},
+			{"requires", r.Requires, &meta.Requires},
+			{"provides", r.Provides, &meta.Provides},
+			{"conflicts", r.Conflicts, &meta.Conflicts},
+			{"obsoletes", r.Obsoletes, &meta.Obsoletes},
+			{"files", r.Files, &meta.Files},
+			{"changelogs", r.Changelogs, &meta.Changelogs},
 		} {
 			if len(f.raw) == 0 {
 				continue
 			}
 			if err := json.Unmarshal(f.raw, f.dst); err != nil {
-				slog.Warn("skipping rpm metadata row with undecodable JSON", "repo", r.RepoName, "file", r.FilePath, "package", r.Name, "error", err)
-				continue rowLoop
+				slog.Warn("leaving undecodable rpm metadata field empty", "repo", r.RepoName, "file", r.FilePath, "package", r.Name, "field", f.name, "error", err)
+				reflect.ValueOf(f.dst).Elem().SetZero()
 			}
 		}
 		result = append(result, meta)

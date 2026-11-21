@@ -51,24 +51,24 @@ func (m *model) viewRemoteDetail() string {
 
 	var sb strings.Builder
 	sb.WriteString(titleStyle.Render(r.Name) + "\n\n")
-	sb.WriteString(fmt.Sprintf("  Type:           %s\n", r.PackageType))
-	sb.WriteString(fmt.Sprintf("  Base URL:       %s\n", r.BaseURL))
-	sb.WriteString(fmt.Sprintf("  Description:    %s\n", r.Description))
-	sb.WriteString(fmt.Sprintf("  Immutable TTL:  %s\n", ttlStr(r.ImmutableTTL)))
-	sb.WriteString(fmt.Sprintf("  Mutable TTL:    %ds\n", r.MutableTTL))
-	sb.WriteString(fmt.Sprintf("  Revalidation:   %v\n", r.CheckMutable))
-	sb.WriteString(fmt.Sprintf("  Stale on Error: %v\n", r.StaleOnError))
+	fmt.Fprintf(&sb, "  Type:           %s\n", r.PackageType)
+	fmt.Fprintf(&sb, "  Base URL:       %s\n", r.BaseURL)
+	fmt.Fprintf(&sb, "  Description:    %s\n", r.Description)
+	fmt.Fprintf(&sb, "  Immutable TTL:  %s\n", ttlStr(r.ImmutableTTL))
+	fmt.Fprintf(&sb, "  Mutable TTL:    %ds\n", r.MutableTTL)
+	fmt.Fprintf(&sb, "  Revalidation:   %v\n", r.CheckMutable)
+	fmt.Fprintf(&sb, "  Stale on Error: %v\n", r.StaleOnError)
 	fmt.Fprintf(&sb, "  Serve Stale:    %v\n", r.ServeStale)
 	fmt.Fprintf(&sb, "  Cache Repodata: %v\n", r.CacheRepodata)
 
 	if len(r.Patterns) > 0 {
-		sb.WriteString(fmt.Sprintf("  Patterns:       %s\n", strings.Join(r.Patterns, ", ")))
+		fmt.Fprintf(&sb, "  Patterns:       %s\n", strings.Join(r.Patterns, ", "))
 	}
 	if len(r.Blocklist) > 0 {
-		sb.WriteString(fmt.Sprintf("  Blocklist:      %s\n", strings.Join(r.Blocklist, ", ")))
+		fmt.Fprintf(&sb, "  Blocklist:      %s\n", strings.Join(r.Blocklist, ", "))
 	}
 	if r.ManagedBy != "" {
-		sb.WriteString(fmt.Sprintf("  Managed by:     %s\n", r.ManagedBy))
+		fmt.Fprintf(&sb, "  Managed by:     %s\n", r.ManagedBy)
 	}
 
 	sb.WriteString("\n" + mutedStyle.Render("enter → browse objects · esc back"))

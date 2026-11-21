@@ -30,14 +30,14 @@ func MinimalRPM(name, version, release, arch string) []byte {
 		for _, e := range entries {
 			off := uint32(store.Len())
 			for _, v := range []uint32{e.id, e.typ, off, e.count} {
-				binary.Write(&index, binary.BigEndian, v)
+				_ = binary.Write(&index, binary.BigEndian, v)
 			}
 			store.Write(e.data)
 		}
 		var b bytes.Buffer
 		b.Write([]byte{0x8e, 0xad, 0xe8, 0x01, 0, 0, 0, 0}) // header magic + reserved
-		binary.Write(&b, binary.BigEndian, uint32(len(entries)))
-		binary.Write(&b, binary.BigEndian, uint32(store.Len()))
+		_ = binary.Write(&b, binary.BigEndian, uint32(len(entries)))
+		_ = binary.Write(&b, binary.BigEndian, uint32(store.Len()))
 		b.Write(index.Bytes())
 		b.Write(store.Bytes())
 		return b.Bytes()

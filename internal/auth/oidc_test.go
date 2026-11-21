@@ -461,7 +461,7 @@ func TestRegistryContainerdClient(t *testing.T) {
 		if err != nil {
 			return desc, err
 		}
-		defer cw.Close()
+		defer func() { _ = cw.Close() }()
 		if _, err := cw.Write(data); err != nil {
 			return desc, err
 		}

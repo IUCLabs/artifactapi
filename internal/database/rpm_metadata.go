@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"reflect"
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
@@ -82,8 +84,14 @@ func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]pr
 	if err != nil {
 		return nil, err
 	}
-	result := make([]provider.RPMMetadata, len(rows))
-	for i, r := range rows {
+	return rpmEntriesFromRows(rows), nil
+}
+
+// rpmEntriesFromRows keeps every row (callers diff/prune on the full set); an
+// undecodable JSONB field is left empty rather than failing the repo.
+func rpmEntriesFromRows(rows []RPMMetadataRow) []provider.RPMMetadata {
+	result := make([]provider.RPMMetadata, 0, len(rows))
+	for _, r := range rows {
 		meta := provider.RPMMetadata{
 			RepoName:      r.RepoName,
 			FilePath:      r.FilePath,
@@ -106,15 +114,29 @@ func (db *DB) ListRPMMetadataEntries(ctx context.Context, repoName string) ([]pr
 			Packager:      r.Packager,
 			CreatedAt:     r.CreatedAt,
 		}
-		json.Unmarshal(r.Requires, &meta.Requires)
-		json.Unmarshal(r.Provides, &meta.Provides)
-		json.Unmarshal(r.Conflicts, &meta.Conflicts)
-		json.Unmarshal(r.Obsoletes, &meta.Obsoletes)
-		json.Unmarshal(r.Files, &meta.Files)
-		json.Unmarshal(r.Changelogs, &meta.Changelogs)
-		result[i] = meta
+		for _, f := range []struct {
+			name string
+			raw  json.RawMessage
+			dst  any
+		}{
+			{"requires", r.Requires, &meta.Requires},
+			{"provides", r.Provides, &meta.Provides},
+			{"conflicts", r.Conflicts, &meta.Conflicts},
+			{"obsoletes", r.Obsoletes, &meta.Obsoletes},
+			{"files", r.Files, &meta.Files},
+			{"changelogs", r.Changelogs, &meta.Changelogs},
+		} {
+			if len(f.raw) == 0 {
+				continue
+			}
+			if err := json.Unmarshal(f.raw, f.dst); err != nil {
+				slog.Warn("leaving undecodable rpm metadata field empty", "repo", r.RepoName, "file", r.FilePath, "package", r.Name, "field", f.name, "error", err)
+				reflect.ValueOf(f.dst).Elem().SetZero()
+			}
+		}
+		result = append(result, meta)
 	}
-	return result, nil
+	return result
 }
 
 func (db *DB) ListRPMMetadata(ctx context.Context, repoName string) ([]RPMMetadataRow, error) {

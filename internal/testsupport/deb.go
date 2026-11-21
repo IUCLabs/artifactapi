@@ -39,23 +39,23 @@ func arWrite(buf *bytes.Buffer, name string, data []byte) {
 func tarSingle(name string, data []byte) []byte {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg})
-	tw.Write(data)
-	tw.Close()
+	_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg})
+	_, _ = tw.Write(data)
+	_ = tw.Close()
 	return buf.Bytes()
 }
 
 func tarEmpty() []byte {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	tw.Close()
+	_ = tw.Close()
 	return buf.Bytes()
 }
 
 func gzipBytes(data []byte) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
-	gz.Write(data)
-	gz.Close()
+	_, _ = gz.Write(data)
+	_ = gz.Close()
 	return buf.Bytes()
 }

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/cache"
@@ -36,11 +37,15 @@ func (cb *CircuitBreaker) IsOpen(ctx context.Context, remote string) bool {
 }
 
 func (cb *CircuitBreaker) RecordFailure(ctx context.Context, remote string) {
-	cb.cache.IncrCircuitFailure(ctx, remote, cb.cooldown)
+	if _, err := cb.cache.IncrCircuitFailure(ctx, remote, cb.cooldown); err != nil {
+		slog.Warn("circuit breaker record failure", "remote", remote, "error", err)
+	}
 }
 
 func (cb *CircuitBreaker) RecordSuccess(ctx context.Context, remote string) {
-	cb.cache.ResetCircuit(ctx, remote)
+	if err := cb.cache.ResetCircuit(ctx, remote); err != nil {
+		slog.Warn("circuit breaker reset", "remote", remote, "error", err)
+	}
 }
 
 func (cb *CircuitBreaker) Health(ctx context.Context, remote string) models.RemoteHealth {

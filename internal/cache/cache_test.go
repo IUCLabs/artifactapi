@@ -24,7 +24,7 @@ func TestMain(m *testing.M) {
 	}
 	testRedis = r
 	code := m.Run()
-	r.Close()
+	_ = r.Close()
 	terminate()
 	if code != 0 {
 		os.Exit(code)
@@ -118,7 +118,9 @@ func TestETagAndToken(t *testing.T) {
 	if v, _ := testRedis.GetETag(ctx, "r", "missing"); v != "" {
 		t.Error("missing etag should be empty")
 	}
-	testRedis.SetETag(ctx, "r", "p", `"abc"`, time.Minute)
+	if err := testRedis.SetETag(ctx, "r", "p", `"abc"`, time.Minute); err != nil {
+		t.Fatal(err)
+	}
 	if v, _ := testRedis.GetETag(ctx, "r", "p"); v != `"abc"` {
 		t.Errorf("etag = %q", v)
 	}
@@ -132,7 +134,9 @@ func TestETagAndToken(t *testing.T) {
 	if v, _ := testRedis.GetToken(ctx, "missing"); v != "" {
 		t.Error("missing token should be empty")
 	}
-	testRedis.SetToken(ctx, "key", "tok", time.Minute)
+	if err := testRedis.SetToken(ctx, "key", "tok", time.Minute); err != nil {
+		t.Fatal(err)
+	}
 	if v, _ := testRedis.GetToken(ctx, "key"); v != "tok" {
 		t.Errorf("token = %q", v)
 	}
@@ -155,7 +159,9 @@ func TestCircuit(t *testing.T) {
 	if n, _ := testRedis.GetCircuitFailures(ctx, "cr"); n != 2 {
 		t.Errorf("get failures = %d", n)
 	}
-	testRedis.ResetCircuit(ctx, "cr")
+	if err := testRedis.ResetCircuit(ctx, "cr"); err != nil {
+		t.Fatal(err)
+	}
 	if n, _ := testRedis.GetCircuitFailures(ctx, "cr"); n != 0 {
 		t.Errorf("failures after reset = %d", n)
 	}
@@ -164,8 +170,12 @@ func TestCircuit(t *testing.T) {
 func TestFlushRemote(t *testing.T) {
 	requireRedis(t)
 	ctx := context.Background()
-	testRedis.SetTTL(ctx, "flushme", "a", time.Hour)
-	testRedis.SetETag(ctx, "flushme", "a", "x", time.Hour)
+	if err := testRedis.SetTTL(ctx, "flushme", "a", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := testRedis.SetETag(ctx, "flushme", "a", "x", time.Hour); err != nil {
+		t.Fatal(err)
+	}
 	if err := testRedis.FlushRemote(ctx, "flushme"); err != nil {
 		t.Fatal(err)
 	}

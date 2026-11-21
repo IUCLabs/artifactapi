@@ -377,9 +377,9 @@ func buildDeb(name, version, arch, member string, comp func([]byte) []byte) []by
 func tarSingle(name string, data []byte) []byte {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
-	tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg})
-	tw.Write(data)
-	tw.Close()
+	_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(data)), Typeflag: tar.TypeReg})
+	_, _ = tw.Write(data)
+	_ = tw.Close()
 	return buf.Bytes()
 }
 
@@ -394,15 +394,15 @@ func arWrite(buf *bytes.Buffer, name string, data []byte) {
 func xzBytes(data []byte) []byte {
 	var buf bytes.Buffer
 	w, _ := xz.NewWriter(&buf)
-	w.Write(data)
-	w.Close()
+	_, _ = w.Write(data)
+	_ = w.Close()
 	return buf.Bytes()
 }
 
 func zstdBytes(data []byte) []byte {
 	var buf bytes.Buffer
 	w, _ := zstd.NewWriter(&buf)
-	w.Write(data)
-	w.Close()
+	_, _ = w.Write(data)
+	_ = w.Close()
 	return buf.Bytes()
 }

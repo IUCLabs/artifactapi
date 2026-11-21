@@ -100,7 +100,7 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 	mux.HandleFunc("/repos/acme/tools/releases", func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
 		if page != "" && page != "1" {
-			w.Write([]byte("[]"))
+			_, _ = w.Write([]byte("[]"))
 			return
 		}
 		f.mu.Lock()
@@ -131,7 +131,7 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 			assets = append(assets, a)
 		}
 		rel := []map[string]any{{"tag_name": "v1.2-3", "draft": false, "assets": assets}}
-		json.NewEncoder(w).Encode(rel)
+		_ = json.NewEncoder(w).Encode(rel)
 	})
 	mux.HandleFunc("/acme/tools/releases/download/", func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
@@ -158,18 +158,18 @@ func newGitHubFixture(t *testing.T, withDigest bool) *githubFixture {
 
 		if rng == "" {
 			w.WriteHeader(200)
-			w.Write(body)
+			_, _ = w.Write(body)
 			return
 		}
 		var end int
-		fmt.Sscanf(rng, "bytes=0-%d", &end)
+		_, _ = fmt.Sscanf(rng, "bytes=0-%d", &end)
 		if end >= len(body)-1 {
 			end = len(body) - 1
 		}
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", end, len(body)))
 		w.Header().Set("Content-Length", strconv.Itoa(end+1))
 		w.WriteHeader(http.StatusPartialContent)
-		w.Write(body[:end+1])
+		_, _ = w.Write(body[:end+1])
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)

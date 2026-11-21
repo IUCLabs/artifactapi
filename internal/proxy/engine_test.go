@@ -87,32 +87,32 @@ func mockUpstream(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/blob.bin":
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write([]byte("immutable blob"))
+		_, _ = w.Write([]byte("immutable blob"))
 	case "/pkg": // npm metadata: mutable, supports revalidation
 		if r.Method == http.MethodHead && r.Header.Get("If-None-Match") == `"v1"` {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
 		w.Header().Set("ETag", `"v1"`)
-		w.Write([]byte(`{"name":"pkg"}`))
+		_, _ = w.Write([]byte(`{"name":"pkg"}`))
 	case "/protected.bin": // requires a bearer token obtained from /token
 		if r.Header.Get("Authorization") != "Bearer minted-token" {
 			w.Header().Set("Www-Authenticate", `Bearer realm="`+upstream.URL+`/token",service="reg",scope="repo:pull"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		w.Write([]byte("protected payload"))
+		_, _ = w.Write([]byte("protected payload"))
 	case "/protected2.bin": // same challenge as /protected.bin
 		if r.Header.Get("Authorization") != "Bearer minted-token" {
 			w.Header().Set("Www-Authenticate", `Bearer realm="`+upstream.URL+`/token",service="reg",scope="repo:pull"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		w.Write([]byte("protected payload 2"))
+		_, _ = w.Write([]byte("protected payload 2"))
 	case "/token":
-		w.Write([]byte(`{"token":"minted-token","expires_in":300}`))
+		_, _ = w.Write([]byte(`{"token":"minted-token","expires_in":300}`))
 	case "/token-at":
-		w.Write([]byte(`{"access_token":"at-token"}`))
+		_, _ = w.Write([]byte(`{"access_token":"at-token"}`))
 	case "/token-500":
 		w.WriteHeader(http.StatusInternalServerError)
 	case "/err500":
@@ -156,7 +156,7 @@ func prov(t *testing.T, pt models.PackageType) provider.Provider {
 
 func readAll(t *testing.T, res *FetchResult) string {
 	t.Helper()
-	defer res.Reader.Close()
+	defer func() { _ = res.Reader.Close() }()
 	b, _ := io.ReadAll(res.Reader)
 	return string(b)
 }
@@ -207,7 +207,7 @@ func TestHead(t *testing.T) {
 	}
 	// Populate the cache, then HEAD should be served from metadata.
 	res, _ := testEngine.Fetch(ctx, r, "blob.bin", p)
-	res.Reader.Close()
+	_ = res.Reader.Close()
 	h, err = testEngine.Head(ctx, r, "blob.bin", p)
 	if err != nil || h.Source != "cache" {
 		t.Errorf("head cached: %+v %v", h, err)
@@ -244,7 +244,9 @@ func TestStaleOnError(t *testing.T) {
 	}
 	// Drop cache freshness so the next fetch goes upstream, then point at a
 	// dead upstream: stale-on-error must serve the stored copy.
-	testCache.FlushRemote(ctx, "eng-stale")
+	if err := testCache.FlushRemote(ctx, "eng-stale"); err != nil {
+		t.Fatal(err)
+	}
 	r.BaseURL = "http://127.0.0.1:1"
 	res, err := testEngine.Fetch(ctx, r, "blob.bin", p)
 	if err != nil {
@@ -263,7 +265,9 @@ func TestCircuitOpenServesStale(t *testing.T) {
 	if _, err := testEngine.Fetch(ctx, r, "blob.bin", p); err != nil {
 		t.Fatal(err)
 	}
-	testCache.FlushRemote(ctx, "eng-circuit")
+	if err := testCache.FlushRemote(ctx, "eng-circuit"); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 6; i++ {
 		testEngine.circuit.RecordFailure(ctx, "eng-circuit")
 	}
@@ -274,7 +278,7 @@ func TestCircuitOpenServesStale(t *testing.T) {
 	if res.Source != "cache" {
 		t.Errorf("expected stale from open circuit, got %s", res.Source)
 	}
-	res.Reader.Close()
+	_ = res.Reader.Close()
 }
 
 // expire drops path's freshness key so the next fetch revalidates.
@@ -467,8 +471,10 @@ func TestBearerTokenFlow(t *testing.T) {
 	}
 
 	// HEAD path also negotiates a bearer token (uncached).
-	testCache.FlushRemote(ctx, "eng-bearer")
-	testDB.DeleteArtifact(ctx, "eng-bearer", "protected.bin")
+	if err := testCache.FlushRemote(ctx, "eng-bearer"); err != nil {
+		t.Fatal(err)
+	}
+	_ = testDB.DeleteArtifact(ctx, "eng-bearer", "protected.bin")
 	if h, err := testEngine.Head(ctx, r, "protected.bin", p); err != nil || h.Source != "cache" && h.Source != "remote" {
 		t.Fatalf("bearer head: %+v %v", h, err)
 	}
@@ -555,12 +561,14 @@ func TestRevalidationUpstreamError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("initial fetch: %v", err)
 	}
-	res.Reader.Close()
+	_ = res.Reader.Close()
 
 	// Expire freshness but keep the ETag, then break the upstream: the
 	// conditional HEAD (checkUpstream) errors, and stale-on-error serves the
 	// stored index.
-	testCache.SetTTL(ctx, "eng-reval-err", "pkg", time.Millisecond)
+	if err := testCache.SetTTL(ctx, "eng-reval-err", "pkg", time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(10 * time.Millisecond)
 	r.BaseURL = "http://127.0.0.1:1"
 	res, err = testEngine.Fetch(ctx, r, "pkg", p)
@@ -570,7 +578,7 @@ func TestRevalidationUpstreamError(t *testing.T) {
 	if res.Source != "cache" {
 		t.Errorf("expected stale cache source, got %s", res.Source)
 	}
-	res.Reader.Close()
+	_ = res.Reader.Close()
 }
 
 func TestTTLFor(t *testing.T) {
@@ -604,7 +612,7 @@ func TestHeadCachedIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res.Reader.Close()
+	_ = res.Reader.Close()
 	h, err := testEngine.Head(ctx, r, "pkg", p)
 	if err != nil || h.Source != "cache" {
 		t.Errorf("head of cached index: %+v %v", h, err)
@@ -677,7 +685,9 @@ func TestCircuitBreakerStates(t *testing.T) {
 	ctx := context.Background()
 	cb := NewCircuitBreaker(testCache)
 	const key = "cb-states"
-	testCache.ResetCircuit(ctx, key)
+	if err := testCache.ResetCircuit(ctx, key); err != nil {
+		t.Fatal(err)
+	}
 
 	if cb.IsOpen(ctx, key) {
 		t.Error("fresh breaker should be closed")

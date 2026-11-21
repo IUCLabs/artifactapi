@@ -101,7 +101,7 @@ func (p *Provider) AfterUpload(ctx context.Context, repoName, storagePath, conte
 		slog.Error("alpine metadata: download failed", "repo", repoName, "path", storagePath, "error", err)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	raw, err := io.ReadAll(reader)
 	if err != nil {
@@ -196,7 +196,7 @@ func (p *Provider) ServeLocalIndex(w http.ResponseWriter, r *http.Request, files
 
 	w.Header().Set("Content-Type", "application/gzip")
 	w.WriteHeader(http.StatusOK)
-	w.Write(generateAPKIndex(filtered))
+	_, _ = w.Write(generateAPKIndex(filtered))
 	return true
 }
 
@@ -380,14 +380,14 @@ func generateAPKIndex(metas []provider.AlpineMetadata) []byte {
 	// ModTime is pinned to the Unix epoch (never wall clock) so APKINDEX.tar.gz
 	// is byte-identical across replicas and regenerations (issue #117); apk
 	// clients ignore the tar mtime.
-	tw.WriteHeader(&tar.Header{Name: "APKINDEX", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg, ModTime: time.Unix(0, 0)})
-	tw.Write(body)
-	tw.Close()
+	_ = tw.WriteHeader(&tar.Header{Name: "APKINDEX", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg, ModTime: time.Unix(0, 0)})
+	_, _ = tw.Write(body)
+	_ = tw.Close()
 
 	var gzBuf bytes.Buffer
 	gz := gzip.NewWriter(&gzBuf)
-	gz.Write(tarBuf.Bytes())
-	gz.Close()
+	_, _ = gz.Write(tarBuf.Bytes())
+	_ = gz.Close()
 	return gzBuf.Bytes()
 }
 

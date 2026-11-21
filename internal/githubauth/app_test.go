@@ -66,7 +66,7 @@ func newAppFixture(t *testing.T, pemKey string) *appFixture {
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"token":      fmt.Sprintf("ghs_installation_%d", seq),
 			"expires_at": exp.UTC().Format(time.RFC3339),
 		})

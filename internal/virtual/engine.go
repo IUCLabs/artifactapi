@@ -190,7 +190,7 @@ func (e *Engine) fetchMemberIndexes(ctx context.Context, virt models.Virtual, pa
 				results[idx] = result{err: fmt.Errorf("fetch %q/%s: %w", name, path, err)}
 				return
 			}
-			defer fetchResult.Reader.Close()
+			defer func() { _ = fetchResult.Reader.Close() }()
 
 			body, err := io.ReadAll(fetchResult.Reader)
 			if err != nil {
@@ -770,6 +770,6 @@ func (e *Engine) fetchMemberPath(ctx context.Context, remote models.Remote, path
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s/%s: %w", remote.Name, path, err)
 	}
-	defer res.Reader.Close()
+	defer func() { _ = res.Reader.Close() }()
 	return io.ReadAll(res.Reader)
 }

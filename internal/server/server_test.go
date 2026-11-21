@@ -93,11 +93,11 @@ func TestMain(m *testing.M) {
 func mockUpstream(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/data/file.bin":
-		w.Write([]byte("upstream blob payload"))
+		_, _ = w.Write([]byte("upstream blob payload"))
 	case "/helm-a/index.yaml":
-		w.Write([]byte("apiVersion: v1\nentries:\n  alpha:\n    - name: alpha\n      version: 1.0.0\n      urls: [charts/alpha-1.0.0.tgz]\n"))
+		_, _ = w.Write([]byte("apiVersion: v1\nentries:\n  alpha:\n    - name: alpha\n      version: 1.0.0\n      urls: [charts/alpha-1.0.0.tgz]\n"))
 	case "/helm-b/index.yaml":
-		w.Write([]byte("apiVersion: v1\nentries:\n  beta:\n    - name: beta\n      version: 2.0.0\n      urls: [charts/beta-2.0.0.tgz]\n"))
+		_, _ = w.Write([]byte("apiVersion: v1\nentries:\n  beta:\n    - name: beta\n      version: 2.0.0\n      urls: [charts/beta-2.0.0.tgz]\n"))
 	default:
 		http.NotFound(w, r)
 	}
@@ -124,7 +124,7 @@ func req(t *testing.T, method, path string, body string) (*http.Response, []byte
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp, b
 }
@@ -141,7 +141,7 @@ func reqNoRedirect(t *testing.T, method, path string) *http.Response {
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return resp
 }
 
@@ -216,7 +216,7 @@ func TestServerLocalUpload(t *testing.T) {
 	if err != nil || resp.StatusCode != 201 {
 		t.Fatalf("upload: %v %d", err, resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	resp, b := req(t, "GET", "/api/v1/local/srv-local/dir/hello.bin", "")
 	if resp.StatusCode != 200 || string(b) != "local payload" {
@@ -286,7 +286,7 @@ func put(t *testing.T, path string, body []byte) (*http.Response, []byte) {
 	if err != nil {
 		t.Fatalf("PUT %s: %v", path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp, b
 }
@@ -350,7 +350,7 @@ func TestServerObjectEviction(t *testing.T) {
 	defer req(t, "DELETE", "/api/v2/remotes/srv-evict", "")
 
 	resp, _ := req(t, "GET", "/api/v1/remote/srv-evict/data/file.bin", "")
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp, _ := req(t, "DELETE", "/api/v2/remotes/srv-evict/objects/data/file.bin", ""); resp.StatusCode >= 400 {
 		t.Errorf("evict object: %d", resp.StatusCode)
 	}
@@ -389,7 +389,7 @@ func TestServerDockerAndHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("head: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("head status: %d", resp.StatusCode)
 	}
@@ -482,7 +482,7 @@ func TestServerEvents(t *testing.T) {
 	client := &http.Client{Timeout: 800 * time.Millisecond}
 	resp, err := client.Get(testTS.URL + "/api/v2/events")
 	if err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != 200 {
 			t.Errorf("events status: %d", resp.StatusCode)
 		}
@@ -504,7 +504,7 @@ func TestRunOnListener(t *testing.T) {
 	ok := false
 	for i := 0; i < 50; i++ {
 		if resp, e := http.Get(base + "/health"); e == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			ok = resp.StatusCode == 200
 			break
 		}
@@ -582,7 +582,7 @@ func TestServerProxyErrors(t *testing.T) {
 	}
 	rq, _ := http.NewRequest("HEAD", testTS.URL+"/v2/srv-block/x.secret", nil)
 	if resp, err := http.DefaultClient.Do(rq); err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != 403 {
 			t.Errorf("blocklisted HEAD = %d, want 403", resp.StatusCode)
 		}
@@ -604,7 +604,9 @@ func TestServerLocalMissingBlob(t *testing.T) {
 
 	ctx := context.Background()
 	// A local file whose blob object is absent from the store.
-	testSrv.db.UpsertBlob(ctx, "sha256:ghost", "blobs/sha256/ghost-missing", 5, "text/plain")
+	if err := testSrv.db.UpsertBlob(ctx, "sha256:ghost", "blobs/sha256/ghost-missing", 5, "text/plain"); err != nil {
+		t.Fatal(err)
+	}
 	if err := testSrv.db.CreateLocalFile(ctx, "srv-ghost", "ghost.bin", "sha256:ghost"); err != nil {
 		t.Fatalf("create local file: %v", err)
 	}
@@ -626,14 +628,16 @@ func TestServerBogusProviderType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert bogus remote: %v", err)
 	}
-	defer testSrv.db.Pool.Exec(context.Background(), `DELETE FROM remotes WHERE name='srv-bogus'`)
+	defer func() {
+		_, _ = testSrv.db.Pool.Exec(context.Background(), `DELETE FROM remotes WHERE name='srv-bogus'`)
+	}()
 
 	if resp, _ := req(t, "GET", "/api/v1/remote/srv-bogus/x", ""); resp.StatusCode != 500 {
 		t.Errorf("bogus provider GET = %d, want 500", resp.StatusCode)
 	}
 	rq, _ := http.NewRequest("HEAD", testTS.URL+"/v2/srv-bogus/x", nil)
 	if resp, err := http.DefaultClient.Do(rq); err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != 500 {
 			t.Errorf("bogus provider HEAD = %d, want 500", resp.StatusCode)
 		}

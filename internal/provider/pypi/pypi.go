@@ -177,7 +177,7 @@ func (p *Provider) servePackageList(w http.ResponseWriter, r *http.Request, file
 	}
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(http.StatusOK)
-	w.Write(body)
+	_, _ = w.Write(body)
 }
 
 func (p *Provider) servePackageFiles(w http.ResponseWriter, r *http.Request, files provider.FileStore, repoName, packageName string) {
@@ -205,7 +205,7 @@ func (p *Provider) servePackageFiles(w http.ResponseWriter, r *http.Request, fil
 
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, b.String())
+	_, _ = io.WriteString(w, b.String())
 }
 
 func (p *Provider) generatePackageListHTML(ctx context.Context, files provider.FileStore, repoName string) ([]byte, error) {

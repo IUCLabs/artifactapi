@@ -114,7 +114,7 @@ func TestRemoteMirrorlistRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create mirrorlist remote: %v", err)
 	}
-	defer testDB.DeleteRemote(ctx(), "r-mirror")
+	defer func() { _ = testDB.DeleteRemote(ctx(), "r-mirror") }()
 
 	got, err := testDB.GetRemote(ctx(), "r-mirror")
 	if err != nil {
@@ -261,7 +261,9 @@ func TestOrphanAndColdCleanup(t *testing.T) {
 
 	seedRemote(t, "r-cold")
 	seedBlob(t, "coldhash")
-	testDB.UpsertArtifact(ctx(), "r-cold", "cold.txt", "sha256:coldhash", "")
+	if err := testDB.UpsertArtifact(ctx(), "r-cold", "cold.txt", "sha256:coldhash", ""); err != nil {
+		t.Fatal(err)
+	}
 	n, err := testDB.DeleteColdArtifacts(ctx(), "r-cold", -time.Hour) // negative => everything is "cold"
 	if err != nil || n < 1 {
 		t.Fatalf("delete cold: n=%d err=%v", n, err)
@@ -329,7 +331,7 @@ func TestDeleteRemoteDropsLocalFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedRemote(t, "r-recreate")
-	defer testDB.DeleteRemote(ctx(), "r-recreate")
+	defer func() { _ = testDB.DeleteRemote(ctx(), "r-recreate") }()
 	if f, err := testDB.GetLocalFile(ctx(), "r-recreate", "x86_64/a-1.0-r0.apk"); err != nil || f != nil {
 		t.Fatalf("recreated repo inherited local file: %v %v", f, err)
 	}
@@ -402,8 +404,12 @@ func TestStats(t *testing.T) {
 	requireDB(t)
 	seedRemote(t, "r-stats")
 	seedBlob(t, "statshash")
-	testDB.UpsertArtifact(ctx(), "r-stats", "s.txt", "sha256:statshash", "")
-	testDB.InsertAccessLog(ctx(), "r-stats", "s.txt", true, 100, 2, "")
+	if err := testDB.UpsertArtifact(ctx(), "r-stats", "s.txt", "sha256:statshash", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := testDB.InsertAccessLog(ctx(), "r-stats", "s.txt", true, 100, 2, ""); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := testDB.GetOverviewStats(ctx()); err != nil {
 		t.Fatalf("overview: %v", err)

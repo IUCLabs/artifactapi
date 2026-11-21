@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
 	"github.com/go-chi/chi/v5"
-	"golang.org/x/crypto/openpgp"
-	"golang.org/x/crypto/openpgp/armor"
 
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
@@ -45,7 +45,7 @@ func testSigner(t *testing.T) *tfsign.Signer {
 	if err := e.SerializePrivate(w, nil); err != nil {
 		t.Fatal(err)
 	}
-	w.Close()
+	_ = w.Close()
 	p := filepath.Join(t.TempDir(), "private-key.asc")
 	if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
@@ -102,7 +102,9 @@ func TestProviderRegistryFlow(t *testing.T) {
 		t.Fatalf("discovery = %d", w.Code)
 	}
 	var disc map[string]string
-	json.Unmarshal(w.Body.Bytes(), &disc)
+	if err := json.Unmarshal(w.Body.Bytes(), &disc); err != nil {
+		t.Fatal(err)
+	}
 	if disc["providers.v1"] != ProvidersV1Path {
 		t.Errorf("providers.v1 = %q", disc["providers.v1"])
 	}
@@ -119,7 +121,9 @@ func TestProviderRegistryFlow(t *testing.T) {
 			Platforms []map[string]string `json:"platforms"`
 		} `json:"versions"`
 	}
-	json.Unmarshal(w.Body.Bytes(), &vresp)
+	if err := json.Unmarshal(w.Body.Bytes(), &vresp); err != nil {
+		t.Fatal(err)
+	}
 	if len(vresp.Versions) != 1 || vresp.Versions[0].Version != "1.2.3" {
 		t.Fatalf("unexpected versions: %+v", vresp)
 	}
@@ -145,7 +149,9 @@ func TestProviderRegistryFlow(t *testing.T) {
 			} `json:"gpg_public_keys"`
 		} `json:"signing_keys"`
 	}
-	json.Unmarshal(w.Body.Bytes(), &dl)
+	if err := json.Unmarshal(w.Body.Bytes(), &dl); err != nil {
+		t.Fatal(err)
+	}
 	if dl.SHASum != wantSha {
 		t.Errorf("shasum = %q", dl.SHASum)
 	}
@@ -168,7 +174,7 @@ func TestProviderRegistryFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := openpgp.CheckDetachedSignature(keyring, bytes.NewReader(sums.Body.Bytes()), bytes.NewReader(sig.Body.Bytes())); err != nil {
+	if _, err := openpgp.CheckDetachedSignature(keyring, bytes.NewReader(sums.Body.Bytes()), bytes.NewReader(sig.Body.Bytes()), nil); err != nil {
 		t.Errorf("sha256sums.sig did not verify: %v", err)
 	}
 }

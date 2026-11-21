@@ -20,12 +20,12 @@ func TestFetchMultiBaseURLRoundRobin(t *testing.T) {
 	var hitsA, hitsB atomic.Int64
 	upA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hitsA.Add(1)
-		w.Write([]byte("A"))
+		_, _ = w.Write([]byte("A"))
 	}))
 	defer upA.Close()
 	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hitsB.Add(1)
-		w.Write([]byte("B"))
+		_, _ = w.Write([]byte("B"))
 	}))
 	defer upB.Close()
 
@@ -45,7 +45,7 @@ func TestFetchMultiBaseURLRoundRobin(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fetch %d: %v", i, err)
 		}
-		res.Reader.Close()
+		_ = res.Reader.Close()
 	}
 
 	if hitsA.Load() == 0 || hitsB.Load() == 0 {
@@ -66,7 +66,7 @@ func TestFetchMultiBaseURLFailover(t *testing.T) {
 	var hitsB atomic.Int64
 	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hitsB.Add(1)
-		w.Write([]byte("served-by-B"))
+		_, _ = w.Write([]byte("served-by-B"))
 	}))
 	defer upB.Close()
 	up500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +128,7 @@ func TestFetchDefinitiveStatusNoFailover(t *testing.T) {
 	defer up404.Close()
 	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hitsB.Add(1)
-		w.Write([]byte("B"))
+		_, _ = w.Write([]byte("B"))
 	}))
 	defer upB.Close()
 
@@ -156,7 +156,7 @@ func TestFetchSingleBaseURLUnchanged(t *testing.T) {
 	ctx := context.Background()
 
 	upB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("solo"))
+		_, _ = w.Write([]byte("solo"))
 	}))
 	defer upB.Close()
 

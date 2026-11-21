@@ -48,7 +48,9 @@ func TestProvider_RewriteResponse_DownloadInfo(t *testing.T) {
 		t.Fatal("expected rewrite")
 	}
 	var result map[string]any
-	json.Unmarshal(rewritten, &result)
+	if err := json.Unmarshal(rewritten, &result); err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(result["download_url"].(string), "proxy/api/v1/remote/hashicorp-releases") {
 		t.Errorf("download_url not rewritten: %s", result["download_url"])
 	}

@@ -150,7 +150,8 @@ func (s *Server) routes() chi.Router {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
+	// The ingress appends the peer it saw to X-Forwarded-For; entries left of it are client-supplied.
+	r.Use(middleware.ClientIPFromXFFTrustedProxies(1))
 	r.Use(NewStructuredLogger())
 	r.Use(middleware.Recoverer)
 
@@ -227,7 +228,7 @@ func passthrough(h http.Handler) http.Handler { return h }
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, `{"status":"ok"}`)
+	_, _ = fmt.Fprint(w, `{"status":"ok"}`)
 }
 
 // handleRoot sends browsers landing on the bare domain to the web UI, which is
@@ -239,7 +240,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"name":"artifactapi","version":"%s"}`, s.version)
+	_, _ = fmt.Fprintf(w, `{"name":"artifactapi","version":"%s"}`, s.version)
 }
 
 func (s *Server) newHTTPServer() *http.Server {

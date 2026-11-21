@@ -117,7 +117,7 @@ func (p *Provider) AfterUpload(ctx context.Context, repoName, storagePath, conte
 		slog.Error("deb metadata: download failed", "repo", repoName, "path", storagePath, "error", err)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	raw, err := io.ReadAll(reader)
 	if err != nil {
@@ -229,7 +229,7 @@ func decompress(name string, data []byte) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer zr.Close()
+		defer func() { _ = zr.Close() }()
 		return io.ReadAll(zr)
 	case strings.HasSuffix(name, ".xz"):
 		xr, err := xz.NewReader(bytes.NewReader(data))
@@ -350,15 +350,15 @@ func (p *Provider) ServeLocalIndex(w http.ResponseWriter, r *http.Request, files
 	case "Packages":
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write(generatePackages(metas))
+		_, _ = w.Write(generatePackages(metas))
 	case "Packages.gz":
 		w.Header().Set("Content-Type", "application/gzip")
 		w.WriteHeader(http.StatusOK)
-		w.Write(gzipBytes(generatePackages(metas)))
+		_, _ = w.Write(gzipBytes(generatePackages(metas)))
 	case "Release":
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		w.Write(generateRelease(metas))
+		_, _ = w.Write(generateRelease(metas))
 	}
 	return true
 }
@@ -446,8 +446,8 @@ func uniqueArches(metas []provider.DebMetadata) []string {
 func gzipBytes(data []byte) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
-	gz.Write(data)
-	gz.Close()
+	_, _ = gz.Write(data)
+	_ = gz.Close()
 	return buf.Bytes()
 }
 

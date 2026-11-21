@@ -91,8 +91,8 @@ func (h *ProbeHandler) probe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	io.Copy(io.Discard, result.Reader)
-	result.Reader.Close()
+	_, _ = io.Copy(io.Discard, result.Reader)
+	_ = result.Reader.Close()
 
 	writeJSON(w, http.StatusOK, probeResponse{
 		Status:      200,

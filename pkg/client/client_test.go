@@ -23,14 +23,14 @@ func TestRemotesRoundTrip(t *testing.T) {
 		gotMethod, gotPath = r.Method, r.URL.Path
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/remotes":
-			w.Write([]byte(`[{"name":"a"},{"name":"b"}]`))
+			_, _ = w.Write([]byte(`[{"name":"a"},{"name":"b"}]`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v2/remotes/a":
-			w.Write([]byte(`{"name":"a"}`))
+			_, _ = w.Write([]byte(`{"name":"a"}`))
 		case r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"name":"a"}`))
+			_, _ = w.Write([]byte(`{"name":"a"}`))
 		}
 	})
 	ctx := context.Background()
@@ -60,14 +60,14 @@ func TestVirtualsRoundTrip(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/virtuals"):
-			w.Write([]byte(`[{"name":"v"}]`))
+			_, _ = w.Write([]byte(`[{"name":"v"}]`))
 		case r.Method == http.MethodGet:
-			w.Write([]byte(`{"name":"v"}`))
+			_, _ = w.Write([]byte(`{"name":"v"}`))
 		case r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"name":"v"}`))
+			_, _ = w.Write([]byte(`{"name":"v"}`))
 		}
 	})
 	ctx := context.Background()
@@ -92,13 +92,13 @@ func TestStatsHealthObjects(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/stats"):
-			w.Write([]byte(`{"total_remotes":3}`))
+			_, _ = w.Write([]byte(`{"total_remotes":3}`))
 		case strings.HasSuffix(r.URL.Path, "/health"):
-			w.Write([]byte(`{"status":"ok"}`))
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		case r.Method == http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
 		default:
-			w.Write([]byte(`[{"path":"p"}]`))
+			_, _ = w.Write([]byte(`[{"path":"p"}]`))
 		}
 	})
 	ctx := context.Background()
@@ -129,7 +129,7 @@ func TestErrorResponses(t *testing.T) {
 
 func TestDecodeError(t *testing.T) {
 	c := testServer(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`not json`))
+		_, _ = w.Write([]byte(`not json`))
 	})
 	if _, err := c.ListRemotes(context.Background()); err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Errorf("expected decode error, got %v", err)

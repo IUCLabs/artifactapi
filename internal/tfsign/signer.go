@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"golang.org/x/crypto/openpgp"
-	"golang.org/x/crypto/openpgp/armor"
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ProtonMail/go-crypto/openpgp/armor"
 )
 
 // KeyStore persists a generated signing key. *database.DB satisfies it.

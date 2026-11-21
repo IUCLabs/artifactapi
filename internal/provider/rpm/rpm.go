@@ -98,7 +98,7 @@ func (p *Provider) AfterUpload(ctx context.Context, repoName, storagePath, conte
 		slog.Error("rpm metadata: download failed", "repo", repoName, "path", storagePath, "error", err)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	pkg, err := rpmlib.Read(reader)
 	if err != nil {
@@ -306,7 +306,7 @@ func (p *Provider) servePrimary(w http.ResponseWriter, r *http.Request, reader p
 
 	w.Header().Set("Content-Type", "application/gzip")
 	w.WriteHeader(http.StatusOK)
-	w.Write(generatePrimaryXMLGZ(metas))
+	_, _ = w.Write(generatePrimaryXMLGZ(metas))
 }
 
 func (p *Provider) serveFilelists(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {
@@ -317,7 +317,7 @@ func (p *Provider) serveFilelists(w http.ResponseWriter, r *http.Request, reader
 
 	w.Header().Set("Content-Type", "application/gzip")
 	w.WriteHeader(http.StatusOK)
-	w.Write(generateFilelistsXMLGZ(metas))
+	_, _ = w.Write(generateFilelistsXMLGZ(metas))
 }
 
 func (p *Provider) serveOther(w http.ResponseWriter, r *http.Request, reader provider.RPMMetadataReader, repoName string) {
@@ -328,7 +328,7 @@ func (p *Provider) serveOther(w http.ResponseWriter, r *http.Request, reader pro
 
 	w.Header().Set("Content-Type", "application/gzip")
 	w.WriteHeader(http.StatusOK)
-	w.Write(generateOtherXMLGZ(metas))
+	_, _ = w.Write(generateOtherXMLGZ(metas))
 }
 
 // stableUnix maps a persisted timestamp to a fixed integer for repodata's
@@ -517,7 +517,7 @@ func writeRPMEntry(b *bytes.Buffer, d provider.RPMDep) {
 
 func xmlEscape(s string) string {
 	var b bytes.Buffer
-	xml.EscapeText(&b, []byte(s))
+	_ = xml.EscapeText(&b, []byte(s))
 	return b.String()
 }
 
@@ -527,8 +527,8 @@ func gzipBytes(data []byte) []byte {
 	// Pin every header field so the compressed bytes (and their sha256) depend
 	// only on the payload, never on wall-clock time or the Go version's gzip defaults.
 	gz.Header = gzip.Header{OS: 255}
-	gz.Write(data)
-	gz.Close()
+	_, _ = gz.Write(data)
+	_ = gz.Close()
 	return buf.Bytes()
 }
 

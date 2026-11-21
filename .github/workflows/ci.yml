@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   pre-commit:
-    runs-on: iuclabs-k8s
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -24,7 +24,7 @@ jobs:
       - run: uvx pre-commit run --all-files --show-diff-on-failure
 
   lint:
-    runs-on: iuclabs-k8s
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -38,7 +38,7 @@ jobs:
           only-new-issues: true
 
   test:
-    runs-on: iuclabs-k8s
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -48,7 +48,7 @@ jobs:
       - run: go test -count=1 ./pkg/... ./internal/...
 
   build:
-    runs-on: iuclabs-k8s
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -64,7 +64,7 @@ jobs:
           VERSION: dev
 
   ui:
-    runs-on: iuclabs-k8s
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ui

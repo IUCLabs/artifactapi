@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -720,4 +721,51 @@ func asProxyError(err error, target **ProxyError) bool {
 		*target = pe
 	}
 	return ok
+}
+
+// A dead object store degrades the cache to a pass-through instead of failing every miss: an index is
+// served from the buffered upstream body and a blob is re-fetched and streamed, neither cached.
+func TestStoreDownPassesThrough(t *testing.T) {
+	requireStack(t)
+	ctx := context.Background()
+	minio, term, err := testsupport.StartMinio(ctx)
+	if err != nil {
+		t.Skip("minio unavailable")
+	}
+	var s3 *storage.S3
+	for i := 0; i < 20; i++ {
+		if s3, err = storage.NewS3(minio.Endpoint, minio.AccessKey, minio.SecretKey, "proxy-down", false, ""); err == nil {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := NewEngine(testDB, testCache, s3)
+	term() // the store goes away
+
+	idx := seed(t, models.Remote{Name: "eng-down-npm", PackageType: models.PackageNPM, RepoType: models.RepoTypeRemote, BaseURL: upstream.URL})
+	res, err := eng.Fetch(ctx, idx, "pkg", prov(t, models.PackageNPM))
+	if err != nil {
+		t.Fatalf("index fetch with store down: %v", err)
+	}
+	if body := readAll(t, res); res.Source != "remote" || !strings.Contains(body, `"name":"pkg"`) {
+		t.Errorf("index: source=%s body=%q", res.Source, body)
+	}
+	if fresh, _ := testCache.CheckTTL(ctx, idx.Name, "pkg"); fresh {
+		t.Error("an uncached index must not be marked fresh")
+	}
+
+	blob := seed(t, genericRemote("eng-down-blob"))
+	res, err = eng.Fetch(ctx, blob, "blob.bin", prov(t, models.PackageGeneric))
+	if err != nil {
+		t.Fatalf("blob fetch with store down: %v", err)
+	}
+	if body := readAll(t, res); res.Source != "remote" || body != "immutable blob" {
+		t.Errorf("blob: source=%s body=%q", res.Source, body)
+	}
+	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a != nil {
+		t.Error("an uncached blob must not get an artifact row")
+	}
 }

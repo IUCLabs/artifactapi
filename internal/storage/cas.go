@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +25,10 @@ type CASResult struct {
 	AlreadyExists bool
 }
 
+// ErrStoreUnavailable marks a Store failure on the object store side (exists check or upload), as
+// opposed to a failure reading the source. A pull-through cache can still serve the content uncached.
+var ErrStoreUnavailable = errors.New("object store unavailable")
+
 func (c *CAS) Store(ctx context.Context, reader io.Reader, contentType string) (*CASResult, error) {
 	tmp, err := os.CreateTemp("", "artifact-*")
 	if err != nil {
@@ -43,7 +48,7 @@ func (c *CAS) Store(ctx context.Context, reader io.Reader, contentType string) (
 
 	exists, err := c.s3.Exists(ctx, s3Key)
 	if err != nil {
-		return nil, fmt.Errorf("check blob exists: %w", err)
+		return nil, fmt.Errorf("check blob exists: %w: %w", ErrStoreUnavailable, err)
 	}
 
 	if !exists {
@@ -51,7 +56,7 @@ func (c *CAS) Store(ctx context.Context, reader io.Reader, contentType string) (
 			return nil, fmt.Errorf("seek temp file: %w", err)
 		}
 		if err := c.s3.Upload(ctx, s3Key, tmp, size, contentType); err != nil {
-			return nil, fmt.Errorf("upload blob: %w", err)
+			return nil, fmt.Errorf("upload blob: %w: %w", ErrStoreUnavailable, err)
 		}
 	}
 

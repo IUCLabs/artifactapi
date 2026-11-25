@@ -36,6 +36,8 @@ type fakeStore struct {
 	denyPut atomic.Bool
 	failPut atomic.Bool
 	failGet atomic.Bool // fails reads of stored objects
+	putGate atomic.Pointer[chan struct{}]
+	putWait atomic.Int64
 	mu      sync.Mutex
 	objs    map[string][]byte
 }
@@ -63,6 +65,10 @@ func newFakeStore(t *testing.T) (*fakeStore, *storage.S3) {
 				_, _ = io.WriteString(w, `<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
 			}
 			return
+		}
+		if g := f.putGate.Load(); g != nil && r.Method == http.MethodPut {
+			f.putWait.Add(1)
+			<-*g
 		}
 		switch {
 		case r.Method == http.MethodPut && f.denyPut.Load():
@@ -515,4 +521,203 @@ func TestFailedUploadKeepsStoreHealthy(t *testing.T) {
 		t.Error("a failed upload must not mark the store unhealthy")
 	}
 	assertEmptyDir(t, tmp)
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestEvictOnDownStoreStillStopsWriteBehind(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := isolateTempDir(t)
+	eng, f, s3 := unhealthyEngine(t)
+
+	blob := seed(t, genericRemote("sh-evictdown-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	f.mode.Store(storeDown)
+	if err := eng.Evict(ctx, blob.Name, "blob.bin"); err == nil {
+		t.Fatal("evict on a down store reported success")
+	}
+	f.mode.Store(storeOK)
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	eng.writeBehindWG.Wait()
+
+	if f.has(blobKey("immutable blob")) {
+		t.Error("write-behind uploaded a path evicted while the store was down")
+	}
+	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a != nil {
+		t.Error("write-behind restored the artifact row of a path evicted while the store was down")
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestWriteBehindSkipsPathEvictedOnAnotherReplica(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := isolateTempDir(t)
+	engA, f, s3 := unhealthyEngine(t)
+	engB := NewEngine(testDB, testCache, s3)
+
+	blob := seed(t, genericRemote("sh-replica-blob"))
+	fetchAndDrain(t, engA, blob, "blob.bin")
+	if err := engB.Evict(ctx, blob.Name, "blob.bin"); err != nil {
+		t.Fatal(err)
+	}
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	engA.writeBehindWG.Wait()
+
+	if f.has(blobKey("immutable blob")) {
+		t.Error("write-behind uploaded a path evicted on another replica")
+	}
+	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a != nil {
+		t.Error("write-behind restored a path evicted on another replica")
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestWriteBehindWaitsForHeldFetchLock(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := isolateTempDir(t)
+	eng, f, s3 := unhealthyEngine(t)
+
+	blob := seed(t, genericRemote("sh-lockwait-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	lock, err := testCache.AcquireLock(ctx, blob.Name, "blob.bin", time.Minute)
+	if err != nil || lock == "" {
+		t.Fatalf("take lock: %q %v", lock, err)
+	}
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	waitFor(t, "store healthy", s3.Healthy)
+	time.Sleep(4 * writeBehindPoll)
+	if n := f.puts.Load(); n != 0 {
+		t.Fatalf("write-behind uploaded under a held fetch lock (%d PUTs)", n)
+	}
+	_ = testCache.ReleaseLock(ctx, blob.Name, "blob.bin", lock)
+	eng.writeBehindWG.Wait()
+
+	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a == nil || !f.has(blobKey("immutable blob")) {
+		t.Error("write-behind did not cache once the fetch lock was released")
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestWriteBehindDropsAtBudgetUnderHeldFetchLock(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := isolateTempDir(t)
+	eng, f, s3 := unhealthyEngine(t)
+	eng.writeBehindBudget = time.Second
+
+	blob := seed(t, genericRemote("sh-lockdrop-blob"))
+	lock, err := testCache.AcquireLock(ctx, blob.Name, "blob.bin", time.Minute)
+	if err != nil || lock == "" {
+		t.Fatalf("take lock: %q %v", lock, err)
+	}
+	defer func() { _ = testCache.ReleaseLock(ctx, blob.Name, "blob.bin", lock) }()
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	start := time.Now()
+	eng.writeBehindWG.Wait()
+
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Errorf("write-behind outlived its budget under a held lock: %s", elapsed)
+	}
+	if n := f.puts.Load(); n != 0 {
+		t.Errorf("PUTs under a held fetch lock = %d, want 0", n)
+	}
+	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a != nil {
+		t.Error("a dropped write-behind left an artifact row")
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestFetchWaitsForWriteBehindHoldingLock(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	isolateTempDir(t)
+	eng, f, s3 := unhealthyEngine(t)
+	gate := make(chan struct{})
+	f.putGate.Store(&gate)
+
+	blob := seed(t, genericRemote("sh-wblock-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	waitFor(t, "write-behind upload", func() bool { return f.putWait.Load() > 0 })
+	time.AfterFunc(300*time.Millisecond, func() { close(gate) })
+
+	res, err := eng.Fetch(ctx, blob, "blob.bin", prov(t, models.PackageGeneric))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := readAll(t, res); res.Source != "cache" || body != "immutable blob" {
+		t.Errorf("fetch during write-behind: source=%s body=%q", res.Source, body)
+	}
+	eng.writeBehindWG.Wait()
+	if n := f.puts.Load(); n != 1 {
+		t.Errorf("uploads = %d, want 1", n)
+	}
+}
+
+func TestStampedeSpoolsOnce(t *testing.T) {
+	requireStack(t)
+	tmp := isolateTempDir(t)
+	eng, _, _ := unhealthyEngine(t)
+	eng.writeBehindBudget = 200 * time.Millisecond
+
+	blob := seed(t, genericRemote("sh-stampede-blob"))
+	var open []*FetchResult
+	for range 3 {
+		res, err := eng.Fetch(context.Background(), blob, "blob.bin", prov(t, models.PackageGeneric))
+		if err != nil {
+			t.Fatal(err)
+		}
+		open = append(open, res)
+	}
+	if entries, _ := os.ReadDir(tmp); len(entries) != 1 {
+		t.Errorf("spools for concurrent misses on one path = %d, want 1", len(entries))
+	}
+	for _, res := range open {
+		if body := readAll(t, res); body != "immutable blob" {
+			t.Errorf("body %q", body)
+		}
+	}
+	eng.writeBehindWG.Wait()
+	assertEmptyDir(t, tmp)
+}
+
+func TestCloseCancelsWriteBehind(t *testing.T) {
+	requireStack(t)
+	tmp := isolateTempDir(t)
+	eng, f, _ := unhealthyEngine(t)
+
+	blob := seed(t, genericRemote("sh-close-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	done := make(chan struct{})
+	go func() { eng.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not cancel a pending write-behind")
+	}
+	assertEmptyDir(t, tmp)
+
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	assertEmptyDir(t, tmp)
+	if n := f.puts.Load(); n != 0 {
+		t.Errorf("PUTs after close = %d, want 0", n)
+	}
 }

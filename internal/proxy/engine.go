@@ -60,6 +60,8 @@ type Engine struct {
 	writeBehindWG     sync.WaitGroup
 	pendingMu         sync.Mutex
 	pending           map[string]struct{}
+	base              context.Context
+	stop              context.CancelFunc
 }
 
 const (
@@ -85,9 +87,18 @@ func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
 		writeBehindBudget: writeBehindBudget,
 		pending:           map[string]struct{}{},
 	}
+	e.base, e.stop = context.WithCancel(context.Background())
 	e.cas = storage.NewCAS(e.store)
 	go e.runAccessLogWriter()
 	return e
+}
+
+// Close cancels pending write-behinds and waits for them to clean up their spools.
+func (e *Engine) Close() {
+	e.pendingMu.Lock()
+	e.stop()
+	e.pendingMu.Unlock()
+	e.writeBehindWG.Wait()
 }
 
 // runAccessLogWriter drains the access-log channel and writes rows in batches,
@@ -153,7 +164,9 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 			e.logAccess(remote.Name, path, true, result.Size, 0)
 			return result, nil
 		}
-		slog.Warn("cache hit but S3 miss, re-fetching", "remote", remote.Name, "path", path)
+		if !errors.Is(err, storage.ErrUnhealthy) {
+			slog.Warn("cache hit but S3 miss, re-fetching", "remote", remote.Name, "path", path)
+		}
 	}
 
 	token, err := e.cache.AcquireLock(ctx, remote.Name, path, fetchLockTTL)
@@ -260,11 +273,11 @@ func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 		if err := e.db.DeleteArtifact(ctx, remoteName, path); err != nil {
 			return fmt.Errorf("delete artifact: %w", err)
 		}
-		if err := e.store.Delete(ctx, storage.IndexKey(remoteName, path)); err != nil {
-			return fmt.Errorf("delete index: %w", err)
-		}
 		if err := e.cache.ForgetPath(ctx, remoteName, path); err != nil {
 			return err
+		}
+		if err := e.store.Delete(ctx, storage.IndexKey(remoteName, path)); err != nil {
+			return fmt.Errorf("delete index: %w", err)
 		}
 		if strings.Contains(path, "?") {
 			return nil
@@ -283,10 +296,13 @@ func (e *Engine) evictPrefix(ctx context.Context, remoteName, prefix string) err
 	if err := e.db.DeleteArtifactsByPrefix(ctx, remoteName, prefix); err != nil {
 		return fmt.Errorf("delete artifacts: %w", err)
 	}
+	if err := e.cache.ForgetPrefix(ctx, remoteName, prefix); err != nil {
+		return err
+	}
 	if err := e.store.DeletePrefix(ctx, storage.IndexKey(remoteName, prefix)); err != nil {
 		return fmt.Errorf("delete indexes: %w", err)
 	}
-	return e.cache.ForgetPrefix(ctx, remoteName, prefix)
+	return nil
 }
 
 // Lock takes the per-path Redis lock (the one Fetch holds) and returns its
@@ -653,19 +669,28 @@ func (e *Engine) recordBlob(ctx context.Context, remote models.Remote, path stri
 // hashing it on the way so a complete download can be cached once the store is back.
 func (e *Engine) streamUncached(ctx context.Context, remote models.Remote, path string, resp *http.Response, contentType string, ttl time.Duration) (*FetchResult, error) {
 	slog.Warn("object store unhealthy, streaming blob uncached", "remote", remote.Name, "path", path)
+	plain := &FetchResult{Reader: resp.Body, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}
+	key := remote.Name + "\x00" + path
+	if !e.claimPending(key) {
+		return plain, nil
+	}
+	token, err := e.cache.PendingToken(ctx, remote.Name, path, pendingTokenTTL)
+	if err != nil {
+		e.releasePending(key)
+		slog.Warn("pending token failed, not caching", "remote", remote.Name, "path", path, "error", err)
+		return plain, nil
+	}
 	spool, err := os.CreateTemp("", "artifact-*")
 	if err != nil {
+		e.releasePending(key)
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("create temp file: %w", err)
 	}
 	etag := resp.Header.Get("ETag")
 	t := &teeSpool{src: resp.Body, spool: spool, hash: sha256.New(), want: resp.ContentLength}
-	result := &FetchResult{Reader: t, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}
-	token, err := e.cache.PendingToken(ctx, remote.Name, path, pendingTokenTTL)
-	if err != nil {
-		slog.Warn("pending token failed, not caching", "remote", remote.Name, "path", path, "error", err)
-		t.done = func(string, int64) { t.discard() }
-		return result, nil
+	t.fail = func() {
+		t.discard()
+		e.releasePending(key)
 	}
 	t.done = func(hash string, size int64) {
 		e.cacheLater(remote.Name, path, token, func(ctx context.Context) error {
@@ -673,11 +698,32 @@ func (e *Engine) streamUncached(ctx context.Context, remote models.Remote, path 
 			if err != nil {
 				return err
 			}
+			if valid, err := e.cache.PendingValid(ctx, remote.Name, path, token); err != nil || !valid {
+				return err
+			}
 			e.recordBlob(ctx, remote, path, res, contentType, ttl, etag)
 			return nil
 		}, t.discard)
 	}
-	return result, nil
+	return &FetchResult{Reader: t, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
+}
+
+// claimPending reserves path for a single spool and write-behind, refusing when one is already
+// under way, every write-behind slot is busy or the engine is closed.
+func (e *Engine) claimPending(key string) bool {
+	e.pendingMu.Lock()
+	defer e.pendingMu.Unlock()
+	if _, ok := e.pending[key]; ok || e.base.Err() != nil || len(e.writeBehind) == cap(e.writeBehind) {
+		return false
+	}
+	e.pending[key] = struct{}{}
+	return true
+}
+
+func (e *Engine) releasePending(key string) {
+	e.pendingMu.Lock()
+	delete(e.pending, key)
+	e.pendingMu.Unlock()
 }
 
 // teeSpool copies what the client reads into spool and hands a complete, intact copy to done,
@@ -692,6 +738,7 @@ type teeSpool struct {
 	broken bool
 	closed bool
 	done   func(hash string, size int64)
+	fail   func()
 }
 
 func (t *teeSpool) Read(p []byte) (int, error) {
@@ -721,7 +768,7 @@ func (t *teeSpool) Close() error {
 	if t.eof && !t.broken && (t.want < 0 || t.n == t.want) {
 		t.done(hex.EncodeToString(t.hash.Sum(nil)), t.n)
 	} else {
-		t.discard()
+		t.fail()
 	}
 	return err
 }
@@ -731,31 +778,31 @@ func (t *teeSpool) discard() {
 	_ = os.Remove(t.spool.Name())
 }
 
-// cacheLater runs write in the background, once the store is healthy, under the path's fetch lock.
-// It skips a path already queued, evicted since token was issued, or cached meanwhile, and gives up
-// on a full set of slots, a non-retriable error or writeBehindBudget. cleanup always runs.
+// cacheLater runs write in the background, once the store is healthy, under the path's fetch lock,
+// for a path the caller claimed with claimPending. It skips a path evicted since token was issued
+// or cached meanwhile, and gives up on a full set of slots, a closed engine, a non-retriable error
+// or writeBehindBudget. cleanup always runs and the claim is always released.
 func (e *Engine) cacheLater(remote, path, token string, write func(context.Context) error, cleanup func()) {
 	key := remote + "\x00" + path
 	e.pendingMu.Lock()
-	_, queued := e.pending[key]
-	full := false
-	if !queued {
+	started := false
+	if e.base.Err() == nil {
 		select {
 		case e.writeBehind <- struct{}{}:
-			e.pending[key] = struct{}{}
+			started = true
+			e.writeBehindWG.Add(1)
 		default:
-			full = true
-		}
-	}
-	e.pendingMu.Unlock()
-	if queued || full {
-		if full {
 			slog.Warn("write-behind slots full, not caching", "remote", remote, "path", path)
 		}
+	}
+	if !started {
+		delete(e.pending, key)
+	}
+	e.pendingMu.Unlock()
+	if !started {
 		cleanup()
 		return
 	}
-	e.writeBehindWG.Add(1)
 	go func() {
 		defer e.writeBehindWG.Done()
 		defer func() {
@@ -765,7 +812,7 @@ func (e *Engine) cacheLater(remote, path, token string, write func(context.Conte
 			<-e.writeBehind
 		}()
 		defer cleanup()
-		ctx, cancel := context.WithTimeout(context.Background(), e.writeBehindBudget)
+		ctx, cancel := context.WithTimeout(e.base, e.writeBehindBudget)
 		defer cancel()
 		err := storage.ErrUnhealthy
 		for {
@@ -791,7 +838,14 @@ func (e *Engine) cacheLater(remote, path, token string, write func(context.Conte
 
 // writeBehindOnce reports done once the path needs no further attempt: written, evicted or cached.
 func (e *Engine) writeBehindOnce(ctx context.Context, remote, path, token string, write func(context.Context) error) (bool, error) {
-	lock, err := e.cache.AcquireLock(ctx, remote, path, fetchLockTTL)
+	ttl := fetchLockTTL
+	if deadline, ok := ctx.Deadline(); ok {
+		ttl = time.Until(deadline)
+	}
+	if ttl <= 0 {
+		return false, context.DeadlineExceeded
+	}
+	lock, err := e.cache.AcquireLock(ctx, remote, path, ttl)
 	if lock == "" {
 		if err == nil {
 			err = errFetchLockHeld

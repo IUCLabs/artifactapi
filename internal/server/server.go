@@ -262,18 +262,13 @@ func (s *Server) Run(ctx context.Context) error {
 
 	httpServer := s.newHTTPServer()
 
-	go func() {
-		<-ctx.Done()
-		slog.Info("shutting down server")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdownCtx)
-	}()
+	stopped := s.shutdownOnDone(ctx, httpServer)
 
 	slog.Info("starting server", "addr", s.cfg.ListenAddr)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-stopped
 	return nil
 }
 
@@ -286,16 +281,28 @@ func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 
 	httpServer := s.newHTTPServer()
 
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdownCtx)
-	}()
+	stopped := s.shutdownOnDone(ctx, httpServer)
 
 	slog.Info("starting server", "addr", ln.Addr().String())
 	if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-stopped
 	return nil
+}
+
+// shutdownOnDone drains httpServer and then the engine's write-behinds once ctx ends, closing the
+// returned channel when both are done.
+func (s *Server) shutdownOnDone(ctx context.Context, httpServer *http.Server) <-chan struct{} {
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		<-ctx.Done()
+		slog.Info("shutting down server")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+		s.engine.Close()
+	}()
+	return stopped
 }

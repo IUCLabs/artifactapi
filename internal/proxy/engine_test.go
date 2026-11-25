@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ var (
 	testDB     *database.DB
 	testRedis  string
 	upstream   *httptest.Server
+	blobHits   atomic.Int64
 )
 
 func TestMain(m *testing.M) {
@@ -88,6 +90,7 @@ func TestMain(m *testing.M) {
 func mockUpstream(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case "/blob.bin":
+		blobHits.Add(1)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write([]byte("immutable blob"))
 	case "/truncated.bin": // declares more bytes than it sends
@@ -734,7 +737,7 @@ func TestStoreDownServesUncached(t *testing.T) {
 	ctx := context.Background()
 	minio, term, err := testsupport.StartMinio(ctx)
 	if err != nil {
-		t.Skip("minio unavailable")
+		t.Fatalf("start minio: %v", err)
 	}
 	var s3 *storage.S3
 	for i := 0; i < 20; i++ {
@@ -762,9 +765,13 @@ func TestStoreDownServesUncached(t *testing.T) {
 	}
 
 	blob := seed(t, genericRemote("eng-down-blob"))
+	hits := blobHits.Load()
 	res, err = eng.Fetch(ctx, blob, "blob.bin", prov(t, models.PackageGeneric))
 	if err != nil {
 		t.Fatalf("blob fetch with store down: %v", err)
+	}
+	if n := blobHits.Load() - hits; n != 1 {
+		t.Errorf("upstream GETs for a store-down blob = %d, want 1", n)
 	}
 	spool := res.Reader.(interface{ Name() string }).Name()
 	if body := readAll(t, res); res.Source != "remote" || res.Size != int64(len("immutable blob")) || body != "immutable blob" {
@@ -784,4 +791,31 @@ func TestStoreDownServesUncached(t *testing.T) {
 	q := quarantineRemote(t, "eng-down-quarantine", true)
 	_, err = eng.Fetch(ctx, q, "fresh.tgz", prov(t, models.PackageNPM))
 	_ = wantQuarantined(t, err)
+}
+
+// A request cancelled while the store rejects its index must fail, not serve the index uncached.
+func TestStoreDownCancelledIndexFails(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			cancel()
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	s3, err := storage.NewS3(strings.TrimPrefix(srv.URL, "http://"), "key", "secret", "proxy-cancel", false, "us-east-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng := NewEngine(testDB, testCache, s3)
+
+	idx := seed(t, models.Remote{Name: "eng-down-cancel", PackageType: models.PackageNPM, RepoType: models.RepoTypeRemote, BaseURL: upstream.URL})
+	res, err := eng.Fetch(ctx, idx, "pkg", prov(t, models.PackageNPM))
+	if !errors.Is(err, context.Canceled) || res != nil {
+		t.Fatalf("want an error wrapping context.Canceled and no result, got res=%v err=%v", res, err)
+	}
 }

@@ -53,6 +53,7 @@ func (c *CAS) Store(ctx context.Context, reader io.Reader, contentType string) (
 	var unavailable *StoreUnavailableError
 	if errors.As(err, &unavailable) {
 		_ = unavailable.Spool.Close()
+		unavailable.Spool = nil
 	}
 	return res, err
 }

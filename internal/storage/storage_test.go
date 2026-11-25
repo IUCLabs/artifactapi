@@ -229,14 +229,32 @@ func TestCASStoreOrSpoolStoreDown(t *testing.T) {
 	}
 }
 
+// isolateTempDir points os.CreateTemp at a fresh directory and fails the test if anything is left in it.
+func isolateTempDir(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	t.Cleanup(func() {
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("temp files left behind: %v", entries)
+		}
+	})
+}
+
 func TestCASStoreDownReturnsSentinelWithoutSpool(t *testing.T) {
+	isolateTempDir(t)
 	_, err := NewCAS(downS3(t)).Store(context.Background(), strings.NewReader("x"), "text/plain")
 	if !errors.Is(err, ErrStoreUnavailable) {
 		t.Fatalf("want ErrStoreUnavailable, got %v", err)
 	}
+	var unavailable *StoreUnavailableError
+	if errors.As(err, &unavailable) && unavailable.Spool != nil {
+		t.Error("Store must not hand back its closed spool")
+	}
 }
 
 func TestCASStoreOrSpoolCancelledIsNotStoreUnavailable(t *testing.T) {
+	isolateTempDir(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := NewCAS(downS3(t)).StoreOrSpool(ctx, strings.NewReader("x"), "text/plain")
@@ -246,6 +264,7 @@ func TestCASStoreOrSpoolCancelledIsNotStoreUnavailable(t *testing.T) {
 }
 
 func TestCASStoreOrSpoolSourceErrorIsNotStoreUnavailable(t *testing.T) {
+	isolateTempDir(t)
 	src := io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(io.ErrUnexpectedEOF))
 	_, err := NewCAS(downS3(t)).StoreOrSpool(context.Background(), src, "text/plain")
 	if !errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrStoreUnavailable) {

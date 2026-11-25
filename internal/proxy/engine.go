@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/minio/minio-go/v7"
 
 	"github.com/IUCLabs/artifactapi/internal/cache"
 	"github.com/IUCLabs/artifactapi/internal/database"
@@ -57,15 +58,19 @@ type Engine struct {
 	writeBehind       chan struct{}
 	writeBehindBudget time.Duration
 	writeBehindWG     sync.WaitGroup
+	pendingMu         sync.Mutex
+	pending           map[string]struct{}
 }
 
 const (
 	writeBehindSlots  = 4
 	writeBehindBudget = 30 * time.Second
 	writeBehindPoll   = 250 * time.Millisecond
+	// pendingTokenTTL outlives the slowest uncached stream we still want to cache afterwards.
+	pendingTokenTTL = time.Hour
 )
 
-var errStoreUnhealthy = errors.New("object store unhealthy")
+var errFetchLockHeld = errors.New("fetch lock held")
 
 func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
 	e := &Engine{
@@ -78,6 +83,7 @@ func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
 		evictLockWait:     fetchLockTTL,
 		writeBehind:       make(chan struct{}, writeBehindSlots),
 		writeBehindBudget: writeBehindBudget,
+		pending:           map[string]struct{}{},
 	}
 	e.cas = storage.NewCAS(e.store)
 	go e.runAccessLogWriter()
@@ -531,15 +537,11 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 			body = rewritten
 		}
 
-		etag := resp.Header.Get("ETag")
 		uncached := &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}
 		if !e.store.Healthy() {
-			e.cacheLater(remote.Name, path, func(ctx context.Context) error {
-				return e.storeIndex(ctx, remote, path, body, contentType, ttl, etag)
-			}, func() {})
 			return uncached, nil
 		}
-		if err := e.storeIndex(ctx, remote, path, body, contentType, ttl, etag); err != nil {
+		if err := e.storeIndex(ctx, remote, path, body, contentType, ttl, resp.Header.Get("ETag")); err != nil {
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("upload index: %w", ctx.Err())
 			}
@@ -562,7 +564,7 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	}
 
 	if !e.store.Healthy() {
-		return e.streamUncached(remote, path, resp, contentType, ttl)
+		return e.streamUncached(ctx, remote, path, resp, contentType, ttl)
 	}
 
 	// Immutable blobs are streamed through the content-addressable store
@@ -583,8 +585,14 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 
 	reader, info, err := e.store.Download(ctx, casResult.S3Key)
 	if err != nil {
-		return nil, fmt.Errorf("serve stored blob: %w", err)
+		if ctx.Err() != nil {
+			_ = casResult.Spool.Close()
+			return nil, fmt.Errorf("serve stored blob: %w", ctx.Err())
+		}
+		slog.Warn("stored blob unreadable, serving spooled copy", "remote", remote.Name, "path", path, "error", err)
+		return &FetchResult{Reader: casResult.Spool, ContentType: contentType, Size: casResult.SizeBytes, Source: "remote"}, nil
 	}
+	_ = casResult.Spool.Close()
 	return &FetchResult{
 		Reader:      reader,
 		ContentType: info.ContentType,
@@ -643,7 +651,7 @@ func (e *Engine) recordBlob(ctx context.Context, remote models.Remote, path stri
 
 // streamUncached serves a blob straight from upstream while the store is unhealthy, spooling and
 // hashing it on the way so a complete download can be cached once the store is back.
-func (e *Engine) streamUncached(remote models.Remote, path string, resp *http.Response, contentType string, ttl time.Duration) (*FetchResult, error) {
+func (e *Engine) streamUncached(ctx context.Context, remote models.Remote, path string, resp *http.Response, contentType string, ttl time.Duration) (*FetchResult, error) {
 	slog.Warn("object store unhealthy, streaming blob uncached", "remote", remote.Name, "path", path)
 	spool, err := os.CreateTemp("", "artifact-*")
 	if err != nil {
@@ -652,8 +660,15 @@ func (e *Engine) streamUncached(remote models.Remote, path string, resp *http.Re
 	}
 	etag := resp.Header.Get("ETag")
 	t := &teeSpool{src: resp.Body, spool: spool, hash: sha256.New(), want: resp.ContentLength}
+	result := &FetchResult{Reader: t, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}
+	token, err := e.cache.PendingToken(ctx, remote.Name, path, pendingTokenTTL)
+	if err != nil {
+		slog.Warn("pending token failed, not caching", "remote", remote.Name, "path", path, "error", err)
+		t.done = func(string, int64) { t.discard() }
+		return result, nil
+	}
 	t.done = func(hash string, size int64) {
-		e.cacheLater(remote.Name, path, func(ctx context.Context) error {
+		e.cacheLater(remote.Name, path, token, func(ctx context.Context) error {
 			res, err := e.cas.PutHashed(ctx, spool, hash, size, contentType)
 			if err != nil {
 				return err
@@ -662,7 +677,7 @@ func (e *Engine) streamUncached(remote models.Remote, path string, resp *http.Re
 			return nil
 		}, t.discard)
 	}
-	return &FetchResult{Reader: t, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
+	return result, nil
 }
 
 // teeSpool copies what the client reads into spool and hands a complete, intact copy to done,
@@ -716,27 +731,51 @@ func (t *teeSpool) discard() {
 	_ = os.Remove(t.spool.Name())
 }
 
-// cacheLater runs write in the background, detached from the request, once the store is healthy.
-// It gives up after writeBehindBudget, and skips outright when every slot is busy. cleanup always runs.
-func (e *Engine) cacheLater(remote, path string, write func(context.Context) error, cleanup func()) {
-	select {
-	case e.writeBehind <- struct{}{}:
-	default:
-		slog.Warn("write-behind slots full, not caching", "remote", remote, "path", path)
+// cacheLater runs write in the background, once the store is healthy, under the path's fetch lock.
+// It skips a path already queued, evicted since token was issued, or cached meanwhile, and gives up
+// on a full set of slots, a non-retriable error or writeBehindBudget. cleanup always runs.
+func (e *Engine) cacheLater(remote, path, token string, write func(context.Context) error, cleanup func()) {
+	key := remote + "\x00" + path
+	e.pendingMu.Lock()
+	_, queued := e.pending[key]
+	full := false
+	if !queued {
+		select {
+		case e.writeBehind <- struct{}{}:
+			e.pending[key] = struct{}{}
+		default:
+			full = true
+		}
+	}
+	e.pendingMu.Unlock()
+	if queued || full {
+		if full {
+			slog.Warn("write-behind slots full, not caching", "remote", remote, "path", path)
+		}
 		cleanup()
 		return
 	}
 	e.writeBehindWG.Add(1)
 	go func() {
 		defer e.writeBehindWG.Done()
-		defer func() { <-e.writeBehind }()
+		defer func() {
+			e.pendingMu.Lock()
+			delete(e.pending, key)
+			e.pendingMu.Unlock()
+			<-e.writeBehind
+		}()
 		defer cleanup()
 		ctx, cancel := context.WithTimeout(context.Background(), e.writeBehindBudget)
 		defer cancel()
-		err := errStoreUnhealthy
+		err := storage.ErrUnhealthy
 		for {
 			if e.store.Healthy() {
-				if err = write(ctx); err == nil {
+				var done bool
+				if done, err = e.writeBehindOnce(ctx, remote, path, token, write); done {
+					return
+				}
+				if !retriable(err) {
+					slog.Warn("write-behind failed", "remote", remote, "path", path, "error", err)
 					return
 				}
 			}
@@ -750,9 +789,52 @@ func (e *Engine) cacheLater(remote, path string, write func(context.Context) err
 	}()
 }
 
+// writeBehindOnce reports done once the path needs no further attempt: written, evicted or cached.
+func (e *Engine) writeBehindOnce(ctx context.Context, remote, path, token string, write func(context.Context) error) (bool, error) {
+	lock, err := e.cache.AcquireLock(ctx, remote, path, fetchLockTTL)
+	if lock == "" {
+		if err == nil {
+			err = errFetchLockHeld
+		}
+		return false, err
+	}
+	defer func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remote, path, lock) }()
+	valid, err := e.cache.PendingValid(ctx, remote, path, token)
+	if err != nil {
+		return false, err
+	}
+	if !valid {
+		slog.Info("write-behind skipped, path evicted", "remote", remote, "path", path)
+		return true, nil
+	}
+	fresh, err := e.cache.CheckTTL(ctx, remote, path)
+	if err != nil {
+		return false, err
+	}
+	if fresh {
+		return true, nil
+	}
+	if err := write(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// retriable reports whether a later write-behind attempt might succeed where err failed.
+func retriable(err error) bool {
+	if errors.Is(err, storage.ErrSeek) {
+		return false
+	}
+	var resp minio.ErrorResponse
+	if errors.As(err, &resp) && resp.StatusCode > 0 && resp.StatusCode < http.StatusInternalServerError {
+		return false
+	}
+	return true
+}
+
 func (e *Engine) serveFromStore(ctx context.Context, remote models.Remote, path string) (*FetchResult, error) {
 	if !e.store.Healthy() {
-		return nil, errStoreUnhealthy
+		return nil, storage.ErrUnhealthy
 	}
 	artifact, err := e.db.GetArtifact(ctx, remote.Name, path)
 	if err == nil && artifact != nil {

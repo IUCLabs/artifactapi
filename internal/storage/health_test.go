@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,5 +109,80 @@ func TestRequestPathTimesOutOnHungStore(t *testing.T) {
 	}
 	if s.Healthy() {
 		t.Error("a timed-out call must mark the store unhealthy")
+	}
+}
+
+// putStore answers every PUT with respond(attempt), counting attempts, and 404s every other request.
+func putStore(t *testing.T, respond func(attempt int32, w http.ResponseWriter)) (*S3, *atomic.Int32) {
+	t.Helper()
+	var puts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			if strings.Count(strings.Trim(r.URL.Path, "/"), "/") > 0 {
+				w.WriteHeader(http.StatusNotFound)
+			}
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		respond(puts.Add(1), w)
+	}))
+	t.Cleanup(srv.Close)
+	s, err := NewS3(strings.TrimPrefix(srv.URL, "http://"), "key", "secret", "bucket", false, "us-east-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.RequestPath(), &puts
+}
+
+func TestUploadOnSlowHealthyStoreSucceeds(t *testing.T) {
+	s, puts := putStore(t, func(attempt int32, w http.ResponseWriter) {
+		if attempt == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		time.Sleep(RequestTimeout + 500*time.Millisecond)
+		w.Header().Set("ETag", `"x"`)
+	})
+
+	if err := s.Upload(context.Background(), "blobs/x", strings.NewReader("payload"), 7, "text/plain"); err != nil {
+		t.Fatalf("an upload outlasting the request timeout after a transient 503 must succeed: %v", err)
+	}
+	if n := puts.Load(); n != 2 {
+		t.Errorf("PUT attempts = %d, want 2", n)
+	}
+	if !s.Healthy() {
+		t.Error("a slow upload on a healthy store must not mark it unhealthy")
+	}
+}
+
+func TestFailedUploadKeepsStoreHealthy(t *testing.T) {
+	s, puts := putStore(t, func(_ int32, w http.ResponseWriter) { w.WriteHeader(http.StatusInternalServerError) })
+
+	if err := s.Upload(context.Background(), "blobs/x", strings.NewReader("payload"), 7, "text/plain"); err == nil {
+		t.Fatal("upload against a failing store succeeded")
+	}
+	if puts.Load() < 2 {
+		t.Errorf("PUT attempts = %d, want the client to retry", puts.Load())
+	}
+	if !s.Healthy() {
+		t.Error("a failed upload must not mark the store unhealthy")
+	}
+}
+
+func TestUploadRefusedWhileUnhealthy(t *testing.T) {
+	s, puts := putStore(t, func(_ int32, w http.ResponseWriter) { w.Header().Set("ETag", `"x"`) })
+	s.health.set(errors.New("probe failed"))
+
+	if err := s.Upload(context.Background(), "blobs/x", strings.NewReader("payload"), 7, "text/plain"); !errors.Is(err, ErrUnhealthy) {
+		t.Fatalf("upload on an unhealthy store: err=%v, want ErrUnhealthy", err)
+	}
+	_, err := NewCAS(s).StoreOrSpool(context.Background(), strings.NewReader("payload"), "text/plain")
+	var unavailable *StoreUnavailableError
+	if !errors.As(err, &unavailable) {
+		t.Fatalf("StoreOrSpool on an unhealthy store: want StoreUnavailableError, got %v", err)
+	}
+	_ = unavailable.Spool.Close()
+	if n := puts.Load(); n != 0 {
+		t.Errorf("PUTs on an unhealthy store = %d, want 0", n)
 	}
 }

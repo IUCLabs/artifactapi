@@ -252,3 +252,35 @@ func TestForgetPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestPendingToken(t *testing.T) {
+	requireRedis(t)
+	ctx := context.Background()
+	first, err := testRedis.PendingToken(ctx, "pt", "dir/a", time.Minute)
+	if err != nil || first == "" {
+		t.Fatalf("token=%q err=%v", first, err)
+	}
+	if again, _ := testRedis.PendingToken(ctx, "pt", "dir/a", time.Minute); again != first {
+		t.Errorf("a live token must be shared: %q vs %q", again, first)
+	}
+	if ok, err := testRedis.PendingValid(ctx, "pt", "dir/a", first); err != nil || !ok {
+		t.Fatalf("live token invalid: %v %v", ok, err)
+	}
+
+	if err := testRedis.ForgetPath(ctx, "pt", "dir/a"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := testRedis.PendingValid(ctx, "pt", "dir/a", first); ok {
+		t.Error("ForgetPath must drop the pending token")
+	}
+	next, _ := testRedis.PendingToken(ctx, "pt", "dir/a", time.Minute)
+	if next == first {
+		t.Error("a token issued after forgetting must differ")
+	}
+	if err := testRedis.ForgetPrefix(ctx, "pt", "dir/"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := testRedis.PendingValid(ctx, "pt", "dir/a", next); ok {
+		t.Error("ForgetPrefix must drop the pending token")
+	}
+}

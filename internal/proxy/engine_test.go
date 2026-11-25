@@ -784,12 +784,14 @@ func TestStoreDownServesUncached(t *testing.T) {
 		t.Error("an uncached blob must not get an artifact row")
 	}
 
-	if res, err = eng.Fetch(ctx, blob, "truncated.bin", prov(t, models.PackageGeneric)); err == nil {
-		if _, err = io.ReadAll(res.Reader); err == nil {
-			t.Error("truncated upstream must fail the read")
-		}
-		_ = res.Reader.Close()
+	res, err = eng.Fetch(ctx, blob, "truncated.bin", prov(t, models.PackageGeneric))
+	if err != nil {
+		t.Fatalf("truncated fetch with store down: %v", err)
 	}
+	if _, err = io.ReadAll(res.Reader); err == nil || errors.Is(err, storage.ErrStoreUnavailable) {
+		t.Errorf("truncated upstream must fail the read as a source error, got %v", err)
+	}
+	_ = res.Reader.Close()
 	eng.writeBehindWG.Wait()
 	assertEmptyDir(t, tmp)
 

@@ -30,10 +30,14 @@ const (
 
 // fakeStore is a minimal in-memory S3 that counts every request it receives.
 type fakeStore struct {
-	mode  atomic.Int32
-	calls atomic.Int64
-	mu    sync.Mutex
-	objs  map[string][]byte
+	mode    atomic.Int32
+	calls   atomic.Int64
+	puts    atomic.Int64
+	denyPut atomic.Bool
+	failPut atomic.Bool
+	failGet atomic.Bool // fails reads of stored objects
+	mu      sync.Mutex
+	objs    map[string][]byte
 }
 
 func newFakeStore(t *testing.T) (*fakeStore, *storage.S3) {
@@ -55,14 +59,34 @@ func newFakeStore(t *testing.T) (*fakeStore, *storage.S3) {
 		}
 		key := strings.TrimPrefix(r.URL.Path, "/bucket/")
 		if key == r.URL.Path || key == "" {
+			if r.Method == http.MethodGet && r.URL.Query().Has("list-type") {
+				_, _ = io.WriteString(w, `<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`)
+			}
+			return
+		}
+		switch {
+		case r.Method == http.MethodPut && f.denyPut.Load():
+			f.puts.Add(1)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		case r.Method == http.MethodPut && f.failPut.Load():
+			f.puts.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		case r.Method != http.MethodPut && f.failGet.Load() && f.has(key):
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		switch r.Method {
 		case http.MethodPut:
+			f.puts.Add(1)
 			f.objs[key] = readS3Body(r)
 			w.Header().Set("ETag", `"x"`)
+		case http.MethodDelete:
+			delete(f.objs, key)
+			w.WriteHeader(http.StatusNoContent)
 		case http.MethodGet, http.MethodHead:
 			b, ok := f.objs[key]
 			if !ok {
@@ -213,17 +237,14 @@ func TestWriteBehindCachesWhenStoreRecovers(t *testing.T) {
 	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
 	eng.writeBehindWG.Wait()
 
-	if !f.has(blobKey("immutable blob")) || !f.has(storage.IndexKey(idx.Name, "pkg")) {
+	if !f.has(blobKey("immutable blob")) {
 		t.Error("write-behind did not upload once the store recovered")
 	}
 	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a == nil {
 		t.Error("write-behind did not record the artifact")
 	}
-	if fresh, _ := testCache.CheckTTL(ctx, idx.Name, "pkg"); !fresh {
-		t.Error("write-behind did not mark the index fresh")
-	}
-	if etag, _ := testCache.GetETag(ctx, idx.Name, "pkg"); etag != `"v1"` {
-		t.Errorf("write-behind etag = %q", etag)
+	if fresh, _ := testCache.CheckTTL(ctx, idx.Name, "pkg"); fresh || f.has(storage.IndexKey(idx.Name, "pkg")) {
+		t.Error("an index served while unhealthy must stay uncached")
 	}
 	assertEmptyDir(t, tmp)
 
@@ -349,4 +370,149 @@ func TestHungStoreCallerCancelStaysAnError(t *testing.T) {
 	if !s3.Healthy() {
 		t.Error("the caller's cancellation must not mark the store unhealthy")
 	}
+}
+
+// fetchAndDrain fetches path and reads it to the end, which queues a write-behind on an unhealthy store.
+func fetchAndDrain(t *testing.T, eng *Engine, remote models.Remote, path string) {
+	t.Helper()
+	res, err := eng.Fetch(context.Background(), remote, path, prov(t, models.PackageGeneric))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := readAll(t, res); body != "immutable blob" {
+		t.Fatalf("body %q", body)
+	}
+}
+
+func TestWriteBehindSkipsEvictedPath(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := isolateTempDir(t)
+	eng, f, s3 := unhealthyEngine(t)
+
+	blob := seed(t, genericRemote("sh-evict-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	if err := eng.Evict(ctx, blob.Name, "blob.bin"); err != nil {
+		t.Fatal(err)
+	}
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	eng.writeBehindWG.Wait()
+
+	if f.has(blobKey("immutable blob")) {
+		t.Error("write-behind uploaded a path evicted during its wait")
+	}
+	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a != nil {
+		t.Error("write-behind restored the artifact row of an evicted path")
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestWriteBehindDedupesPath(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := isolateTempDir(t)
+	eng, f, s3 := unhealthyEngine(t)
+
+	blob := seed(t, genericRemote("sh-dedupe-blob"))
+	for range 3 {
+		fetchAndDrain(t, eng, blob, "blob.bin")
+	}
+	if n := len(eng.writeBehind); n != 1 {
+		t.Errorf("slots in use for one path = %d, want 1", n)
+	}
+	if entries, _ := os.ReadDir(tmp); len(entries) != 1 {
+		t.Errorf("spools kept for one path = %d, want 1", len(entries))
+	}
+
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	eng.writeBehindWG.Wait()
+	if n := f.puts.Load(); n != 1 {
+		t.Errorf("uploads for one path = %d, want 1", n)
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestWriteBehindStopsOnClientError(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	isolateTempDir(t)
+	eng, f, s3 := unhealthyEngine(t)
+	eng.writeBehindBudget = 10 * time.Second
+	f.denyPut.Store(true)
+
+	blob := seed(t, genericRemote("sh-deny-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	start := time.Now()
+	eng.writeBehindWG.Wait()
+
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("write-behind kept retrying a 403 for %s", elapsed)
+	}
+	if n := f.puts.Load(); n != 1 {
+		t.Errorf("uploads after a 403 = %d, want 1", n)
+	}
+	if !s3.Healthy() {
+		t.Error("a 403 must not mark the store unhealthy")
+	}
+}
+
+func TestDownloadFailureAfterPutServesSpool(t *testing.T) {
+	requireStack(t)
+	ctx := context.Background()
+	tmp := isolateTempDir(t)
+	f, s3 := newFakeStore(t)
+	eng := NewEngine(testDB, testCache, s3)
+	f.failGet.Store(true)
+
+	blob := seed(t, genericRemote("sh-getfail-blob"))
+	res, err := eng.Fetch(ctx, blob, "blob.bin", prov(t, models.PackageGeneric))
+	if err != nil {
+		t.Fatalf("a failed read-back after a stored put must still serve: %v", err)
+	}
+	if body := readAll(t, res); body != "immutable blob" || res.Size != int64(len(body)) || res.Source != "remote" {
+		t.Errorf("blob: source=%s size=%d body=%q", res.Source, res.Size, body)
+	}
+	if !f.has(blobKey("immutable blob")) {
+		t.Error("blob was not stored")
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestUnhealthyStoreNeverUploads(t *testing.T) {
+	requireStack(t)
+	tmp := isolateTempDir(t)
+	eng, f, _ := unhealthyEngine(t)
+	eng.writeBehindBudget = 300 * time.Millisecond
+
+	blob := seed(t, genericRemote("sh-noput-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	eng.writeBehindWG.Wait()
+
+	if n := f.puts.Load(); n != 0 {
+		t.Errorf("PUTs while unhealthy = %d, want 0", n)
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestFailedUploadKeepsStoreHealthy(t *testing.T) {
+	requireStack(t)
+	tmp := isolateTempDir(t)
+	f, s3 := newFakeStore(t)
+	eng := NewEngine(testDB, testCache, s3)
+	f.failPut.Store(true)
+
+	blob := seed(t, genericRemote("sh-putfail-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+
+	if f.puts.Load() == 0 {
+		t.Fatal("no upload was attempted on a healthy store")
+	}
+	if !s3.Healthy() {
+		t.Error("a failed upload must not mark the store unhealthy")
+	}
+	assertEmptyDir(t, tmp)
 }

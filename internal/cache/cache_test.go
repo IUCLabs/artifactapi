@@ -284,3 +284,20 @@ func TestPendingToken(t *testing.T) {
 		t.Error("ForgetPrefix must drop the pending token")
 	}
 }
+
+func TestPendingTokenReuseRefreshesTTL(t *testing.T) {
+	requireRedis(t)
+	ctx := context.Background()
+	first, err := testRedis.PendingToken(ctx, "pt", "refresh", 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if again, _ := testRedis.PendingToken(ctx, "pt", "refresh", time.Minute); again != first {
+		t.Fatalf("a live token must be shared: %q vs %q", again, first)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if ok, _ := testRedis.PendingValid(ctx, "pt", "refresh", first); !ok {
+		t.Error("reusing a token must extend its TTL")
+	}
+}

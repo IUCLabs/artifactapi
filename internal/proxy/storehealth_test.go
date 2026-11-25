@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -511,8 +512,11 @@ func TestFailedUploadKeepsStoreHealthy(t *testing.T) {
 	eng := NewEngine(testDB, testCache, s3)
 	f.failPut.Store(true)
 
+	eng.writeBehindBudget = 300 * time.Millisecond
+
 	blob := seed(t, genericRemote("sh-putfail-blob"))
 	fetchAndDrain(t, eng, blob, "blob.bin")
+	eng.writeBehindWG.Wait()
 
 	if f.puts.Load() == 0 {
 		t.Fatal("no upload was attempted on a healthy store")
@@ -719,5 +723,173 @@ func TestCloseCancelsWriteBehind(t *testing.T) {
 	assertEmptyDir(t, tmp)
 	if n := f.puts.Load(); n != 0 {
 		t.Errorf("PUTs after close = %d, want 0", n)
+	}
+}
+
+func TestCloseWithOpenReader(t *testing.T) {
+	requireStack(t)
+	tmp := isolateTempDir(t)
+	eng, f, _ := unhealthyEngine(t)
+
+	blob := seed(t, genericRemote("sh-closeopen-blob"))
+	res, err := eng.Fetch(context.Background(), blob, "blob.bin", prov(t, models.PackageGeneric))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.Close()
+	if body := readAll(t, res); body != "immutable blob" {
+		t.Errorf("body %q", body)
+	}
+	eng.writeBehindWG.Wait()
+
+	if n := f.puts.Load(); n != 0 {
+		t.Errorf("PUTs after close = %d, want 0", n)
+	}
+	if n := len(eng.writeBehind); n != 0 {
+		t.Errorf("slots in use after close = %d, want 0", n)
+	}
+	if n := len(eng.pending); n != 0 {
+		t.Errorf("pending paths after close = %d, want 0", n)
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestSpoolsAcrossPathsStayWithinSlots(t *testing.T) {
+	requireStack(t)
+	tmp := isolateTempDir(t)
+	eng, _, _ := unhealthyEngine(t)
+	eng.writeBehindBudget = 200 * time.Millisecond
+
+	var open []*FetchResult
+	for i := range 10 {
+		blob := seed(t, genericRemote(fmt.Sprintf("sh-slots-blob-%d", i)))
+		res, err := eng.Fetch(context.Background(), blob, "blob.bin", prov(t, models.PackageGeneric))
+		if err != nil {
+			t.Fatal(err)
+		}
+		open = append(open, res)
+	}
+	if entries, _ := os.ReadDir(tmp); len(entries) > cap(eng.writeBehind) {
+		t.Errorf("spools for %d open misses = %d, want at most %d", len(open), len(entries), cap(eng.writeBehind))
+	}
+	for _, res := range open {
+		if body := readAll(t, res); body != "immutable blob" {
+			t.Errorf("body %q", body)
+		}
+	}
+	eng.writeBehindWG.Wait()
+	assertEmptyDir(t, tmp)
+	if n := len(eng.writeBehind); n != 0 {
+		t.Errorf("slots in use = %d, want 0", n)
+	}
+}
+
+func TestFailedUploadSpoolCachedLater(t *testing.T) {
+	requireStack(t)
+	ctx := context.Background()
+	tmp := isolateTempDir(t)
+	f, s3 := newFakeStore(t)
+	eng := NewEngine(testDB, testCache, s3)
+	f.failPut.Store(true)
+
+	blob := seed(t, genericRemote("sh-putlater-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	f.failPut.Store(false)
+	eng.writeBehindWG.Wait()
+
+	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a == nil || !f.has(blobKey("immutable blob")) {
+		t.Error("the spool of a refused upload was not cached afterwards")
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestFailedUploadSpoolDroppedWhenSlotsFull(t *testing.T) {
+	requireStack(t)
+	tmp := isolateTempDir(t)
+	f, s3 := newFakeStore(t)
+	eng := NewEngine(testDB, testCache, s3)
+	f.failPut.Store(true)
+	for range cap(eng.writeBehind) {
+		eng.writeBehind <- struct{}{}
+	}
+
+	blob := seed(t, genericRemote("sh-putfull-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	assertEmptyDir(t, tmp)
+	if n := len(eng.pending); n != 0 {
+		t.Errorf("pending paths = %d, want 0", n)
+	}
+}
+
+// lockWaiters counts sessions blocked on a lock in a statement matching like.
+func lockWaiters(t *testing.T, like string) int {
+	t.Helper()
+	var n int
+	err := testDB.Pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE $1`, like).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestWildcardEvictDuringWriteBehind(t *testing.T) {
+	requireStack(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tmp := isolateTempDir(t)
+	eng, f, s3 := unhealthyEngine(t)
+
+	blob := seed(t, genericRemote("sh-wildevict-blob"))
+	fetchAndDrain(t, eng, blob, "dir/blob.bin")
+	token, err := testCache.PendingToken(ctx, blob.Name, "dir/blob.bin", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := testDB.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `LOCK TABLE artifacts IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	go s3.RunHealthProbe(ctx, 50*time.Millisecond, time.Second)
+	waitFor(t, "write-behind blocked recording", func() bool { return lockWaiters(t, "%INSERT INTO artifacts%") > 0 })
+
+	evicted := make(chan error, 1)
+	go func() { evicted <- eng.Evict(ctx, blob.Name, "dir/*") }()
+	waitFor(t, "evict blocked deleting", func() bool { return lockWaiters(t, "%DELETE FROM artifacts%") > 0 })
+	if valid, _ := testCache.PendingValid(ctx, blob.Name, "dir/blob.bin", token); valid {
+		t.Error("evict deleted rows before dropping the pending token")
+	}
+	_ = tx.Rollback(ctx)
+	if err := <-evicted; err != nil {
+		t.Fatal(err)
+	}
+	eng.writeBehindWG.Wait()
+
+	if a, _ := testDB.GetArtifact(ctx, blob.Name, "dir/blob.bin"); a != nil {
+		t.Error("write-behind restored the artifact row of a wildcard-evicted path")
+	}
+	if fresh, _ := testCache.CheckTTL(ctx, blob.Name, "dir/blob.bin"); fresh {
+		t.Error("write-behind left a TTL on a wildcard-evicted path")
+	}
+	if f.puts.Load() == 0 {
+		t.Error("write-behind never reached the store")
+	}
+	assertEmptyDir(t, tmp)
+}
+
+func TestUnhealthyMissStreamsWhenSpoolFails(t *testing.T) {
+	requireStack(t)
+	eng, _, _ := unhealthyEngine(t)
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+
+	blob := seed(t, genericRemote("sh-nospool-blob"))
+	fetchAndDrain(t, eng, blob, "blob.bin")
+	if n, p := len(eng.writeBehind), len(eng.pending); n != 0 || p != 0 {
+		t.Errorf("slots=%d pending=%d after a failed spool, want 0", n, p)
 	}
 }

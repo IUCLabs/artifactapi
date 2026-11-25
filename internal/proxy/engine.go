@@ -293,11 +293,11 @@ func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 // evictPrefix drops every cached path starting with prefix, including the
 // forwarded-query variants ("path?...") of a single path.
 func (e *Engine) evictPrefix(ctx context.Context, remoteName, prefix string) error {
-	if err := e.db.DeleteArtifactsByPrefix(ctx, remoteName, prefix); err != nil {
-		return fmt.Errorf("delete artifacts: %w", err)
-	}
 	if err := e.cache.ForgetPrefix(ctx, remoteName, prefix); err != nil {
 		return err
+	}
+	if err := e.db.DeleteArtifactsByPrefix(ctx, remoteName, prefix); err != nil {
+		return fmt.Errorf("delete artifacts: %w", err)
 	}
 	if err := e.store.DeletePrefix(ctx, storage.IndexKey(remoteName, prefix)); err != nil {
 		return fmt.Errorf("delete indexes: %w", err)
@@ -591,7 +591,8 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	var unavailable *storage.StoreUnavailableError
 	if errors.As(err, &unavailable) {
 		slog.Warn("object store unavailable, serving blob uncached", "remote", remote.Name, "path", path, "error", err)
-		return &FetchResult{Reader: unavailable.Spool, ContentType: contentType, Size: unavailable.Size, Source: "remote"}, nil
+		reader := e.cacheSpoolLater(ctx, remote, path, unavailable, contentType, ttl, resp.Header.Get("ETag"))
+		return &FetchResult{Reader: reader, ContentType: contentType, Size: unavailable.Size, Source: "remote"}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store blob: %w", err)
@@ -683,8 +684,8 @@ func (e *Engine) streamUncached(ctx context.Context, remote models.Remote, path 
 	spool, err := os.CreateTemp("", "artifact-*")
 	if err != nil {
 		e.releasePending(key)
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("create temp file: %w", err)
+		slog.Warn("spool failed, not caching", "remote", remote.Name, "path", path, "error", err)
+		return plain, nil
 	}
 	etag := resp.Header.Get("ETag")
 	t := &teeSpool{src: resp.Body, spool: spool, hash: sha256.New(), want: resp.ContentLength}
@@ -693,27 +694,75 @@ func (e *Engine) streamUncached(ctx context.Context, remote models.Remote, path 
 		e.releasePending(key)
 	}
 	t.done = func(hash string, size int64) {
-		e.cacheLater(remote.Name, path, token, func(ctx context.Context) error {
-			res, err := e.cas.PutHashed(ctx, spool, hash, size, contentType)
-			if err != nil {
-				return err
-			}
-			if valid, err := e.cache.PendingValid(ctx, remote.Name, path, token); err != nil || !valid {
-				return err
-			}
-			e.recordBlob(ctx, remote, path, res, contentType, ttl, etag)
-			return nil
-		}, t.discard)
+		e.cacheLater(remote.Name, path, token, e.writeSpool(remote, path, token, spool, hash, size, contentType, ttl, etag), t.discard)
 	}
 	return &FetchResult{Reader: t, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
 }
 
-// claimPending reserves path for a single spool and write-behind, refusing when one is already
-// under way, every write-behind slot is busy or the engine is closed.
+// cacheSpoolLater hands a blob the store just refused to the write-behind once the client closes it,
+// or returns the spool unchanged when the path can't be claimed.
+func (e *Engine) cacheSpoolLater(ctx context.Context, remote models.Remote, path string, u *storage.StoreUnavailableError, contentType string, ttl time.Duration, etag string) io.ReadCloser {
+	key := remote.Name + "\x00" + path
+	if !e.claimPending(key) {
+		return u.Spool
+	}
+	token, err := e.cache.PendingToken(ctx, remote.Name, path, pendingTokenTTL)
+	if err != nil {
+		e.releasePending(key)
+		slog.Warn("pending token failed, not caching", "remote", remote.Name, "path", path, "error", err)
+		return u.Spool
+	}
+	return &onClose{ReadCloser: u.Spool, close: func() {
+		e.cacheLater(remote.Name, path, token, e.writeSpool(remote, path, token, u.Spool, u.Hash, u.Size, contentType, ttl, etag), func() { _ = u.Spool.Close() })
+	}}
+}
+
+type onClose struct {
+	io.ReadCloser
+	once  sync.Once
+	close func()
+}
+
+func (o *onClose) Close() error {
+	o.once.Do(o.close)
+	return nil
+}
+
+// writeSpool uploads a hashed spool and records it, undoing the record if path was evicted meanwhile.
+func (e *Engine) writeSpool(remote models.Remote, path, token string, spool io.ReadSeeker, hash string, size int64, contentType string, ttl time.Duration, etag string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		res, err := e.cas.PutHashed(ctx, spool, hash, size, contentType)
+		if err != nil {
+			return err
+		}
+		if valid, err := e.cache.PendingValid(ctx, remote.Name, path, token); err != nil || !valid {
+			return err
+		}
+		e.recordBlob(ctx, remote, path, res, contentType, ttl, etag)
+		valid, err := e.cache.PendingValid(ctx, remote.Name, path, token)
+		if err == nil && valid {
+			return nil
+		}
+		undo := context.WithoutCancel(ctx)
+		if derr := e.db.DeleteArtifact(undo, remote.Name, path); derr != nil {
+			slog.Warn("undo write-behind failed", "remote", remote.Name, "path", path, "error", derr)
+		}
+		_ = e.cache.ForgetPath(undo, remote.Name, path)
+		return err
+	}
+}
+
+// claimPending reserves path and a write-behind slot for a single spool, refusing when one is
+// already under way, every slot is busy or the engine is closed. releasePending returns both.
 func (e *Engine) claimPending(key string) bool {
 	e.pendingMu.Lock()
 	defer e.pendingMu.Unlock()
-	if _, ok := e.pending[key]; ok || e.base.Err() != nil || len(e.writeBehind) == cap(e.writeBehind) {
+	if _, ok := e.pending[key]; ok || e.base.Err() != nil {
+		return false
+	}
+	select {
+	case e.writeBehind <- struct{}{}:
+	default:
 		return false
 	}
 	e.pending[key] = struct{}{}
@@ -724,6 +773,7 @@ func (e *Engine) releasePending(key string) {
 	e.pendingMu.Lock()
 	delete(e.pending, key)
 	e.pendingMu.Unlock()
+	<-e.writeBehind
 }
 
 // teeSpool copies what the client reads into spool and hands a complete, intact copy to done,
@@ -780,37 +830,24 @@ func (t *teeSpool) discard() {
 
 // cacheLater runs write in the background, once the store is healthy, under the path's fetch lock,
 // for a path the caller claimed with claimPending. It skips a path evicted since token was issued
-// or cached meanwhile, and gives up on a full set of slots, a closed engine, a non-retriable error
-// or writeBehindBudget. cleanup always runs and the claim is always released.
+// or cached meanwhile, and gives up on a closed engine, a non-retriable error or writeBehindBudget.
+// cleanup always runs before the claim and its slot are released.
 func (e *Engine) cacheLater(remote, path, token string, write func(context.Context) error, cleanup func()) {
 	key := remote + "\x00" + path
 	e.pendingMu.Lock()
-	started := false
-	if e.base.Err() == nil {
-		select {
-		case e.writeBehind <- struct{}{}:
-			started = true
-			e.writeBehindWG.Add(1)
-		default:
-			slog.Warn("write-behind slots full, not caching", "remote", remote, "path", path)
-		}
-	}
-	if !started {
-		delete(e.pending, key)
+	started := e.base.Err() == nil
+	if started {
+		e.writeBehindWG.Add(1)
 	}
 	e.pendingMu.Unlock()
 	if !started {
 		cleanup()
+		e.releasePending(key)
 		return
 	}
 	go func() {
 		defer e.writeBehindWG.Done()
-		defer func() {
-			e.pendingMu.Lock()
-			delete(e.pending, key)
-			e.pendingMu.Unlock()
-			<-e.writeBehind
-		}()
+		defer e.releasePending(key)
 		defer cleanup()
 		ctx, cancel := context.WithTimeout(e.base, e.writeBehindBudget)
 		defer cancel()

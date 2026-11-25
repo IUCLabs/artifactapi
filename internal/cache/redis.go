@@ -144,9 +144,10 @@ func (r *Redis) FlushRemote(ctx context.Context, remote string) error {
 	return iter.Err()
 }
 
-var pendingScript = redis.NewScript(`local v = redis.call('get',KEYS[1]) if v then return v end redis.call('set',KEYS[1],ARGV[1],'PX',ARGV[2]) return ARGV[1]`)
+var pendingScript = redis.NewScript(`local v = redis.call('get',KEYS[1]) if v then redis.call('pexpire',KEYS[1],ARGV[2]) return v end redis.call('set',KEYS[1],ARGV[1],'PX',ARGV[2]) return ARGV[1]`)
 
-// PendingToken returns the token of path's pending write-behind, starting one if none is live.
+// PendingToken returns the token of path's pending write-behind, starting one if none is live
+// and extending its TTL either way.
 // Forgetting the path drops the token, so a write holding it can tell the path was evicted.
 func (r *Redis) PendingToken(ctx context.Context, remote, path string, ttl time.Duration) (string, error) {
 	key := fmt.Sprintf("pending:%s:%s", remote, path)

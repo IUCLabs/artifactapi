@@ -89,7 +89,7 @@ func TestMain(m *testing.M) {
 
 func mockUpstream(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/blob.bin":
+	case "/blob.bin", "/dir/blob.bin":
 		blobHits.Add(1)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write([]byte("immutable blob"))

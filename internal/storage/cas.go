@@ -34,7 +34,8 @@ var ErrStoreUnavailable = errors.New("object store unavailable")
 // those bytes and removes its temp file on Close.
 type StoreUnavailableError struct {
 	Err   error
-	Spool io.ReadCloser
+	Spool io.ReadSeekCloser
+	Hash  string
 	Size  int64
 }
 
@@ -85,9 +86,10 @@ func (c *CAS) StoreOrSpool(ctx context.Context, reader io.Reader, contentType st
 		return nil, fmt.Errorf("write temp file: %w", err)
 	}
 
-	res, err := c.PutHashed(ctx, tmp, hex.EncodeToString(hasher.Sum(nil)), size, contentType)
+	hash := hex.EncodeToString(hasher.Sum(nil))
+	res, err := c.PutHashed(ctx, tmp, hash, size, contentType)
 	if err != nil && !errors.Is(err, ErrSeek) {
-		return nil, storeFailure(ctx, err, spool, size)
+		return nil, storeFailure(ctx, err, spool, hash, size)
 	}
 	if err != nil {
 		return nil, err
@@ -125,14 +127,14 @@ func (c *CAS) PutHashed(ctx context.Context, src io.ReadSeeker, hash string, siz
 	}, nil
 }
 
-func storeFailure(ctx context.Context, err error, spool spoolFile, size int64) error {
+func storeFailure(ctx context.Context, err error, spool spoolFile, hash string, size int64) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("%w: %w", err, ctx.Err())
 	}
 	if _, serr := spool.Seek(0, io.SeekStart); serr != nil {
 		return fmt.Errorf("%w (seek temp file: %v)", err, serr)
 	}
-	return &StoreUnavailableError{Err: err, Spool: spool, Size: size}
+	return &StoreUnavailableError{Err: err, Spool: spool, Hash: hash, Size: size}
 }
 
 func BlobKey(hash string) string {

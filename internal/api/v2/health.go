@@ -39,5 +39,10 @@ func (h *HealthHandler) health(w http.ResponseWriter, r *http.Request) {
 		status["status"] = "degraded"
 	}
 
+	if !h.store.Healthy() {
+		status["s3"] = "error"
+		status["status"] = "degraded"
+	}
+
 	writeJSON(w, http.StatusOK, status)
 }

@@ -258,6 +258,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
 	go s.alpineSyncer.Run(ctx)
+	go s.store.RunHealthProbe(ctx, storage.ProbeInterval, storage.ProbeTimeout)
 
 	httpServer := s.newHTTPServer()
 
@@ -281,6 +282,7 @@ func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
 	go s.alpineSyncer.Run(ctx)
+	go s.store.RunHealthProbe(ctx, storage.ProbeInterval, storage.ProbeTimeout)
 
 	httpServer := s.newHTTPServer()
 

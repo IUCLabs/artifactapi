@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -51,19 +53,33 @@ type Engine struct {
 	inflight sync.Map
 	// evictLockWait bounds how long Evict waits on a held fetch lock.
 	evictLockWait time.Duration
+	// writeBehind bounds the caching of responses served while the store was unhealthy.
+	writeBehind       chan struct{}
+	writeBehindBudget time.Duration
+	writeBehindWG     sync.WaitGroup
 }
+
+const (
+	writeBehindSlots  = 4
+	writeBehindBudget = 30 * time.Second
+	writeBehindPoll   = 250 * time.Millisecond
+)
+
+var errStoreUnhealthy = errors.New("object store unhealthy")
 
 func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
 	e := &Engine{
 		db:        db,
 		cache:     c,
-		store:     s,
-		cas:       storage.NewCAS(s),
+		store:     s.RequestPath(),
 		circuit:   NewCircuitBreaker(c),
 		accessLog: make(chan database.AccessLogEntry, accessLogBufferSize),
 
-		evictLockWait: fetchLockTTL,
+		evictLockWait:     fetchLockTTL,
+		writeBehind:       make(chan struct{}, writeBehindSlots),
+		writeBehindBudget: writeBehindBudget,
 	}
+	e.cas = storage.NewCAS(e.store)
 	go e.runAccessLogWriter()
 	return e
 }
@@ -321,8 +337,10 @@ func (e *Engine) Head(ctx context.Context, remote models.Remote, path string, pr
 	if artifact, err := e.db.GetArtifact(ctx, remote.Name, path); err == nil && artifact != nil {
 		return &HeadResult{ContentType: artifact.ContentType, Size: artifact.SizeBytes, Source: "cache"}, nil
 	}
-	if info, err := e.store.Stat(ctx, storage.IndexKey(remote.Name, path)); err == nil {
-		return &HeadResult{ContentType: info.ContentType, Size: info.Size, Source: "cache"}, nil
+	if e.store.Healthy() {
+		if info, err := e.store.Stat(ctx, storage.IndexKey(remote.Name, path)); err == nil {
+			return &HeadResult{ContentType: info.ContentType, Size: info.Size, Source: "cache"}, nil
+		}
 	}
 
 	return e.headUpstream(ctx, remote, path, prov, class)
@@ -513,20 +531,21 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 			body = rewritten
 		}
 
-		s3Key := storage.IndexKey(remote.Name, path)
-		if err := e.store.Upload(ctx, s3Key, bytesReader(body), int64(len(body)), contentType); err != nil {
+		etag := resp.Header.Get("ETag")
+		uncached := &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}
+		if !e.store.Healthy() {
+			e.cacheLater(remote.Name, path, func(ctx context.Context) error {
+				return e.storeIndex(ctx, remote, path, body, contentType, ttl, etag)
+			}, func() {})
+			return uncached, nil
+		}
+		if err := e.storeIndex(ctx, remote, path, body, contentType, ttl, etag); err != nil {
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("upload index: %w", ctx.Err())
 			}
 			// Served uncached with no TTL, so the next request tries the store again.
 			slog.Warn("object store unavailable, serving index uncached", "remote", remote.Name, "path", path, "error", err)
-			return &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}, nil
-		}
-
-		_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
-		// A zero TTL never expires, so it never needs revalidating.
-		if remote.CheckMutable && ttl > 0 {
-			_ = e.cache.SetETag(ctx, remote.Name, path, resp.Header.Get("ETag"), etagTTL(ttl))
+			return uncached, nil
 		}
 
 		return &FetchResult{
@@ -540,6 +559,10 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	if err := e.checkQuarantine(ctx, remote, path, resp.Header); err != nil {
 		_ = resp.Body.Close()
 		return nil, err
+	}
+
+	if !e.store.Healthy() {
+		return e.streamUncached(remote, path, resp, contentType, ttl)
 	}
 
 	// Immutable blobs are streamed through the content-addressable store
@@ -556,14 +579,7 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 		return nil, fmt.Errorf("store blob: %w", err)
 	}
 
-	if err := e.db.UpsertBlob(ctx, casResult.ContentHash, casResult.S3Key, casResult.SizeBytes, contentType); err != nil {
-		slog.Warn("upsert blob failed", "error", err)
-	}
-	if err := e.db.UpsertArtifact(ctx, remote.Name, path, casResult.ContentHash, resp.Header.Get("ETag")); err != nil {
-		slog.Warn("upsert artifact failed", "error", err)
-	}
-
-	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
+	e.recordBlob(ctx, remote, path, casResult, contentType, ttl, resp.Header.Get("ETag"))
 
 	reader, info, err := e.store.Download(ctx, casResult.S3Key)
 	if err != nil {
@@ -587,7 +603,7 @@ func (e *Engine) waitForStore(ctx context.Context, remote models.Remote, path st
 		maxWait      = 5 * time.Second
 	)
 	deadline := time.Now().Add(maxWait)
-	for {
+	for e.store.Healthy() {
 		if result, err := e.serveFromStore(ctx, remote, path); err == nil {
 			return result
 		}
@@ -600,9 +616,144 @@ func (e *Engine) waitForStore(ctx context.Context, remote models.Remote, path st
 		case <-time.After(pollInterval):
 		}
 	}
+	return nil
+}
+
+func (e *Engine) storeIndex(ctx context.Context, remote models.Remote, path string, body []byte, contentType string, ttl time.Duration, etag string) error {
+	if err := e.store.Upload(ctx, storage.IndexKey(remote.Name, path), bytesReader(body), int64(len(body)), contentType); err != nil {
+		return err
+	}
+	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
+	// A zero TTL never expires, so it never needs revalidating.
+	if remote.CheckMutable && ttl > 0 {
+		_ = e.cache.SetETag(ctx, remote.Name, path, etag, etagTTL(ttl))
+	}
+	return nil
+}
+
+func (e *Engine) recordBlob(ctx context.Context, remote models.Remote, path string, res *storage.CASResult, contentType string, ttl time.Duration, etag string) {
+	if err := e.db.UpsertBlob(ctx, res.ContentHash, res.S3Key, res.SizeBytes, contentType); err != nil {
+		slog.Warn("upsert blob failed", "error", err)
+	}
+	if err := e.db.UpsertArtifact(ctx, remote.Name, path, res.ContentHash, etag); err != nil {
+		slog.Warn("upsert artifact failed", "error", err)
+	}
+	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
+}
+
+// streamUncached serves a blob straight from upstream while the store is unhealthy, spooling and
+// hashing it on the way so a complete download can be cached once the store is back.
+func (e *Engine) streamUncached(remote models.Remote, path string, resp *http.Response, contentType string, ttl time.Duration) (*FetchResult, error) {
+	slog.Warn("object store unhealthy, streaming blob uncached", "remote", remote.Name, "path", path)
+	spool, err := os.CreateTemp("", "artifact-*")
+	if err != nil {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("create temp file: %w", err)
+	}
+	etag := resp.Header.Get("ETag")
+	t := &teeSpool{src: resp.Body, spool: spool, hash: sha256.New(), want: resp.ContentLength}
+	t.done = func(hash string, size int64) {
+		e.cacheLater(remote.Name, path, func(ctx context.Context) error {
+			res, err := e.cas.PutHashed(ctx, spool, hash, size, contentType)
+			if err != nil {
+				return err
+			}
+			e.recordBlob(ctx, remote, path, res, contentType, ttl, etag)
+			return nil
+		}, t.discard)
+	}
+	return &FetchResult{Reader: t, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
+}
+
+// teeSpool copies what the client reads into spool and hands a complete, intact copy to done,
+// which then owns the spool. Anything else discards the spool on Close.
+type teeSpool struct {
+	src    io.ReadCloser
+	spool  *os.File
+	hash   hash.Hash
+	want   int64
+	n      int64
+	eof    bool
+	broken bool
+	closed bool
+	done   func(hash string, size int64)
+}
+
+func (t *teeSpool) Read(p []byte) (int, error) {
+	n, err := t.src.Read(p)
+	if n > 0 && !t.broken {
+		if _, werr := t.spool.Write(p[:n]); werr != nil {
+			t.broken = true
+		}
+		t.hash.Write(p[:n])
+		t.n += int64(n)
+	}
+	switch {
+	case err == io.EOF:
+		t.eof = true
+	case err != nil:
+		t.broken = true
+	}
+	return n, err
+}
+
+func (t *teeSpool) Close() error {
+	if t.closed {
+		return nil
+	}
+	t.closed = true
+	err := t.src.Close()
+	if t.eof && !t.broken && (t.want < 0 || t.n == t.want) {
+		t.done(hex.EncodeToString(t.hash.Sum(nil)), t.n)
+	} else {
+		t.discard()
+	}
+	return err
+}
+
+func (t *teeSpool) discard() {
+	_ = t.spool.Close()
+	_ = os.Remove(t.spool.Name())
+}
+
+// cacheLater runs write in the background, detached from the request, once the store is healthy.
+// It gives up after writeBehindBudget, and skips outright when every slot is busy. cleanup always runs.
+func (e *Engine) cacheLater(remote, path string, write func(context.Context) error, cleanup func()) {
+	select {
+	case e.writeBehind <- struct{}{}:
+	default:
+		slog.Warn("write-behind slots full, not caching", "remote", remote, "path", path)
+		cleanup()
+		return
+	}
+	e.writeBehindWG.Add(1)
+	go func() {
+		defer e.writeBehindWG.Done()
+		defer func() { <-e.writeBehind }()
+		defer cleanup()
+		ctx, cancel := context.WithTimeout(context.Background(), e.writeBehindBudget)
+		defer cancel()
+		err := errStoreUnhealthy
+		for {
+			if e.store.Healthy() {
+				if err = write(ctx); err == nil {
+					return
+				}
+			}
+			select {
+			case <-ctx.Done():
+				slog.Warn("write-behind dropped", "remote", remote, "path", path, "error", err)
+				return
+			case <-time.After(writeBehindPoll):
+			}
+		}
+	}()
 }
 
 func (e *Engine) serveFromStore(ctx context.Context, remote models.Remote, path string) (*FetchResult, error) {
+	if !e.store.Healthy() {
+		return nil, errStoreUnhealthy
+	}
 	artifact, err := e.db.GetArtifact(ctx, remote.Name, path)
 	if err == nil && artifact != nil {
 		s3Key := storage.BlobKey(artifact.ContentHash[len("sha256:"):])

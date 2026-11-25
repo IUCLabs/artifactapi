@@ -79,23 +79,30 @@ func (c *CAS) StoreOrSpool(ctx context.Context, reader io.Reader, contentType st
 		return nil, fmt.Errorf("write temp file: %w", err)
 	}
 
-	hash := hex.EncodeToString(hasher.Sum(nil))
-	s3Key := BlobKey(hash)
+	res, err := c.PutHashed(ctx, tmp, hex.EncodeToString(hasher.Sum(nil)), size, contentType)
+	if err != nil && !errors.Is(err, errSeek) {
+		return nil, storeFailure(ctx, err, spool, size)
+	}
+	return res, err
+}
 
+var errSeek = errors.New("seek temp file")
+
+// PutHashed stores src, already hashed to the hex sha256 hash, unless the blob exists.
+func (c *CAS) PutHashed(ctx context.Context, src io.ReadSeeker, hash string, size int64, contentType string) (*CASResult, error) {
+	s3Key := BlobKey(hash)
 	exists, err := c.s3.Exists(ctx, s3Key)
 	if err != nil {
-		return nil, storeFailure(ctx, "check blob exists", err, spool, size)
+		return nil, fmt.Errorf("check blob exists: %w", err)
 	}
-
 	if !exists {
-		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("seek temp file: %w", err)
+		if _, err := src.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("%w: %w", errSeek, err)
 		}
-		if err := c.s3.Upload(ctx, s3Key, tmp, size, contentType); err != nil {
-			return nil, storeFailure(ctx, "upload blob", err, spool, size)
+		if err := c.s3.Upload(ctx, s3Key, src, size, contentType); err != nil {
+			return nil, fmt.Errorf("upload blob: %w", err)
 		}
 	}
-
 	return &CASResult{
 		ContentHash:   fmt.Sprintf("sha256:%s", hash),
 		S3Key:         s3Key,
@@ -104,14 +111,14 @@ func (c *CAS) StoreOrSpool(ctx context.Context, reader io.Reader, contentType st
 	}, nil
 }
 
-func storeFailure(ctx context.Context, op string, err error, spool spoolFile, size int64) error {
+func storeFailure(ctx context.Context, err error, spool spoolFile, size int64) error {
 	if ctx.Err() != nil {
-		return fmt.Errorf("%s: %w", op, ctx.Err())
+		return fmt.Errorf("%w: %w", err, ctx.Err())
 	}
 	if _, serr := spool.Seek(0, io.SeekStart); serr != nil {
-		return fmt.Errorf("%s: %w (seek temp file: %v)", op, err, serr)
+		return fmt.Errorf("%w (seek temp file: %v)", err, serr)
 	}
-	return &StoreUnavailableError{Err: fmt.Errorf("%s: %w", op, err), Spool: spool, Size: size}
+	return &StoreUnavailableError{Err: err, Spool: spool, Size: size}
 }
 
 func BlobKey(hash string) string {

@@ -750,6 +750,8 @@ func TestStoreDownServesUncached(t *testing.T) {
 		t.Fatal(err)
 	}
 	eng := NewEngine(testDB, testCache, s3)
+	eng.writeBehindBudget = 100 * time.Millisecond
+	tmp := isolateTempDir(t)
 	term()
 
 	idx := seed(t, models.Remote{Name: "eng-down-npm", PackageType: models.PackageNPM, RepoType: models.RepoTypeRemote, BaseURL: upstream.URL})
@@ -773,20 +775,23 @@ func TestStoreDownServesUncached(t *testing.T) {
 	if n := blobHits.Load() - hits; n != 1 {
 		t.Errorf("upstream GETs for a store-down blob = %d, want 1", n)
 	}
-	spool := res.Reader.(interface{ Name() string }).Name()
 	if body := readAll(t, res); res.Source != "remote" || res.Size != int64(len("immutable blob")) || body != "immutable blob" {
 		t.Errorf("blob: source=%s size=%d body=%q", res.Source, res.Size, body)
 	}
-	if _, err := os.Stat(spool); !os.IsNotExist(err) {
-		t.Errorf("spool file %s survived Close: %v", spool, err)
-	}
+	eng.writeBehindWG.Wait()
+	assertEmptyDir(t, tmp)
 	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a != nil {
 		t.Error("an uncached blob must not get an artifact row")
 	}
 
-	if _, err = eng.Fetch(ctx, blob, "truncated.bin", prov(t, models.PackageGeneric)); err == nil || errors.Is(err, storage.ErrStoreUnavailable) {
-		t.Errorf("truncated upstream must fail as a source error, got %v", err)
+	if res, err = eng.Fetch(ctx, blob, "truncated.bin", prov(t, models.PackageGeneric)); err == nil {
+		if _, err = io.ReadAll(res.Reader); err == nil {
+			t.Error("truncated upstream must fail the read")
+		}
+		_ = res.Reader.Close()
 	}
+	eng.writeBehindWG.Wait()
+	assertEmptyDir(t, tmp)
 
 	q := quarantineRemote(t, "eng-down-quarantine", true)
 	_, err = eng.Fetch(ctx, q, "fresh.tgz", prov(t, models.PackageNPM))

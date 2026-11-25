@@ -301,18 +301,10 @@ func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 }
 
 func (s *Server) probeConfig() proxy.ProbeConfig {
-	cfg := proxy.DefaultProbeConfig()
-	if s.cfg.S3HealthUpThreshold > 0 {
-		cfg.UpThreshold = s.cfg.S3HealthUpThreshold
+	return proxy.ProbeConfig{
+		UpThreshold:   s.cfg.S3HealthUpThreshold,
+		DownThreshold: s.cfg.S3HealthDownThreshold,
+		Interval:      s.cfg.S3HealthInterval,
+		Timeout:       s.cfg.S3HealthTimeout,
 	}
-	if s.cfg.S3HealthDownThreshold > 0 {
-		cfg.DownThreshold = s.cfg.S3HealthDownThreshold
-	}
-	if s.cfg.S3HealthInterval > 0 {
-		cfg.Interval = s.cfg.S3HealthInterval
-	}
-	if s.cfg.S3HealthTimeout > 0 {
-		cfg.Timeout = s.cfg.S3HealthTimeout
-	}
-	return cfg
 }

@@ -80,6 +80,13 @@ func (s *S3) RequestPath() *S3 {
 	return &v
 }
 
+// Retrying returns a view of s whose Download head uses the retrying client with no deadline.
+func (s *S3) Retrying() *S3 {
+	v := *s
+	v.metaTimeout = 0
+	return &v
+}
+
 func (s *S3) metaClient() *minio.Client {
 	if s.metaTimeout > 0 {
 		return s.fast
@@ -110,7 +117,7 @@ func (s *S3) Download(ctx context.Context, key string) (io.ReadCloser, *minio.Ob
 	}
 
 	info, err := obj.Stat()
-	if err == nil && !stop() {
+	if !stop() && ctx.Err() == nil {
 		err = context.DeadlineExceeded
 	}
 	if err != nil {
@@ -135,13 +142,16 @@ func (c cancelOnClose) Close() error {
 func (s *S3) Exists(ctx context.Context, key string) (bool, error) {
 	_, err := s.Stat(ctx, key)
 	if err != nil {
-		resp := minio.ToErrorResponse(err)
-		if resp.Code == "NoSuchKey" {
+		if IsNoSuchKey(err) {
 			return false, nil
 		}
 		return false, err
 	}
 	return true, nil
+}
+
+func IsNoSuchKey(err error) bool {
+	return minio.ToErrorResponse(err).Code == "NoSuchKey"
 }
 
 func (s *S3) Delete(ctx context.Context, key string) error {

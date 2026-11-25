@@ -120,6 +120,9 @@ func Load() (*Config, error) {
 	if err != nil || healthTimeout <= 0 {
 		return nil, fmt.Errorf("invalid S3_HEALTH_TIMEOUT: must be a positive duration")
 	}
+	if healthTimeout >= healthInterval {
+		return nil, fmt.Errorf("invalid S3_HEALTH_TIMEOUT: must be shorter than S3_HEALTH_INTERVAL")
+	}
 
 	oidcIssuer := getenv("ARTIFACTAPI_OIDC_ISSUER", "")
 	var oidcAudiences []string

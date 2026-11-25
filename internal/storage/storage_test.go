@@ -271,3 +271,99 @@ func TestCASStoreOrSpoolSourceErrorIsNotStoreUnavailable(t *testing.T) {
 		t.Fatalf("want a plain source error, got %v", err)
 	}
 }
+
+// hungS3 is a request-path view of a store that never answers.
+func hungS3(t *testing.T, timeout time.Duration) *S3 {
+	t.Helper()
+	stop := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-stop:
+		}
+	}))
+	t.Cleanup(func() { close(stop); srv.Close() })
+	client, err := minio.New(strings.TrimPrefix(srv.URL, "http://"), &minio.Options{Region: "us-east-1", MaxRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &S3{client: client, fast: client, bucket: "bucket", metaTimeout: timeout}
+}
+
+func TestDownloadHeadDeadline(t *testing.T) {
+	const timeout = 200 * time.Millisecond
+	s := hungS3(t, timeout)
+
+	start := time.Now()
+	_, _, err := s.Download(context.Background(), "k")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("hung head: err = %v, want DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > timeout+time.Second {
+		t.Errorf("hung head took %s, want about %s", elapsed, timeout)
+	}
+
+	s.metaTimeout = 5 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, _, err = s.Download(ctx, "k")
+	if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() == nil {
+		t.Fatalf("caller deadline: err = %v", err)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	if _, _, err = s.Download(ctx, "k"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("caller cancel: err = %v, want Canceled", err)
+	}
+}
+
+func TestDownloadBodyOutlivesHeadDeadline(t *testing.T) {
+	requireS3(t)
+	ctx := context.Background()
+	key := "blobs/sha256/outlives-deadline"
+	content := bytes.Repeat([]byte("x"), 8<<20)
+	if err := testS3.Upload(ctx, key, bytes.NewReader(content), int64(len(content)), "application/octet-stream"); err != nil {
+		t.Fatal(err)
+	}
+	s := testS3.RequestPath()
+	s.metaTimeout = 100 * time.Millisecond
+	r, _, err := s.Download(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * s.metaTimeout)
+	got, err := io.ReadAll(r)
+	if err != nil || len(got) != len(content) {
+		t.Fatalf("body after the head deadline: %d bytes, %v", len(got), err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCancelOnCloseCancels(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = cancelOnClose{cancel: cancel}.Close()
+	if ctx.Err() == nil {
+		t.Error("Close must cancel the download context")
+	}
+}
+
+func TestProbe(t *testing.T) {
+	requireS3(t)
+	ctx := context.Background()
+	if err := testS3.Probe(ctx); err != nil {
+		t.Fatalf("probe on a live bucket: %v", err)
+	}
+	missing := *testS3
+	missing.bucket = "probe-missing-bucket"
+	if err := missing.Probe(ctx); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Errorf("probe on a missing bucket: %v", err)
+	}
+	pctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if err := hungS3(t, 0).Probe(pctx); err == nil {
+		t.Error("probe on a hung store must fail")
+	}
+}

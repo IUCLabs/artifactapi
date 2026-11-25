@@ -201,7 +201,7 @@ additive and idempotent for the same reason; a test enforces it.
 | `MINIO_SECURE` | `false` | Use HTTPS for S3 |
 | `MINIO_REGION` | | S3 region (AWS) |
 | `S3_HEALTH_INTERVAL` | `3s` | Object store health probe interval. The settled state is shared via Redis (`s3:health`, TTL 3× interval); while it is `down`, misses stream from upstream uncached |
-| `S3_HEALTH_TIMEOUT` | `1.5s` | Timeout of each health probe |
+| `S3_HEALTH_TIMEOUT` | `1.5s` | Timeout of each health probe; must be shorter than `S3_HEALTH_INTERVAL` |
 | `S3_HEALTH_UP_THRESHOLD` | `3` | Consecutive passing probes before the store is marked up |
 | `S3_HEALTH_DOWN_THRESHOLD` | `3` | Consecutive failing probes before the store is marked down |
 | `GITHUB_SYNC_RATE` | `1` | `github_rpm` syncer global GitHub request rate (req/s), shared across all remotes. `1`/s = 3600/hr, under an authenticated token's ~5000/hr; unauthenticated (~60/hr) relies on ETag/304 |

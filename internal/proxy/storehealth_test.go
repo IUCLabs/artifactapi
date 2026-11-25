@@ -113,7 +113,11 @@ func TestRunStoreProbe(t *testing.T) {
 		return <-results
 	}
 	cfg := ProbeConfig{UpThreshold: 2, DownThreshold: 2, Interval: 200 * time.Millisecond, Timeout: time.Second}
-	go RunStoreProbe(ctx, cfg, probe, testCache)
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, cfg, probe, testCache)
+		close(done)
+	}()
 	<-called
 
 	fail := errors.New("probe failed")
@@ -137,6 +141,11 @@ func TestRunStoreProbe(t *testing.T) {
 	step(nil, "up")
 	cancel()
 	results <- nil
+	select {
+	case <-done:
+	case <-time.After(cfg.Interval):
+		t.Fatal("RunStoreProbe did not return after cancel")
+	}
 }
 
 // faultyStore proxies a real MinIO, counting requests, and can hang or fail them.
@@ -144,6 +153,7 @@ type faultyStore struct {
 	mode     atomic.Int32
 	requests atomic.Int64
 	putDelay time.Duration
+	put      atomic.Bool
 }
 
 const (
@@ -151,6 +161,7 @@ const (
 	storeHang
 	storeFailPut
 	storeSlowPut
+	storeSlowHeadAfterPut
 )
 
 func newFaultyStore(t *testing.T, bucket string) (*faultyStore, *storage.S3) {
@@ -172,8 +183,12 @@ func newFaultyStore(t *testing.T, bucket string) (*faultyStore, *storage.S3) {
 			_, _ = io.Copy(io.Discard, r.Body)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
-		case mode == storeSlowPut && r.Method == http.MethodPut:
+		case mode == storeSlowPut && r.Method == http.MethodPut,
+			mode == storeSlowHeadAfterPut && r.Method == http.MethodHead && fs.put.Load():
 			time.Sleep(fs.putDelay)
+		}
+		if r.Method == http.MethodPut {
+			fs.put.Store(true)
 		}
 		rp.ServeHTTP(w, r)
 	}))
@@ -239,6 +254,43 @@ func TestStoreKeyDownStreamsWithoutStore(t *testing.T) {
 		t.Fatalf("head with key down: %v", err)
 	}
 
+	locked := seed(t, genericRemote("keydown-locked"))
+	token, err := testCache.AcquireLock(ctx, locked.Name, "blob.bin", time.Minute)
+	if err != nil || token == "" {
+		t.Fatalf("acquire lock: %q %v", token, err)
+	}
+	start := time.Now()
+	res, err = eng.Fetch(ctx, locked, "blob.bin", prov(t, models.PackageGeneric))
+	if err != nil {
+		t.Fatalf("fetch with the lock held elsewhere and key down: %v", err)
+	}
+	if body := readAll(t, res); res.Source != "remote" || body != "immutable blob" {
+		t.Errorf("locked: source=%s body=%q", res.Source, body)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("fetch with the lock held elsewhere took %s, want no store wait", elapsed)
+	}
+
+	open := seed(t, genericRemote("keydown-circuit"))
+	for i := 0; i < 6; i++ {
+		eng.circuit.RecordFailure(ctx, open.Name)
+	}
+	_, err = eng.Fetch(ctx, open, "blob.bin", prov(t, models.PackageGeneric))
+	var perr *ProxyError
+	if !errors.As(err, &perr) || perr.Status != http.StatusServiceUnavailable {
+		t.Errorf("circuit open with key down: err = %v, want 503", err)
+	}
+
+	dead := genericRemote("keydown-stale")
+	dead.BaseURL = "http://127.0.0.1:1"
+	dead = seed(t, dead)
+	if _, err := eng.Fetch(ctx, dead, "blob.bin", prov(t, models.PackageGeneric)); err == nil {
+		t.Error("stale_on_error with key down must fail on a dead upstream")
+	}
+	if fresh, _ := testCache.CheckTTL(ctx, dead.Name, "blob.bin"); fresh {
+		t.Error("stale_on_error with key down must not set a TTL")
+	}
+
 	if n := fs.requests.Load(); n != 0 {
 		t.Errorf("S3 requests with the key down = %d, want 0", n)
 	}
@@ -296,6 +348,72 @@ func TestHungStoreFailsFastWithKeyUp(t *testing.T) {
 	}
 }
 
+func TestHungStoreFreshHitFallsBack(t *testing.T) {
+	requireStack(t)
+	clearStoreHealth(t)
+	ctx := context.Background()
+	fs, s3 := newFaultyStore(t, "proxy-hung-fresh")
+	eng := NewEngine(testDB, testCache, s3)
+	setStoreUp(t, true)
+	p := prov(t, models.PackageGeneric)
+
+	blob := seed(t, genericRemote("hung-fresh"))
+	res, err := eng.Fetch(ctx, blob, "blob.bin", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = readAll(t, res)
+	if fresh, _ := testCache.CheckTTL(ctx, blob.Name, "blob.bin"); !fresh {
+		t.Fatal("first fetch must leave a fresh TTL")
+	}
+
+	fs.mode.Store(storeHang)
+	start := time.Now()
+	res, err = eng.Fetch(ctx, blob, "blob.bin", p)
+	if err != nil {
+		t.Fatalf("fresh hit on a hung store: %v", err)
+	}
+	if body := readAll(t, res); res.Source != "remote" || body != "immutable blob" {
+		t.Errorf("fresh hit on a hung store: source=%s body=%q", res.Source, body)
+	}
+	// one head deadline in serveFromStore, one in the CAS Exists
+	if elapsed := time.Since(start); elapsed > 2*storage.RequestTimeout+time.Second {
+		t.Errorf("fresh hit on a hung store took %s, want about %s", elapsed, 2*storage.RequestTimeout)
+	}
+	if val, _ := storeHealthKey(t); val != "up" {
+		t.Errorf("s3:health = %q after a request-path failure, want unchanged up", val)
+	}
+}
+
+func TestHungStoreHeadFallsBack(t *testing.T) {
+	requireStack(t)
+	clearStoreHealth(t)
+	ctx := context.Background()
+	fs, s3 := newFaultyStore(t, "proxy-hung-head")
+	eng := NewEngine(testDB, testCache, s3)
+	setStoreUp(t, true)
+	fs.mode.Store(storeHang)
+
+	blob := seed(t, genericRemote("hung-head"))
+	start := time.Now()
+	h, err := eng.Head(ctx, blob, "blob.bin", prov(t, models.PackageGeneric))
+	if err != nil {
+		t.Fatalf("head on a hung store: %v", err)
+	}
+	if h.Source != "remote" {
+		t.Errorf("head on a hung store: source=%s, want remote", h.Source)
+	}
+	if elapsed := time.Since(start); elapsed > storage.RequestTimeout+time.Second {
+		t.Errorf("head on a hung store took %s, want about %s", elapsed, storage.RequestTimeout)
+	}
+	if fs.requests.Load() == 0 {
+		t.Error("head with key up must try the store")
+	}
+	if val, _ := storeHealthKey(t); val != "up" {
+		t.Errorf("s3:health = %q after a request-path failure, want unchanged up", val)
+	}
+}
+
 func TestUploadOutcomeKeepsHealth(t *testing.T) {
 	requireStack(t)
 	clearStoreHealth(t)
@@ -314,6 +432,23 @@ func TestUploadOutcomeKeepsHealth(t *testing.T) {
 	_ = readAll(t, res)
 	if a, _ := testDB.GetArtifact(ctx, slow.Name, "blob.bin"); a == nil {
 		t.Error("an upload outlasting the request deadline must still cache")
+	}
+
+	fs.mode.Store(storeSlowHeadAfterPut)
+	fs.put.Store(false)
+	fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("slow head blob"))
+	}))
+	t.Cleanup(fresh.Close)
+	slowHeadRemote := genericRemote("upload-slow-head")
+	slowHeadRemote.BaseURL = fresh.URL
+	slowHead := seed(t, slowHeadRemote)
+	res, err = eng.Fetch(ctx, slowHead, "blob.bin", p)
+	if err != nil {
+		t.Fatalf("fetch with a slow head after upload: %v", err)
+	}
+	if body := readAll(t, res); body != "slow head blob" {
+		t.Errorf("body = %q", body)
 	}
 
 	fs.mode.Store(storeFailPut)

@@ -115,16 +115,20 @@ func TestLoadAuthUploads(t *testing.T) {
 }
 
 func TestLoadInvalidHealthProbe(t *testing.T) {
-	for k, v := range map[string]string{
-		"S3_HEALTH_UP_THRESHOLD":   "0",
-		"S3_HEALTH_DOWN_THRESHOLD": "x",
-		"S3_HEALTH_INTERVAL":       "3",
-		"S3_HEALTH_TIMEOUT":        "-1s",
+	for name, env := range map[string]map[string]string{
+		"up threshold":     {"S3_HEALTH_UP_THRESHOLD": "0"},
+		"down threshold":   {"S3_HEALTH_DOWN_THRESHOLD": "x"},
+		"interval":         {"S3_HEALTH_INTERVAL": "3"},
+		"timeout":          {"S3_HEALTH_TIMEOUT": "-1s"},
+		"timeout=interval": {"S3_HEALTH_INTERVAL": "2s", "S3_HEALTH_TIMEOUT": "2s"},
+		"timeout>interval": {"S3_HEALTH_INTERVAL": "1s", "S3_HEALTH_TIMEOUT": "3s"},
 	} {
-		t.Run(k, func(t *testing.T) {
-			t.Setenv(k, v)
+		t.Run(name, func(t *testing.T) {
+			for k, v := range env {
+				t.Setenv(k, v)
+			}
 			if _, err := Load(); err == nil {
-				t.Errorf("%s=%q must be rejected", k, v)
+				t.Errorf("%v must be rejected", env)
 			}
 		})
 	}

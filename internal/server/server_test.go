@@ -62,6 +62,11 @@ func TestMain(m *testing.M) {
 		S3AccessKey: minio.AccessKey,
 		S3SecretKey: minio.SecretKey,
 		S3Bucket:    "server-test",
+
+		S3HealthUpThreshold:   3,
+		S3HealthDownThreshold: 3,
+		S3HealthInterval:      3 * time.Second,
+		S3HealthTimeout:       1500 * time.Millisecond,
 	}
 
 	var srv *Server

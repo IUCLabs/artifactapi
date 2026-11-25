@@ -582,7 +582,7 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 
 	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
 
-	reader, info, err := e.store.Download(ctx, casResult.S3Key)
+	reader, info, err := e.store.Retrying().Download(ctx, casResult.S3Key)
 	if err != nil {
 		return nil, fmt.Errorf("serve stored blob: %w", err)
 	}
@@ -631,6 +631,9 @@ func (e *Engine) serveFromStore(ctx context.Context, remote models.Remote, path 
 				ContentType: info.ContentType,
 				Size:        info.Size,
 			}, nil
+		}
+		if !storage.IsNoSuchKey(err) {
+			return nil, fmt.Errorf("not in store: %w", err)
 		}
 	}
 

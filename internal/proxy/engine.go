@@ -515,7 +515,12 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 
 		s3Key := storage.IndexKey(remote.Name, path)
 		if err := e.store.Upload(ctx, s3Key, bytesReader(body), int64(len(body)), contentType); err != nil {
-			return nil, fmt.Errorf("upload index: %w", err)
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("upload index: %w", ctx.Err())
+			}
+			// Served uncached with no TTL, so the next request tries the store again.
+			slog.Warn("object store unavailable, serving index uncached", "remote", remote.Name, "path", path, "error", err)
+			return &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}, nil
 		}
 
 		_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
@@ -540,8 +545,13 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	// Immutable blobs are streamed through the content-addressable store
 	// (tempfile -> sha256 -> S3) so arbitrarily large artifacts never sit
 	// fully in memory. Immutable content is never rewritten in the proxy path.
-	casResult, err := e.cas.Store(ctx, resp.Body, contentType)
+	casResult, err := e.cas.StoreOrSpool(ctx, resp.Body, contentType)
 	_ = resp.Body.Close()
+	var unavailable *storage.StoreUnavailableError
+	if errors.As(err, &unavailable) {
+		slog.Warn("object store unavailable, serving blob uncached", "remote", remote.Name, "path", path, "error", err)
+		return &FetchResult{Reader: unavailable.Spool, ContentType: contentType, Size: unavailable.Size, Source: "remote"}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store blob: %w", err)
 	}

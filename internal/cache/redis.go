@@ -144,34 +144,15 @@ func (r *Redis) FlushRemote(ctx context.Context, remote string) error {
 	return iter.Err()
 }
 
-var pendingScript = redis.NewScript(`local v = redis.call('get',KEYS[1]) if v then redis.call('pexpire',KEYS[1],ARGV[2]) return v end redis.call('set',KEYS[1],ARGV[1],'PX',ARGV[2]) return ARGV[1]`)
-
-// PendingToken returns the token of path's pending write-behind, starting one if none is live
-// and extending its TTL either way.
-// Forgetting the path drops the token, so a write holding it can tell the path was evicted.
-func (r *Redis) PendingToken(ctx context.Context, remote, path string, ttl time.Duration) (string, error) {
-	key := fmt.Sprintf("pending:%s:%s", remote, path)
-	return pendingScript.Run(ctx, r.client, []string{key}, rand.Text(), ttl.Milliseconds()).Text()
-}
-
-// PendingValid reports whether token is still path's pending write-behind token.
-func (r *Redis) PendingValid(ctx context.Context, remote, path, token string) (bool, error) {
-	val, err := r.client.Get(ctx, fmt.Sprintf("pending:%s:%s", remote, path)).Result()
-	if err == redis.Nil {
-		return false, nil
-	}
-	return val == token, err
-}
-
-// ForgetPath drops the freshness, ETag and pending write-behind keys of one cached path.
+// ForgetPath drops the freshness and ETag keys of one cached path.
 func (r *Redis) ForgetPath(ctx context.Context, remote, path string) error {
-	return r.client.Del(ctx, fmt.Sprintf("ttl:%s:%s", remote, path), fmt.Sprintf("etag:%s:%s", remote, path), fmt.Sprintf("pending:%s:%s", remote, path)).Err()
+	return r.client.Del(ctx, fmt.Sprintf("ttl:%s:%s", remote, path), fmt.Sprintf("etag:%s:%s", remote, path)).Err()
 }
 
-// ForgetPrefix drops the freshness, ETag and pending write-behind keys of every cached path under prefix.
+// ForgetPrefix drops the freshness and ETag keys of every cached path under prefix.
 func (r *Redis) ForgetPrefix(ctx context.Context, remote, prefix string) error {
 	glob := globEscaper.Replace(remote + ":" + prefix)
-	for _, kind := range []string{"ttl:", "etag:", "pending:"} {
+	for _, kind := range []string{"ttl:", "etag:"} {
 		iter := r.client.Scan(ctx, 0, kind+glob+"*", 100).Iterator()
 		for iter.Next(ctx) {
 			if err := r.client.Del(ctx, iter.Val()).Err(); err != nil {
@@ -186,3 +167,20 @@ func (r *Redis) ForgetPrefix(ctx context.Context, remote, prefix string) error {
 }
 
 var globEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`, `]`, `\]`)
+
+const storeHealthKey = "s3:health"
+
+// SetStoreHealth records the object store state probed by this replica.
+func (r *Redis) SetStoreHealth(ctx context.Context, up bool, ttl time.Duration) error {
+	val := "down"
+	if up {
+		val = "up"
+	}
+	return r.client.Set(ctx, storeHealthKey, val, ttl).Err()
+}
+
+// StoreUp reports the probed object store state; a missing key or a Redis error counts as up.
+func (r *Redis) StoreUp(ctx context.Context) bool {
+	val, err := r.client.Get(ctx, storeHealthKey).Result()
+	return err != nil || val != "down"
+}

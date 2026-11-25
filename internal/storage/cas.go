@@ -23,8 +23,6 @@ type CASResult struct {
 	S3Key         string
 	SizeBytes     int64
 	AlreadyExists bool
-	// Spool, set only by StoreOrSpool, reads the stored bytes; the caller must Close it.
-	Spool io.ReadCloser
 }
 
 // ErrStoreUnavailable marks a failure on the object store side, as opposed to reading the source.
@@ -34,8 +32,7 @@ var ErrStoreUnavailable = errors.New("object store unavailable")
 // those bytes and removes its temp file on Close.
 type StoreUnavailableError struct {
 	Err   error
-	Spool io.ReadSeekCloser
-	Hash  string
+	Spool io.ReadCloser
 	Size  int64
 }
 
@@ -53,10 +50,6 @@ func (f spoolFile) Close() error {
 
 func (c *CAS) Store(ctx context.Context, reader io.Reader, contentType string) (*CASResult, error) {
 	res, err := c.StoreOrSpool(ctx, reader, contentType)
-	if res != nil {
-		_ = res.Spool.Close()
-		res.Spool = nil
-	}
 	var unavailable *StoreUnavailableError
 	if errors.As(err, &unavailable) {
 		_ = unavailable.Spool.Close()
@@ -65,8 +58,8 @@ func (c *CAS) Store(ctx context.Context, reader io.Reader, contentType string) (
 	return res, err
 }
 
-// StoreOrSpool is Store, except that the caller must Close the spooled copy it returns: the
-// result's Spool on success, or the *StoreUnavailableError's on an object store failure.
+// StoreOrSpool is Store, except that an object store failure returns a *StoreUnavailableError
+// whose Spool the caller must Close.
 func (c *CAS) StoreOrSpool(ctx context.Context, reader io.Reader, contentType string) (_ *CASResult, err error) {
 	tmp, err := os.CreateTemp("", "artifact-*")
 	if err != nil {
@@ -75,7 +68,7 @@ func (c *CAS) StoreOrSpool(ctx context.Context, reader io.Reader, contentType st
 	spool := spoolFile{tmp}
 	defer func() {
 		var unavailable *StoreUnavailableError
-		if err != nil && !errors.As(err, &unavailable) {
+		if !errors.As(err, &unavailable) {
 			_ = spool.Close()
 		}
 	}()
@@ -87,38 +80,22 @@ func (c *CAS) StoreOrSpool(ctx context.Context, reader io.Reader, contentType st
 	}
 
 	hash := hex.EncodeToString(hasher.Sum(nil))
-	res, err := c.PutHashed(ctx, tmp, hash, size, contentType)
-	if err != nil && !errors.Is(err, ErrSeek) {
-		return nil, storeFailure(ctx, err, spool, hash, size)
-	}
-	if err != nil {
-		return nil, err
-	}
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrSeek, err)
-	}
-	res.Spool = spool
-	return res, nil
-}
-
-// ErrSeek marks a failure to rewind the local copy, which no retry will fix.
-var ErrSeek = errors.New("seek temp file")
-
-// PutHashed stores src, already hashed to the hex sha256 hash, unless the blob exists.
-func (c *CAS) PutHashed(ctx context.Context, src io.ReadSeeker, hash string, size int64, contentType string) (*CASResult, error) {
 	s3Key := BlobKey(hash)
+
 	exists, err := c.s3.Exists(ctx, s3Key)
 	if err != nil {
-		return nil, fmt.Errorf("check blob exists: %w", err)
+		return nil, storeFailure(ctx, "check blob exists", err, spool, size)
 	}
+
 	if !exists {
-		if _, err := src.Seek(0, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrSeek, err)
+		if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seek temp file: %w", err)
 		}
-		if err := c.s3.Upload(ctx, s3Key, src, size, contentType); err != nil {
-			return nil, fmt.Errorf("upload blob: %w", err)
+		if err := c.s3.Upload(ctx, s3Key, tmp, size, contentType); err != nil {
+			return nil, storeFailure(ctx, "upload blob", err, spool, size)
 		}
 	}
+
 	return &CASResult{
 		ContentHash:   fmt.Sprintf("sha256:%s", hash),
 		S3Key:         s3Key,
@@ -127,14 +104,14 @@ func (c *CAS) PutHashed(ctx context.Context, src io.ReadSeeker, hash string, siz
 	}, nil
 }
 
-func storeFailure(ctx context.Context, err error, spool spoolFile, hash string, size int64) error {
+func storeFailure(ctx context.Context, op string, err error, spool spoolFile, size int64) error {
 	if ctx.Err() != nil {
-		return fmt.Errorf("%w: %w", err, ctx.Err())
+		return fmt.Errorf("%s: %w", op, ctx.Err())
 	}
 	if _, serr := spool.Seek(0, io.SeekStart); serr != nil {
-		return fmt.Errorf("%w (seek temp file: %v)", err, serr)
+		return fmt.Errorf("%s: %w (seek temp file: %v)", op, err, serr)
 	}
-	return &StoreUnavailableError{Err: err, Spool: spool, Hash: hash, Size: size}
+	return &StoreUnavailableError{Err: fmt.Errorf("%s: %w", op, err), Spool: spool, Size: size}
 }
 
 func BlobKey(hash string) string {

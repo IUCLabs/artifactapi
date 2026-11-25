@@ -660,3 +660,21 @@ func TestServerNotFound(t *testing.T) {
 		t.Errorf("expected 404 for unknown local repo, got %d", resp.StatusCode)
 	}
 }
+
+func TestHealthReportsStoreKey(t *testing.T) {
+	requireStack(t)
+	ctx := context.Background()
+	if err := testSrv.cache.SetStoreHealth(ctx, false, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = testSrv.cache.SetStoreHealth(ctx, true, time.Millisecond) }()
+	if _, b := req(t, "GET", "/api/v2/health", ""); !strings.Contains(string(b), `"s3":"error"`) || !strings.Contains(string(b), `"status":"degraded"`) {
+		t.Errorf("health with the store key down: %s", b)
+	}
+	if err := testSrv.cache.SetStoreHealth(ctx, true, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, b := req(t, "GET", "/api/v2/health", ""); !strings.Contains(string(b), `"s3":"ok"`) {
+		t.Errorf("health with the store key up: %s", b)
+	}
+}

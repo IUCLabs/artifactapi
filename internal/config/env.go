@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -25,6 +26,12 @@ type Config struct {
 	S3Bucket    string
 	S3Secure    bool
 	S3Region    string
+
+	// Object store health probe: the state flips after this many consecutive like results.
+	S3HealthUpThreshold   int
+	S3HealthDownThreshold int
+	S3HealthInterval      time.Duration
+	S3HealthTimeout       time.Duration
 
 	// Terraform provider registry signing. When TFSigningKeyPath points at a
 	// readable armored GPG private key, artifactapi serves local terraform
@@ -97,6 +104,23 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid GITHUB_SYNC_POLL_INTERVAL: %w", err)
 	}
 
+	healthUp, err := strconv.Atoi(getenv("S3_HEALTH_UP_THRESHOLD", "3"))
+	if err != nil || healthUp < 1 {
+		return nil, fmt.Errorf("invalid S3_HEALTH_UP_THRESHOLD: must be a positive integer")
+	}
+	healthDown, err := strconv.Atoi(getenv("S3_HEALTH_DOWN_THRESHOLD", "3"))
+	if err != nil || healthDown < 1 {
+		return nil, fmt.Errorf("invalid S3_HEALTH_DOWN_THRESHOLD: must be a positive integer")
+	}
+	healthInterval, err := time.ParseDuration(getenv("S3_HEALTH_INTERVAL", "3s"))
+	if err != nil || healthInterval <= 0 {
+		return nil, fmt.Errorf("invalid S3_HEALTH_INTERVAL: must be a positive duration")
+	}
+	healthTimeout, err := time.ParseDuration(getenv("S3_HEALTH_TIMEOUT", "1.5s"))
+	if err != nil || healthTimeout <= 0 {
+		return nil, fmt.Errorf("invalid S3_HEALTH_TIMEOUT: must be a positive duration")
+	}
+
 	oidcIssuer := getenv("ARTIFACTAPI_OIDC_ISSUER", "")
 	var oidcAudiences []string
 	for _, a := range strings.Split(getenv("ARTIFACTAPI_OIDC_AUDIENCE", ""), ",") {
@@ -133,6 +157,11 @@ func Load() (*Config, error) {
 		S3Bucket:    getenv("MINIO_BUCKET", "artifacts"),
 		S3Secure:    s3Secure,
 		S3Region:    getenv("MINIO_REGION", ""),
+
+		S3HealthUpThreshold:   healthUp,
+		S3HealthDownThreshold: healthDown,
+		S3HealthInterval:      healthInterval,
+		S3HealthTimeout:       healthTimeout,
 
 		TFSigningKeyPath:       getenv("TF_SIGNING_KEY_PATH", ""),
 		TFSigningKeyPassphrase: getenv("TF_SIGNING_KEY_PASSPHRASE", ""),

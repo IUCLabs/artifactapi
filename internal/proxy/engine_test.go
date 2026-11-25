@@ -30,6 +30,7 @@ var (
 	testRedis  string
 	upstream   *httptest.Server
 	blobHits   atomic.Int64
+	testMinio  testsupport.MinioConn
 )
 
 func TestMain(m *testing.M) {
@@ -70,6 +71,7 @@ func TestMain(m *testing.M) {
 	}
 
 	testCache = redis
+	testMinio = minio
 	testRedis = redisURL
 	testDB = db
 	testEngine = NewEngine(db, redis, s3)
@@ -89,7 +91,7 @@ func TestMain(m *testing.M) {
 
 func mockUpstream(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/blob.bin", "/dir/blob.bin":
+	case "/blob.bin":
 		blobHits.Add(1)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write([]byte("immutable blob"))
@@ -750,8 +752,6 @@ func TestStoreDownServesUncached(t *testing.T) {
 		t.Fatal(err)
 	}
 	eng := NewEngine(testDB, testCache, s3)
-	eng.writeBehindBudget = 100 * time.Millisecond
-	tmp := isolateTempDir(t)
 	term()
 
 	idx := seed(t, models.Remote{Name: "eng-down-npm", PackageType: models.PackageNPM, RepoType: models.RepoTypeRemote, BaseURL: upstream.URL})
@@ -775,25 +775,20 @@ func TestStoreDownServesUncached(t *testing.T) {
 	if n := blobHits.Load() - hits; n != 1 {
 		t.Errorf("upstream GETs for a store-down blob = %d, want 1", n)
 	}
+	spool := res.Reader.(interface{ Name() string }).Name()
 	if body := readAll(t, res); res.Source != "remote" || res.Size != int64(len("immutable blob")) || body != "immutable blob" {
 		t.Errorf("blob: source=%s size=%d body=%q", res.Source, res.Size, body)
 	}
-	eng.writeBehindWG.Wait()
-	assertEmptyDir(t, tmp)
+	if _, err := os.Stat(spool); !os.IsNotExist(err) {
+		t.Errorf("spool file %s survived Close: %v", spool, err)
+	}
 	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a != nil {
 		t.Error("an uncached blob must not get an artifact row")
 	}
 
-	res, err = eng.Fetch(ctx, blob, "truncated.bin", prov(t, models.PackageGeneric))
-	if err != nil {
-		t.Fatalf("truncated fetch with store down: %v", err)
+	if _, err = eng.Fetch(ctx, blob, "truncated.bin", prov(t, models.PackageGeneric)); err == nil || errors.Is(err, storage.ErrStoreUnavailable) {
+		t.Errorf("truncated upstream must fail as a source error, got %v", err)
 	}
-	if _, err = io.ReadAll(res.Reader); err == nil || errors.Is(err, storage.ErrStoreUnavailable) {
-		t.Errorf("truncated upstream must fail the read as a source error, got %v", err)
-	}
-	_ = res.Reader.Close()
-	eng.writeBehindWG.Wait()
-	assertEmptyDir(t, tmp)
 
 	q := quarantineRemote(t, "eng-down-quarantine", true)
 	_, err = eng.Fetch(ctx, q, "fresh.tgz", prov(t, models.PackageNPM))

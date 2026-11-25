@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
+	"github.com/redis/go-redis/v9"
 )
 
 var testRedis *Redis
@@ -253,51 +254,49 @@ func TestForgetPrefix(t *testing.T) {
 	}
 }
 
-func TestPendingToken(t *testing.T) {
+func TestStoreHealth(t *testing.T) {
 	requireRedis(t)
 	ctx := context.Background()
-	first, err := testRedis.PendingToken(ctx, "pt", "dir/a", time.Minute)
-	if err != nil || first == "" {
-		t.Fatalf("token=%q err=%v", first, err)
+	t.Cleanup(func() { _ = testRedis.client.Del(ctx, storeHealthKey).Err() })
+
+	if !testRedis.StoreUp(ctx) {
+		t.Error("a missing key must read as up")
 	}
-	if again, _ := testRedis.PendingToken(ctx, "pt", "dir/a", time.Minute); again != first {
-		t.Errorf("a live token must be shared: %q vs %q", again, first)
+	if err := testRedis.SetStoreHealth(ctx, false, time.Minute); err != nil {
+		t.Fatal(err)
 	}
-	if ok, err := testRedis.PendingValid(ctx, "pt", "dir/a", first); err != nil || !ok {
-		t.Fatalf("live token invalid: %v %v", ok, err)
+	if testRedis.StoreUp(ctx) {
+		t.Error("down must read as down")
+	}
+	if ttl := testRedis.client.PTTL(ctx, storeHealthKey).Val(); ttl <= 0 || ttl > time.Minute {
+		t.Errorf("health key TTL = %s, want (0, 1m]", ttl)
+	}
+	if err := testRedis.SetStoreHealth(ctx, true, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !testRedis.StoreUp(ctx) {
+		t.Error("up must read as up")
 	}
 
-	if err := testRedis.ForgetPath(ctx, "pt", "dir/a"); err != nil {
+	if err := testRedis.SetStoreHealth(ctx, false, 50*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := testRedis.PendingValid(ctx, "pt", "dir/a", first); ok {
-		t.Error("ForgetPath must drop the pending token")
-	}
-	next, _ := testRedis.PendingToken(ctx, "pt", "dir/a", time.Minute)
-	if next == first {
-		t.Error("a token issued after forgetting must differ")
-	}
-	if err := testRedis.ForgetPrefix(ctx, "pt", "dir/"); err != nil {
-		t.Fatal(err)
-	}
-	if ok, _ := testRedis.PendingValid(ctx, "pt", "dir/a", next); ok {
-		t.Error("ForgetPrefix must drop the pending token")
+	time.Sleep(100 * time.Millisecond)
+	if !testRedis.StoreUp(ctx) {
+		t.Error("an expired down key must read as up")
 	}
 }
 
-func TestPendingTokenReuseRefreshesTTL(t *testing.T) {
+func TestStoreUpOnRedisError(t *testing.T) {
 	requireRedis(t)
 	ctx := context.Background()
-	first, err := testRedis.PendingToken(ctx, "pt", "refresh", 300*time.Millisecond)
-	if err != nil {
+	if err := testRedis.SetStoreHealth(ctx, false, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(200 * time.Millisecond)
-	if again, _ := testRedis.PendingToken(ctx, "pt", "refresh", time.Minute); again != first {
-		t.Fatalf("a live token must be shared: %q vs %q", again, first)
-	}
-	time.Sleep(200 * time.Millisecond)
-	if ok, _ := testRedis.PendingValid(ctx, "pt", "refresh", first); !ok {
-		t.Error("reusing a token must extend its TTL")
+	t.Cleanup(func() { _ = testRedis.client.Del(ctx, storeHealthKey).Err() })
+	closed := &Redis{client: redis.NewClient(testRedis.client.Options())}
+	_ = closed.Close()
+	if !closed.StoreUp(ctx) {
+		t.Error("a Redis error must read as up")
 	}
 }

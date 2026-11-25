@@ -2,11 +2,9 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -16,18 +14,12 @@ import (
 type S3 struct {
 	client *minio.Client
 	bucket string
-	health *Health
-	// meta, when set, serves metadata calls; RequestPath sets it to fast, which has no client retries.
-	meta      *minio.Client
-	fast      *minio.Client
-	opTimeout time.Duration
+	// fast has no client retries; RequestPath routes metadata calls through it under metaTimeout.
+	fast        *minio.Client
+	metaTimeout time.Duration
 }
 
-const (
-	RequestTimeout = 2 * time.Second
-	ProbeInterval  = 3 * time.Second
-	ProbeTimeout   = 1500 * time.Millisecond
-)
+const RequestTimeout = 2 * time.Second
 
 func NewS3(endpoint, accessKey, secretKey, bucket string, secure bool, region string) (*S3, error) {
 	opts := &minio.Options{
@@ -42,6 +34,7 @@ func NewS3(endpoint, accessKey, secretKey, bucket string, secure bool, region st
 	if err != nil {
 		return nil, fmt.Errorf("create s3 client: %w", err)
 	}
+
 	fastOpts := *opts
 	fastOpts.MaxRetries = 1
 	fast, err := minio.New(endpoint, &fastOpts)
@@ -49,7 +42,7 @@ func NewS3(endpoint, accessKey, secretKey, bucket string, secure bool, region st
 		return nil, fmt.Errorf("create s3 client: %w", err)
 	}
 
-	s := &S3{client: client, bucket: bucket, health: &Health{}, fast: fast}
+	s := &S3{client: client, bucket: bucket, fast: fast}
 
 	if err := s.ensureBucket(context.Background()); err != nil {
 		return nil, err
@@ -72,87 +65,34 @@ func (s *S3) ensureBucket(ctx context.Context) error {
 	return nil
 }
 
-// RequestPath returns a view of s for latency-sensitive callers: metadata calls get one attempt
-// under a short deadline, uploads keep the retrying client. It shares s's health state.
-func (s *S3) RequestPath() *S3 {
-	v := *s
-	if v.fast != nil {
-		v.meta = v.fast
-	}
-	v.opTimeout = RequestTimeout
-	return &v
-}
-
-// Healthy reports the last known state of the object store.
-func (s *S3) Healthy() bool { return s.health.Healthy() }
-
-// RunHealthProbe checks the bucket every interval until ctx is done. A passing probe is the only
-// thing that marks the store healthy again.
-func (s *S3) RunHealthProbe(ctx context.Context, interval, timeout time.Duration) {
-	probe := s.fast
-	if probe == nil {
-		probe = s.client
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		pctx, cancel := context.WithTimeout(ctx, timeout)
-		exists, err := probe.BucketExists(pctx, s.bucket)
-		cancel()
-		if ctx.Err() != nil {
-			return
-		}
-		if err == nil && !exists {
-			err = fmt.Errorf("bucket %s missing", s.bucket)
-		}
-		s.health.set(err)
-	}
-}
-
-// observe marks the store unhealthy on a failure that isn't the caller's cancellation or a
-// definitive answer from a reachable store.
-func (s *S3) observe(parent context.Context, err error) error {
-	if err == nil || parent.Err() != nil {
-		return err
-	}
-	if code := minio.ToErrorResponse(err).StatusCode; code > 0 && code < http.StatusInternalServerError {
-		return err
-	}
-	s.health.set(err)
+func (s *S3) Upload(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
+	_, err := s.client.PutObject(ctx, s.bucket, key, reader, size, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
 	return err
 }
 
+// RequestPath returns a view of s whose Exists, Stat and Download head make one attempt under
+// RequestTimeout; uploads keep the retrying client.
+func (s *S3) RequestPath() *S3 {
+	v := *s
+	v.metaTimeout = RequestTimeout
+	return &v
+}
+
 func (s *S3) metaClient() *minio.Client {
-	if s.meta != nil {
-		return s.meta
+	if s.metaTimeout > 0 {
+		return s.fast
 	}
 	return s.client
 }
 
-func (s *S3) callCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	if s.opTimeout == 0 {
-		return ctx, func() {}
+// Probe checks that the bucket is reachable, with a single attempt.
+func (s *S3) Probe(ctx context.Context) error {
+	exists, err := s.fast.BucketExists(ctx, s.bucket)
+	if err == nil && !exists {
+		err = fmt.Errorf("bucket %s missing", s.bucket)
 	}
-	return context.WithTimeout(ctx, s.opTimeout)
-}
-
-// ErrUnhealthy refuses an upload while the store is unhealthy.
-var ErrUnhealthy = errors.New("object store unhealthy")
-
-// Upload starts only on a healthy store, then uses the retrying client with no deadline of its own.
-// Its outcome never changes the health state.
-func (s *S3) Upload(ctx context.Context, key string, reader io.Reader, size int64, contentType string) error {
-	if !s.Healthy() {
-		return ErrUnhealthy
-	}
-	_, err := s.client.PutObject(ctx, s.bucket, key, reader, size, minio.PutObjectOptions{
-		ContentType: contentType,
-	})
 	return err
 }
 
@@ -160,13 +100,13 @@ func (s *S3) Upload(ctx context.Context, key string, reader io.Reader, size int6
 func (s *S3) Download(ctx context.Context, key string) (io.ReadCloser, *minio.ObjectInfo, error) {
 	cctx, cancel := context.WithCancel(ctx)
 	stop := func() bool { return true }
-	if s.opTimeout > 0 {
-		stop = time.AfterFunc(s.opTimeout, cancel).Stop
+	if s.metaTimeout > 0 {
+		stop = time.AfterFunc(s.metaTimeout, cancel).Stop
 	}
 	obj, err := s.metaClient().GetObject(cctx, s.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		cancel()
-		return nil, nil, s.observe(ctx, err)
+		return nil, nil, err
 	}
 
 	info, err := obj.Stat()
@@ -176,7 +116,7 @@ func (s *S3) Download(ctx context.Context, key string) (io.ReadCloser, *minio.Ob
 	if err != nil {
 		_ = obj.Close()
 		cancel()
-		return nil, nil, s.observe(ctx, err)
+		return nil, nil, err
 	}
 
 	return cancelOnClose{obj, cancel}, &info, nil
@@ -205,17 +145,18 @@ func (s *S3) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 func (s *S3) Delete(ctx context.Context, key string) error {
-	cctx, cancel := s.callCtx(ctx)
-	defer cancel()
-	return s.observe(ctx, s.metaClient().RemoveObject(cctx, s.bucket, key, minio.RemoveObjectOptions{}))
+	return s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
 }
 
 func (s *S3) Stat(ctx context.Context, key string) (*minio.ObjectInfo, error) {
-	cctx, cancel := s.callCtx(ctx)
-	defer cancel()
-	info, err := s.metaClient().StatObject(cctx, s.bucket, key, minio.StatObjectOptions{})
+	if s.metaTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.metaTimeout)
+		defer cancel()
+	}
+	info, err := s.metaClient().StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
 	if err != nil {
-		return nil, s.observe(ctx, err)
+		return nil, err
 	}
 	return &info, nil
 }

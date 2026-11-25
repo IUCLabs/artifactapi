@@ -7,11 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -19,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/minio/minio-go/v7"
 
 	"github.com/IUCLabs/artifactapi/internal/cache"
 	"github.com/IUCLabs/artifactapi/internal/database"
@@ -54,51 +51,22 @@ type Engine struct {
 	inflight sync.Map
 	// evictLockWait bounds how long Evict waits on a held fetch lock.
 	evictLockWait time.Duration
-	// writeBehind bounds the caching of responses served while the store was unhealthy.
-	writeBehind       chan struct{}
-	writeBehindBudget time.Duration
-	writeBehindWG     sync.WaitGroup
-	pendingMu         sync.Mutex
-	pending           map[string]struct{}
-	base              context.Context
-	stop              context.CancelFunc
 }
 
-const (
-	writeBehindSlots  = 4
-	writeBehindBudget = 30 * time.Second
-	writeBehindPoll   = 250 * time.Millisecond
-	// pendingTokenTTL outlives the slowest uncached stream we still want to cache afterwards.
-	pendingTokenTTL = time.Hour
-)
-
-var errFetchLockHeld = errors.New("fetch lock held")
-
 func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
+	store := s.RequestPath()
 	e := &Engine{
 		db:        db,
 		cache:     c,
-		store:     s.RequestPath(),
+		store:     store,
+		cas:       storage.NewCAS(store),
 		circuit:   NewCircuitBreaker(c),
 		accessLog: make(chan database.AccessLogEntry, accessLogBufferSize),
 
-		evictLockWait:     fetchLockTTL,
-		writeBehind:       make(chan struct{}, writeBehindSlots),
-		writeBehindBudget: writeBehindBudget,
-		pending:           map[string]struct{}{},
+		evictLockWait: fetchLockTTL,
 	}
-	e.base, e.stop = context.WithCancel(context.Background())
-	e.cas = storage.NewCAS(e.store)
 	go e.runAccessLogWriter()
 	return e
-}
-
-// Close cancels pending write-behinds and waits for them to clean up their spools.
-func (e *Engine) Close() {
-	e.pendingMu.Lock()
-	e.stop()
-	e.pendingMu.Unlock()
-	e.writeBehindWG.Wait()
 }
 
 // runAccessLogWriter drains the access-log channel and writes rows in batches,
@@ -157,16 +125,17 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 		slog.Warn("redis check failed, treating as miss", "error", err)
 	}
 
-	if fresh {
+	// While the probe reports the store down, misses stream from upstream with no store calls.
+	up := e.cache.StoreUp(ctx)
+
+	if fresh && up {
 		result, err := e.serveFromStore(ctx, remote, path)
 		if err == nil {
 			result.Source = "cache"
 			e.logAccess(remote.Name, path, true, result.Size, 0)
 			return result, nil
 		}
-		if !errors.Is(err, storage.ErrUnhealthy) {
-			slog.Warn("cache hit but S3 miss, re-fetching", "remote", remote.Name, "path", path)
-		}
+		slog.Warn("cache hit but S3 miss, re-fetching", "remote", remote.Name, "path", path)
 	}
 
 	token, err := e.cache.AcquireLock(ctx, remote.Name, path, fetchLockTTL)
@@ -175,7 +144,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	}
 	locked := token != ""
 
-	if !locked {
+	if !locked && up {
 		// Another request holds the fetch lock. Poll the store until the leader
 		// populates it rather than immediately racing to fetch upstream too; a
 		// cold-cache stampede otherwise hits upstream once per waiter.
@@ -190,7 +159,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 		defer func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remote.Name, path, token) }()
 	}
 
-	if class == ClassMutable && remote.CheckMutable {
+	if up && class == ClassMutable && remote.CheckMutable {
 		etag, _ := e.cache.GetETag(ctx, remote.Name, path)
 		if etag != "" {
 			notModified, err := e.checkUpstream(ctx, remote, path, etag, prov)
@@ -216,6 +185,9 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	// stale from the store if we have it, otherwise fail fast rather than
 	// hammering a known-bad upstream.
 	if e.circuit.IsOpen(ctx, remote.Name) {
+		if !up {
+			return nil, &ProxyError{Status: http.StatusServiceUnavailable, Message: "upstream circuit open"}
+		}
 		if stale, serr := e.serveFromStore(ctx, remote, path); serr == nil {
 			slog.Warn("circuit open, serving stale", "remote", remote.Name, "path", path)
 			stale.Source = "cache"
@@ -226,13 +198,13 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	}
 
 	start := time.Now()
-	result, err := e.fetchFromUpstream(ctx, remote, path, prov, class, ttl, fwdHeaders)
+	result, err := e.fetchFromUpstream(ctx, remote, path, prov, class, ttl, fwdHeaders, up)
 	upstreamMS := int(time.Since(start).Milliseconds())
 	if err != nil {
 		if isNetworkError(err) {
 			e.circuit.RecordFailure(ctx, remote.Name)
 		}
-		if remote.StaleOnError && isNetworkError(err) {
+		if up && remote.StaleOnError && isNetworkError(err) {
 			_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
 			stale, serr := e.serveFromStore(ctx, remote, path)
 			if serr == nil {
@@ -273,11 +245,11 @@ func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 		if err := e.db.DeleteArtifact(ctx, remoteName, path); err != nil {
 			return fmt.Errorf("delete artifact: %w", err)
 		}
-		if err := e.cache.ForgetPath(ctx, remoteName, path); err != nil {
-			return err
-		}
 		if err := e.store.Delete(ctx, storage.IndexKey(remoteName, path)); err != nil {
 			return fmt.Errorf("delete index: %w", err)
+		}
+		if err := e.cache.ForgetPath(ctx, remoteName, path); err != nil {
+			return err
 		}
 		if strings.Contains(path, "?") {
 			return nil
@@ -293,16 +265,13 @@ func (e *Engine) Evict(ctx context.Context, remoteName, path string) error {
 // evictPrefix drops every cached path starting with prefix, including the
 // forwarded-query variants ("path?...") of a single path.
 func (e *Engine) evictPrefix(ctx context.Context, remoteName, prefix string) error {
-	if err := e.cache.ForgetPrefix(ctx, remoteName, prefix); err != nil {
-		return err
-	}
 	if err := e.db.DeleteArtifactsByPrefix(ctx, remoteName, prefix); err != nil {
 		return fmt.Errorf("delete artifacts: %w", err)
 	}
 	if err := e.store.DeletePrefix(ctx, storage.IndexKey(remoteName, prefix)); err != nil {
 		return fmt.Errorf("delete indexes: %w", err)
 	}
-	return nil
+	return e.cache.ForgetPrefix(ctx, remoteName, prefix)
 }
 
 // Lock takes the per-path Redis lock (the one Fetch holds) and returns its
@@ -359,7 +328,7 @@ func (e *Engine) Head(ctx context.Context, remote models.Remote, path string, pr
 	if artifact, err := e.db.GetArtifact(ctx, remote.Name, path); err == nil && artifact != nil {
 		return &HeadResult{ContentType: artifact.ContentType, Size: artifact.SizeBytes, Source: "cache"}, nil
 	}
-	if e.store.Healthy() {
+	if e.cache.StoreUp(ctx) {
 		if info, err := e.store.Stat(ctx, storage.IndexKey(remote.Name, path)); err == nil {
 			return &HeadResult{ContentType: info.ContentType, Size: info.Size, Source: "cache"}, nil
 		}
@@ -456,7 +425,7 @@ func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, pat
 // fetchFromUpstream fetches an artifact from upstream, load-balancing across the
 // remote's base URLs and failing over to the next mirror on a network error or
 // 5xx before returning an error.
-func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
+func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header, storeUp bool) (*FetchResult, error) {
 	order := e.baseURLAttemptOrder(remote)
 	if len(order) == 0 {
 		return nil, &ProxyError{Status: http.StatusBadGateway, Message: "no upstream base_url configured"}
@@ -464,7 +433,7 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 	var lastErr error
 	for i, url := range order {
 		ctr := e.beginAttempt(remote, url)
-		result, err := e.fetchFromUpstreamOnce(ctx, withBaseURL(remote, url), path, prov, class, ttl, clientHeaders)
+		result, err := e.fetchFromUpstreamOnce(ctx, withBaseURL(remote, url), path, prov, class, ttl, clientHeaders, storeUp)
 		endAttempt(ctr)
 		if err == nil {
 			return result, nil
@@ -479,7 +448,7 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 	return nil, lastErr
 }
 
-func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
+func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header, storeUp bool) (*FetchResult, error) {
 	url := prov.UpstreamURL(remote, path)
 
 	authHeaders, err := prov.AuthHeaders(ctx, remote)
@@ -553,17 +522,24 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 			body = rewritten
 		}
 
-		uncached := &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}
-		if !e.store.Healthy() {
-			return uncached, nil
+		if !storeUp {
+			return &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}, nil
 		}
-		if err := e.storeIndex(ctx, remote, path, body, contentType, ttl, resp.Header.Get("ETag")); err != nil {
+
+		s3Key := storage.IndexKey(remote.Name, path)
+		if err := e.store.Upload(ctx, s3Key, bytesReader(body), int64(len(body)), contentType); err != nil {
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("upload index: %w", ctx.Err())
 			}
 			// Served uncached with no TTL, so the next request tries the store again.
 			slog.Warn("object store unavailable, serving index uncached", "remote", remote.Name, "path", path, "error", err)
-			return uncached, nil
+			return &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}, nil
+		}
+
+		_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
+		// A zero TTL never expires, so it never needs revalidating.
+		if remote.CheckMutable && ttl > 0 {
+			_ = e.cache.SetETag(ctx, remote.Name, path, resp.Header.Get("ETag"), etagTTL(ttl))
 		}
 
 		return &FetchResult{
@@ -579,8 +555,8 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 		return nil, err
 	}
 
-	if !e.store.Healthy() {
-		return e.streamUncached(ctx, remote, path, resp, contentType, ttl)
+	if !storeUp {
+		return &FetchResult{Reader: resp.Body, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
 	}
 
 	// Immutable blobs are streamed through the content-addressable store
@@ -591,25 +567,25 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	var unavailable *storage.StoreUnavailableError
 	if errors.As(err, &unavailable) {
 		slog.Warn("object store unavailable, serving blob uncached", "remote", remote.Name, "path", path, "error", err)
-		reader := e.cacheSpoolLater(ctx, remote, path, unavailable, contentType, ttl, resp.Header.Get("ETag"))
-		return &FetchResult{Reader: reader, ContentType: contentType, Size: unavailable.Size, Source: "remote"}, nil
+		return &FetchResult{Reader: unavailable.Spool, ContentType: contentType, Size: unavailable.Size, Source: "remote"}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store blob: %w", err)
 	}
 
-	e.recordBlob(ctx, remote, path, casResult, contentType, ttl, resp.Header.Get("ETag"))
+	if err := e.db.UpsertBlob(ctx, casResult.ContentHash, casResult.S3Key, casResult.SizeBytes, contentType); err != nil {
+		slog.Warn("upsert blob failed", "error", err)
+	}
+	if err := e.db.UpsertArtifact(ctx, remote.Name, path, casResult.ContentHash, resp.Header.Get("ETag")); err != nil {
+		slog.Warn("upsert artifact failed", "error", err)
+	}
+
+	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
 
 	reader, info, err := e.store.Download(ctx, casResult.S3Key)
 	if err != nil {
-		if ctx.Err() != nil {
-			_ = casResult.Spool.Close()
-			return nil, fmt.Errorf("serve stored blob: %w", ctx.Err())
-		}
-		slog.Warn("stored blob unreadable, serving spooled copy", "remote", remote.Name, "path", path, "error", err)
-		return &FetchResult{Reader: casResult.Spool, ContentType: contentType, Size: casResult.SizeBytes, Source: "remote"}, nil
+		return nil, fmt.Errorf("serve stored blob: %w", err)
 	}
-	_ = casResult.Spool.Close()
 	return &FetchResult{
 		Reader:      reader,
 		ContentType: info.ContentType,
@@ -628,7 +604,7 @@ func (e *Engine) waitForStore(ctx context.Context, remote models.Remote, path st
 		maxWait      = 5 * time.Second
 	)
 	deadline := time.Now().Add(maxWait)
-	for e.store.Healthy() {
+	for {
 		if result, err := e.serveFromStore(ctx, remote, path); err == nil {
 			return result
 		}
@@ -641,292 +617,9 @@ func (e *Engine) waitForStore(ctx context.Context, remote models.Remote, path st
 		case <-time.After(pollInterval):
 		}
 	}
-	return nil
-}
-
-func (e *Engine) storeIndex(ctx context.Context, remote models.Remote, path string, body []byte, contentType string, ttl time.Duration, etag string) error {
-	if err := e.store.Upload(ctx, storage.IndexKey(remote.Name, path), bytesReader(body), int64(len(body)), contentType); err != nil {
-		return err
-	}
-	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
-	// A zero TTL never expires, so it never needs revalidating.
-	if remote.CheckMutable && ttl > 0 {
-		_ = e.cache.SetETag(ctx, remote.Name, path, etag, etagTTL(ttl))
-	}
-	return nil
-}
-
-func (e *Engine) recordBlob(ctx context.Context, remote models.Remote, path string, res *storage.CASResult, contentType string, ttl time.Duration, etag string) {
-	if err := e.db.UpsertBlob(ctx, res.ContentHash, res.S3Key, res.SizeBytes, contentType); err != nil {
-		slog.Warn("upsert blob failed", "error", err)
-	}
-	if err := e.db.UpsertArtifact(ctx, remote.Name, path, res.ContentHash, etag); err != nil {
-		slog.Warn("upsert artifact failed", "error", err)
-	}
-	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
-}
-
-// streamUncached serves a blob straight from upstream while the store is unhealthy, spooling and
-// hashing it on the way so a complete download can be cached once the store is back.
-func (e *Engine) streamUncached(ctx context.Context, remote models.Remote, path string, resp *http.Response, contentType string, ttl time.Duration) (*FetchResult, error) {
-	slog.Warn("object store unhealthy, streaming blob uncached", "remote", remote.Name, "path", path)
-	plain := &FetchResult{Reader: resp.Body, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}
-	key := remote.Name + "\x00" + path
-	if !e.claimPending(key) {
-		return plain, nil
-	}
-	token, err := e.cache.PendingToken(ctx, remote.Name, path, pendingTokenTTL)
-	if err != nil {
-		e.releasePending(key)
-		slog.Warn("pending token failed, not caching", "remote", remote.Name, "path", path, "error", err)
-		return plain, nil
-	}
-	spool, err := os.CreateTemp("", "artifact-*")
-	if err != nil {
-		e.releasePending(key)
-		slog.Warn("spool failed, not caching", "remote", remote.Name, "path", path, "error", err)
-		return plain, nil
-	}
-	etag := resp.Header.Get("ETag")
-	t := &teeSpool{src: resp.Body, spool: spool, hash: sha256.New(), want: resp.ContentLength}
-	t.fail = func() {
-		t.discard()
-		e.releasePending(key)
-	}
-	t.done = func(hash string, size int64) {
-		e.cacheLater(remote.Name, path, token, e.writeSpool(remote, path, token, spool, hash, size, contentType, ttl, etag), t.discard)
-	}
-	return &FetchResult{Reader: t, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
-}
-
-// cacheSpoolLater hands a blob the store just refused to the write-behind once the client closes it,
-// or returns the spool unchanged when the path can't be claimed.
-func (e *Engine) cacheSpoolLater(ctx context.Context, remote models.Remote, path string, u *storage.StoreUnavailableError, contentType string, ttl time.Duration, etag string) io.ReadCloser {
-	key := remote.Name + "\x00" + path
-	if !e.claimPending(key) {
-		return u.Spool
-	}
-	token, err := e.cache.PendingToken(ctx, remote.Name, path, pendingTokenTTL)
-	if err != nil {
-		e.releasePending(key)
-		slog.Warn("pending token failed, not caching", "remote", remote.Name, "path", path, "error", err)
-		return u.Spool
-	}
-	return &onClose{ReadCloser: u.Spool, close: func() {
-		e.cacheLater(remote.Name, path, token, e.writeSpool(remote, path, token, u.Spool, u.Hash, u.Size, contentType, ttl, etag), func() { _ = u.Spool.Close() })
-	}}
-}
-
-type onClose struct {
-	io.ReadCloser
-	once  sync.Once
-	close func()
-}
-
-func (o *onClose) Close() error {
-	o.once.Do(o.close)
-	return nil
-}
-
-// writeSpool uploads a hashed spool and records it, undoing the record if path was evicted meanwhile.
-func (e *Engine) writeSpool(remote models.Remote, path, token string, spool io.ReadSeeker, hash string, size int64, contentType string, ttl time.Duration, etag string) func(context.Context) error {
-	return func(ctx context.Context) error {
-		res, err := e.cas.PutHashed(ctx, spool, hash, size, contentType)
-		if err != nil {
-			return err
-		}
-		if valid, err := e.cache.PendingValid(ctx, remote.Name, path, token); err != nil || !valid {
-			return err
-		}
-		e.recordBlob(ctx, remote, path, res, contentType, ttl, etag)
-		valid, err := e.cache.PendingValid(ctx, remote.Name, path, token)
-		if err == nil && valid {
-			return nil
-		}
-		undo := context.WithoutCancel(ctx)
-		if derr := e.db.DeleteArtifact(undo, remote.Name, path); derr != nil {
-			slog.Warn("undo write-behind failed", "remote", remote.Name, "path", path, "error", derr)
-		}
-		_ = e.cache.ForgetPath(undo, remote.Name, path)
-		return err
-	}
-}
-
-// claimPending reserves path and a write-behind slot for a single spool, refusing when one is
-// already under way, every slot is busy or the engine is closed. releasePending returns both.
-func (e *Engine) claimPending(key string) bool {
-	e.pendingMu.Lock()
-	defer e.pendingMu.Unlock()
-	if _, ok := e.pending[key]; ok || e.base.Err() != nil {
-		return false
-	}
-	select {
-	case e.writeBehind <- struct{}{}:
-	default:
-		return false
-	}
-	e.pending[key] = struct{}{}
-	return true
-}
-
-func (e *Engine) releasePending(key string) {
-	e.pendingMu.Lock()
-	delete(e.pending, key)
-	e.pendingMu.Unlock()
-	<-e.writeBehind
-}
-
-// teeSpool copies what the client reads into spool and hands a complete, intact copy to done,
-// which then owns the spool. Anything else discards the spool on Close.
-type teeSpool struct {
-	src    io.ReadCloser
-	spool  *os.File
-	hash   hash.Hash
-	want   int64
-	n      int64
-	eof    bool
-	broken bool
-	closed bool
-	done   func(hash string, size int64)
-	fail   func()
-}
-
-func (t *teeSpool) Read(p []byte) (int, error) {
-	n, err := t.src.Read(p)
-	if n > 0 && !t.broken {
-		if _, werr := t.spool.Write(p[:n]); werr != nil {
-			t.broken = true
-		}
-		t.hash.Write(p[:n])
-		t.n += int64(n)
-	}
-	switch {
-	case err == io.EOF:
-		t.eof = true
-	case err != nil:
-		t.broken = true
-	}
-	return n, err
-}
-
-func (t *teeSpool) Close() error {
-	if t.closed {
-		return nil
-	}
-	t.closed = true
-	err := t.src.Close()
-	if t.eof && !t.broken && (t.want < 0 || t.n == t.want) {
-		t.done(hex.EncodeToString(t.hash.Sum(nil)), t.n)
-	} else {
-		t.fail()
-	}
-	return err
-}
-
-func (t *teeSpool) discard() {
-	_ = t.spool.Close()
-	_ = os.Remove(t.spool.Name())
-}
-
-// cacheLater runs write in the background, once the store is healthy, under the path's fetch lock,
-// for a path the caller claimed with claimPending. It skips a path evicted since token was issued
-// or cached meanwhile, and gives up on a closed engine, a non-retriable error or writeBehindBudget.
-// cleanup always runs before the claim and its slot are released.
-func (e *Engine) cacheLater(remote, path, token string, write func(context.Context) error, cleanup func()) {
-	key := remote + "\x00" + path
-	e.pendingMu.Lock()
-	started := e.base.Err() == nil
-	if started {
-		e.writeBehindWG.Add(1)
-	}
-	e.pendingMu.Unlock()
-	if !started {
-		cleanup()
-		e.releasePending(key)
-		return
-	}
-	go func() {
-		defer e.writeBehindWG.Done()
-		defer e.releasePending(key)
-		defer cleanup()
-		ctx, cancel := context.WithTimeout(e.base, e.writeBehindBudget)
-		defer cancel()
-		err := storage.ErrUnhealthy
-		for {
-			if e.store.Healthy() {
-				var done bool
-				if done, err = e.writeBehindOnce(ctx, remote, path, token, write); done {
-					return
-				}
-				if !retriable(err) {
-					slog.Warn("write-behind failed", "remote", remote, "path", path, "error", err)
-					return
-				}
-			}
-			select {
-			case <-ctx.Done():
-				slog.Warn("write-behind dropped", "remote", remote, "path", path, "error", err)
-				return
-			case <-time.After(writeBehindPoll):
-			}
-		}
-	}()
-}
-
-// writeBehindOnce reports done once the path needs no further attempt: written, evicted or cached.
-func (e *Engine) writeBehindOnce(ctx context.Context, remote, path, token string, write func(context.Context) error) (bool, error) {
-	ttl := fetchLockTTL
-	if deadline, ok := ctx.Deadline(); ok {
-		ttl = time.Until(deadline)
-	}
-	if ttl <= 0 {
-		return false, context.DeadlineExceeded
-	}
-	lock, err := e.cache.AcquireLock(ctx, remote, path, ttl)
-	if lock == "" {
-		if err == nil {
-			err = errFetchLockHeld
-		}
-		return false, err
-	}
-	defer func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remote, path, lock) }()
-	valid, err := e.cache.PendingValid(ctx, remote, path, token)
-	if err != nil {
-		return false, err
-	}
-	if !valid {
-		slog.Info("write-behind skipped, path evicted", "remote", remote, "path", path)
-		return true, nil
-	}
-	fresh, err := e.cache.CheckTTL(ctx, remote, path)
-	if err != nil {
-		return false, err
-	}
-	if fresh {
-		return true, nil
-	}
-	if err := write(ctx); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-// retriable reports whether a later write-behind attempt might succeed where err failed.
-func retriable(err error) bool {
-	if errors.Is(err, storage.ErrSeek) {
-		return false
-	}
-	var resp minio.ErrorResponse
-	if errors.As(err, &resp) && resp.StatusCode > 0 && resp.StatusCode < http.StatusInternalServerError {
-		return false
-	}
-	return true
 }
 
 func (e *Engine) serveFromStore(ctx context.Context, remote models.Remote, path string) (*FetchResult, error) {
-	if !e.store.Healthy() {
-		return nil, storage.ErrUnhealthy
-	}
 	artifact, err := e.db.GetArtifact(ctx, remote.Name, path)
 	if err == nil && artifact != nil {
 		s3Key := storage.BlobKey(artifact.ContentHash[len("sha256:"):])

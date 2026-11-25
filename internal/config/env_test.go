@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -11,6 +12,7 @@ func TestLoadDefaults(t *testing.T) {
 		"LISTEN_ADDR", "DBHOST", "DBPORT", "DBUSER", "DBPASS", "DBNAME", "DBSSL",
 		"REDIS_URL", "MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY",
 		"MINIO_BUCKET", "MINIO_SECURE", "MINIO_REGION",
+		"S3_HEALTH_UP_THRESHOLD", "S3_HEALTH_DOWN_THRESHOLD", "S3_HEALTH_INTERVAL", "S3_HEALTH_TIMEOUT",
 	} {
 		old, ok := os.LookupEnv(k)
 		_ = os.Unsetenv(k)
@@ -25,6 +27,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ListenAddr != ":8000" || cfg.DBPort != 5432 || cfg.DBUser != "artifacts" {
 		t.Errorf("unexpected defaults: %+v", cfg)
+	}
+	if cfg.S3HealthUpThreshold != 3 || cfg.S3HealthDownThreshold != 3 || cfg.S3HealthInterval != 3*time.Second || cfg.S3HealthTimeout != 1500*time.Millisecond {
+		t.Errorf("unexpected health probe defaults: %+v", cfg)
 	}
 	if cfg.RedisURL != "redis://localhost:6379" || cfg.S3Bucket != "artifacts" || cfg.S3Secure {
 		t.Errorf("unexpected defaults: %+v", cfg)
@@ -41,6 +46,10 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("DBSSL", "require")
 	t.Setenv("MINIO_SECURE", "true")
 	t.Setenv("MINIO_REGION", "us-east-1")
+	t.Setenv("S3_HEALTH_UP_THRESHOLD", "5")
+	t.Setenv("S3_HEALTH_DOWN_THRESHOLD", "2")
+	t.Setenv("S3_HEALTH_INTERVAL", "500ms")
+	t.Setenv("S3_HEALTH_TIMEOUT", "250ms")
 
 	cfg, err := Load()
 	if err != nil {
@@ -48,6 +57,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.ListenAddr != ":9999" || cfg.DBHost != "db.example.com" || cfg.DBPort != 6000 {
 		t.Errorf("overrides not applied: %+v", cfg)
+	}
+	if cfg.S3HealthUpThreshold != 5 || cfg.S3HealthDownThreshold != 2 || cfg.S3HealthInterval != 500*time.Millisecond || cfg.S3HealthTimeout != 250*time.Millisecond {
+		t.Errorf("health probe overrides not applied: %+v", cfg)
 	}
 	if !cfg.S3Secure {
 		t.Error("MINIO_SECURE=true not parsed")
@@ -99,5 +111,21 @@ func TestLoadAuthUploads(t *testing.T) {
 	t.Setenv("ARTIFACTAPI_AUTH_UPLOADS", "maybe")
 	if _, err := Load(); err == nil {
 		t.Error("expected error for invalid ARTIFACTAPI_AUTH_UPLOADS")
+	}
+}
+
+func TestLoadInvalidHealthProbe(t *testing.T) {
+	for k, v := range map[string]string{
+		"S3_HEALTH_UP_THRESHOLD":   "0",
+		"S3_HEALTH_DOWN_THRESHOLD": "x",
+		"S3_HEALTH_INTERVAL":       "3",
+		"S3_HEALTH_TIMEOUT":        "-1s",
+	} {
+		t.Run(k, func(t *testing.T) {
+			t.Setenv(k, v)
+			if _, err := Load(); err == nil {
+				t.Errorf("%s=%q must be rejected", k, v)
+			}
+		})
 	}
 }

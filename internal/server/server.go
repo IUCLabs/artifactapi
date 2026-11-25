@@ -258,17 +258,22 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
 	go s.alpineSyncer.Run(ctx)
-	go s.store.RunHealthProbe(ctx, storage.ProbeInterval, storage.ProbeTimeout)
+	go proxy.RunStoreProbe(ctx, s.probeConfig(), s.store.Probe, s.cache)
 
 	httpServer := s.newHTTPServer()
 
-	stopped := s.shutdownOnDone(ctx, httpServer)
+	go func() {
+		<-ctx.Done()
+		slog.Info("shutting down server")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+	}()
 
 	slog.Info("starting server", "addr", s.cfg.ListenAddr)
 	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	<-stopped
 	return nil
 }
 
@@ -277,32 +282,37 @@ func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
 	go s.alpineSyncer.Run(ctx)
-	go s.store.RunHealthProbe(ctx, storage.ProbeInterval, storage.ProbeTimeout)
+	go proxy.RunStoreProbe(ctx, s.probeConfig(), s.store.Probe, s.cache)
 
 	httpServer := s.newHTTPServer()
 
-	stopped := s.shutdownOnDone(ctx, httpServer)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+	}()
 
 	slog.Info("starting server", "addr", ln.Addr().String())
 	if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
-	<-stopped
 	return nil
 }
 
-// shutdownOnDone drains httpServer and then the engine's write-behinds once ctx ends, closing the
-// returned channel when both are done.
-func (s *Server) shutdownOnDone(ctx context.Context, httpServer *http.Server) <-chan struct{} {
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		<-ctx.Done()
-		slog.Info("shutting down server")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = httpServer.Shutdown(shutdownCtx)
-		s.engine.Close()
-	}()
-	return stopped
+func (s *Server) probeConfig() proxy.ProbeConfig {
+	cfg := proxy.DefaultProbeConfig()
+	if s.cfg.S3HealthUpThreshold > 0 {
+		cfg.UpThreshold = s.cfg.S3HealthUpThreshold
+	}
+	if s.cfg.S3HealthDownThreshold > 0 {
+		cfg.DownThreshold = s.cfg.S3HealthDownThreshold
+	}
+	if s.cfg.S3HealthInterval > 0 {
+		cfg.Interval = s.cfg.S3HealthInterval
+	}
+	if s.cfg.S3HealthTimeout > 0 {
+		cfg.Timeout = s.cfg.S3HealthTimeout
+	}
+	return cfg
 }

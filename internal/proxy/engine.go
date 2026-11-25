@@ -439,9 +439,7 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 	return nil, lastErr
 }
 
-// openUpstream issues the authenticated upstream GET for path (retrying once with a bearer token on a
-// 401) and returns the 200 response; any other status is a ProxyError.
-func (e *Engine) openUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider, clientHeaders http.Header) (*http.Response, error) {
+func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
 	url := prov.UpstreamURL(remote, path)
 
 	authHeaders, err := prov.AuthHeaders(ctx, remote)
@@ -493,29 +491,6 @@ func (e *Engine) openUpstream(ctx context.Context, remote models.Remote, path st
 		_ = resp.Body.Close()
 		return nil, &ProxyError{Status: resp.StatusCode, Message: fmt.Sprintf("upstream returned %d", resp.StatusCode)}
 	}
-	return resp, nil
-}
-
-// passThrough serves path straight from upstream without caching it: the fallback when the object
-// store can't take a write, so a store outage degrades the cache instead of failing every miss (the
-// store's own images being pulled through this cache is the case that otherwise deadlocks).
-func (e *Engine) passThrough(ctx context.Context, remote models.Remote, path string, prov provider.Provider, clientHeaders http.Header) (*FetchResult, error) {
-	resp, err := e.openUpstream(ctx, remote, path, prov, clientHeaders)
-	if err != nil {
-		return nil, err
-	}
-	contentType := prov.ContentType(path)
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		contentType = ct
-	}
-	return &FetchResult{Reader: resp.Body, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
-}
-
-func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
-	resp, err := e.openUpstream(ctx, remote, path, prov, clientHeaders)
-	if err != nil {
-		return nil, err
-	}
 
 	contentType := prov.ContentType(path)
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -540,7 +515,10 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 
 		s3Key := storage.IndexKey(remote.Name, path)
 		if err := e.store.Upload(ctx, s3Key, bytesReader(body), int64(len(body)), contentType); err != nil {
-			// Serve it uncached (no TTL, so the next request tries the store again).
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("upload index: %w", ctx.Err())
+			}
+			// Served uncached with no TTL, so the next request tries the store again.
 			slog.Warn("object store unavailable, serving index uncached", "remote", remote.Name, "path", path, "error", err)
 			return &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}, nil
 		}
@@ -567,11 +545,12 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 	// Immutable blobs are streamed through the content-addressable store
 	// (tempfile -> sha256 -> S3) so arbitrarily large artifacts never sit
 	// fully in memory. Immutable content is never rewritten in the proxy path.
-	casResult, err := e.cas.Store(ctx, resp.Body, contentType)
+	casResult, err := e.cas.StoreOrSpool(ctx, resp.Body, contentType)
 	_ = resp.Body.Close()
-	if errors.Is(err, storage.ErrStoreUnavailable) {
-		slog.Warn("object store unavailable, passing blob through uncached", "remote", remote.Name, "path", path, "error", err)
-		return e.passThrough(ctx, remote, path, prov, clientHeaders)
+	var unavailable *storage.StoreUnavailableError
+	if errors.As(err, &unavailable) {
+		slog.Warn("object store unavailable, serving blob uncached", "remote", remote.Name, "path", path, "error", err)
+		return &FetchResult{Reader: unavailable.Spool, ContentType: contentType, Size: unavailable.Size, Source: "remote"}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store blob: %w", err)

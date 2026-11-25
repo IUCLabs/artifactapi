@@ -3,12 +3,14 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -183,5 +185,70 @@ func TestDeletePrefixReturnsListError(t *testing.T) {
 	err = s.DeletePrefix(context.Background(), "indexes/r/")
 	if err == nil {
 		t.Fatal("DeletePrefix on a failing list returned nil")
+	}
+}
+
+// downS3 reports every key missing and rejects every write, so Store reaches the upload and fails there.
+func downS3(t *testing.T) *S3 {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	client, err := minio.New(strings.TrimPrefix(srv.URL, "http://"), &minio.Options{Region: "us-east-1", MaxRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &S3{client: client, bucket: "bucket"}
+}
+
+func TestCASStoreOrSpoolStoreDown(t *testing.T) {
+	content := "hashed before the store failed"
+	_, err := NewCAS(downS3(t)).StoreOrSpool(context.Background(), strings.NewReader(content), "text/plain")
+	var unavailable *StoreUnavailableError
+	if !errors.As(err, &unavailable) || !errors.Is(err, ErrStoreUnavailable) {
+		t.Fatalf("want StoreUnavailableError, got %v", err)
+	}
+	if unavailable.Size != int64(len(content)) {
+		t.Errorf("size = %d, want %d", unavailable.Size, len(content))
+	}
+	got, _ := io.ReadAll(unavailable.Spool)
+	if string(got) != content {
+		t.Errorf("spool = %q, want %q", got, content)
+	}
+	name := unavailable.Spool.(interface{ Name() string }).Name()
+	if err := unavailable.Spool.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(name); !os.IsNotExist(err) {
+		t.Errorf("spool file %s survived Close: %v", name, err)
+	}
+}
+
+func TestCASStoreDownReturnsSentinelWithoutSpool(t *testing.T) {
+	_, err := NewCAS(downS3(t)).Store(context.Background(), strings.NewReader("x"), "text/plain")
+	if !errors.Is(err, ErrStoreUnavailable) {
+		t.Fatalf("want ErrStoreUnavailable, got %v", err)
+	}
+}
+
+func TestCASStoreOrSpoolCancelledIsNotStoreUnavailable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := NewCAS(downS3(t)).StoreOrSpool(ctx, strings.NewReader("x"), "text/plain")
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrStoreUnavailable) {
+		t.Fatalf("want a plain context.Canceled, got %v", err)
+	}
+}
+
+func TestCASStoreOrSpoolSourceErrorIsNotStoreUnavailable(t *testing.T) {
+	src := io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(io.ErrUnexpectedEOF))
+	_, err := NewCAS(downS3(t)).StoreOrSpool(context.Background(), src, "text/plain")
+	if !errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrStoreUnavailable) {
+		t.Fatalf("want a plain source error, got %v", err)
 	}
 }

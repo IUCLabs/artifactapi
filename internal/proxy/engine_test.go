@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -89,6 +90,9 @@ func mockUpstream(w http.ResponseWriter, r *http.Request) {
 	case "/blob.bin":
 		w.Header().Set("Content-Type", "application/octet-stream")
 		_, _ = w.Write([]byte("immutable blob"))
+	case "/truncated.bin": // declares more bytes than it sends
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte("short"))
 	case "/pkg": // npm metadata: mutable, supports revalidation
 		if r.Method == http.MethodHead && r.Header.Get("If-None-Match") == `"v1"` {
 			w.WriteHeader(http.StatusNotModified)
@@ -723,9 +727,9 @@ func asProxyError(err error, target **ProxyError) bool {
 	return ok
 }
 
-// A dead object store degrades the cache to a pass-through instead of failing every miss: an index is
-// served from the buffered upstream body and a blob is re-fetched and streamed, neither cached.
-func TestStoreDownPassesThrough(t *testing.T) {
+// A dead object store degrades the cache to serving uncached: an index from the buffered body, a
+// blob from the hashed spool. Neither is cached, and source failures and quarantine still apply.
+func TestStoreDownServesUncached(t *testing.T) {
 	requireStack(t)
 	ctx := context.Background()
 	minio, term, err := testsupport.StartMinio(ctx)
@@ -743,15 +747,15 @@ func TestStoreDownPassesThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	eng := NewEngine(testDB, testCache, s3)
-	term() // the store goes away
+	term()
 
 	idx := seed(t, models.Remote{Name: "eng-down-npm", PackageType: models.PackageNPM, RepoType: models.RepoTypeRemote, BaseURL: upstream.URL})
 	res, err := eng.Fetch(ctx, idx, "pkg", prov(t, models.PackageNPM))
 	if err != nil {
 		t.Fatalf("index fetch with store down: %v", err)
 	}
-	if body := readAll(t, res); res.Source != "remote" || !strings.Contains(body, `"name":"pkg"`) {
-		t.Errorf("index: source=%s body=%q", res.Source, body)
+	if body := readAll(t, res); res.Source != "remote" || res.Size != int64(len(body)) || !strings.Contains(body, `"name":"pkg"`) {
+		t.Errorf("index: source=%s size=%d body=%q", res.Source, res.Size, body)
 	}
 	if fresh, _ := testCache.CheckTTL(ctx, idx.Name, "pkg"); fresh {
 		t.Error("an uncached index must not be marked fresh")
@@ -762,10 +766,22 @@ func TestStoreDownPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("blob fetch with store down: %v", err)
 	}
-	if body := readAll(t, res); res.Source != "remote" || body != "immutable blob" {
-		t.Errorf("blob: source=%s body=%q", res.Source, body)
+	spool := res.Reader.(interface{ Name() string }).Name()
+	if body := readAll(t, res); res.Source != "remote" || res.Size != int64(len("immutable blob")) || body != "immutable blob" {
+		t.Errorf("blob: source=%s size=%d body=%q", res.Source, res.Size, body)
+	}
+	if _, err := os.Stat(spool); !os.IsNotExist(err) {
+		t.Errorf("spool file %s survived Close: %v", spool, err)
 	}
 	if a, _ := testDB.GetArtifact(ctx, blob.Name, "blob.bin"); a != nil {
 		t.Error("an uncached blob must not get an artifact row")
 	}
+
+	if _, err = eng.Fetch(ctx, blob, "truncated.bin", prov(t, models.PackageGeneric)); err == nil || errors.Is(err, storage.ErrStoreUnavailable) {
+		t.Errorf("truncated upstream must fail as a source error, got %v", err)
+	}
+
+	q := quarantineRemote(t, "eng-down-quarantine", true)
+	_, err = eng.Fetch(ctx, q, "fresh.tgz", prov(t, models.PackageNPM))
+	_ = wantQuarantined(t, err)
 }

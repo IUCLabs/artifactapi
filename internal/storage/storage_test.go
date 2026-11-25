@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -365,5 +366,37 @@ func TestProbe(t *testing.T) {
 	defer cancel()
 	if err := hungS3(t, 0).Probe(pctx); err == nil {
 		t.Error("probe on a hung store must fail")
+	}
+}
+
+func TestRequestPathMakesOneAttempt(t *testing.T) {
+	var keyRequests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bucket" || r.URL.Path == "/bucket/" {
+			return
+		}
+		keyRequests.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	s3, err := NewS3(strings.TrimPrefix(srv.URL, "http://"), "key", "secret", "bucket", false, "us-east-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := s3.RequestPath()
+
+	ops := map[string]func() error{
+		"Stat":     func() error { _, err := s.Stat(context.Background(), "k"); return err },
+		"Exists":   func() error { _, err := s.Exists(context.Background(), "k"); return err },
+		"Download": func() error { _, _, err := s.Download(context.Background(), "k"); return err },
+	}
+	for name, op := range ops {
+		keyRequests.Store(0)
+		if err := op(); err == nil {
+			t.Errorf("%s on a 5xx store: want an error", name)
+		}
+		if n := keyRequests.Load(); n != 1 {
+			t.Errorf("%s on a 5xx store made %d requests, want 1", name, n)
+		}
 	}
 }

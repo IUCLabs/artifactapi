@@ -16,10 +16,6 @@ type ProbeConfig struct {
 	Timeout       time.Duration
 }
 
-func DefaultProbeConfig() ProbeConfig {
-	return ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}
-}
-
 // hysteresis settles on up or down only after a threshold of consecutive like results.
 type hysteresis struct {
 	cfg       ProbeConfig

@@ -27,7 +27,7 @@ func TestHysteresis(t *testing.T) {
 		}
 	}
 
-	h := &hysteresis{cfg: DefaultProbeConfig()}
+	h := &hysteresis{cfg: ProbeConfig{UpThreshold: 3, DownThreshold: 3}}
 	steps(h, nil, nil)
 	if h.known {
 		t.Fatal("state settled before the up threshold")
@@ -106,13 +106,16 @@ func TestRunStoreProbe(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	cfg := ProbeConfig{UpThreshold: 2, DownThreshold: 2, Interval: 200 * time.Millisecond, Timeout: 100 * time.Millisecond}
 	called := make(chan struct{})
 	results := make(chan error)
-	probe := func(context.Context) error {
+	probe := func(pctx context.Context) error {
+		if dl, ok := pctx.Deadline(); !ok || time.Until(dl) > cfg.Timeout {
+			t.Errorf("probe deadline = %v (set %v), want within %s", dl, ok, cfg.Timeout)
+		}
 		called <- struct{}{}
 		return <-results
 	}
-	cfg := ProbeConfig{UpThreshold: 2, DownThreshold: 2, Interval: 200 * time.Millisecond, Timeout: time.Second}
 	done := make(chan struct{})
 	go func() {
 		RunStoreProbe(ctx, cfg, probe, testCache)
@@ -237,6 +240,21 @@ func TestStoreKeyDownStreamsWithoutStore(t *testing.T) {
 		t.Errorf("an index served with the key down must get no ETag, got %q", etag)
 	}
 
+	tagged := seed(t, models.Remote{Name: "keydown-npm-etag", PackageType: models.PackageNPM, RepoType: models.RepoTypeRemote, BaseURL: upstream.URL, CheckMutable: true})
+	if err := testCache.SetETag(ctx, tagged.Name, "pkg", `"v1"`, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	res, err = eng.Fetch(ctx, tagged, "pkg", prov(t, models.PackageNPM))
+	if err != nil {
+		t.Fatalf("index fetch with an ETag and key down: %v", err)
+	}
+	if body := readAll(t, res); res.Source != "remote" || !strings.Contains(body, `"name":"pkg"`) {
+		t.Errorf("index with an ETag: source=%s body=%q, want served from upstream", res.Source, body)
+	}
+	if n := fs.requests.Load(); n != 0 {
+		t.Errorf("S3 requests for an index with an ETag and key down = %d, want 0", n)
+	}
+
 	blob := seed(t, genericRemote("keydown-blob"))
 	_ = testCache.SetTTL(ctx, blob.Name, "blob.bin", time.Minute)
 	res, err = eng.Fetch(ctx, blob, "blob.bin", prov(t, models.PackageGeneric))
@@ -291,11 +309,6 @@ func TestStoreKeyDownStreamsWithoutStore(t *testing.T) {
 		t.Error("stale_on_error with key down must not set a TTL")
 	}
 
-	if n := fs.requests.Load(); n != 0 {
-		t.Errorf("S3 requests with the key down = %d, want 0", n)
-	}
-	assertEmptyDir(t, tmp)
-
 	q := quarantineRemote(t, "keydown-quarantine", true)
 	_, err = eng.Fetch(ctx, q, "fresh.tgz", prov(t, models.PackageNPM))
 	_ = wantQuarantined(t, err)
@@ -305,6 +318,11 @@ func TestStoreKeyDownStreamsWithoutStore(t *testing.T) {
 	if _, err := eng.Fetch(cctx, blob, "blob.bin", prov(t, models.PackageGeneric)); err == nil {
 		t.Error("a cancelled request must fail with the key down")
 	}
+
+	if n := fs.requests.Load(); n != 0 {
+		t.Errorf("S3 requests with the key down = %d, want 0", n)
+	}
+	assertEmptyDir(t, tmp)
 
 	setStoreUp(t, true)
 	_ = testCache.ForgetPath(ctx, blob.Name, "blob.bin")

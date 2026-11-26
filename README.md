@@ -147,15 +147,16 @@ GET/DELETE      /api/v2/remotes/{name}/objects  Browse / evict cached objects
 GET             /api/v2/stats                Overview stats
 GET             /api/v2/health               Service health
 POST            /api/v2/probe                Test a remote (fetch without streaming to client)
-GET/PUT/DELETE  /api/v2/settings             Read effective / replace / reset runtime settings
+GET/PUT/PATCH/DELETE /api/v2/settings        Read / replace / merge / reset global settings
 GET             /api/v2/events               SSE event stream
 ```
 
-`/api/v2/settings` holds `s3_health_up_threshold`, `s3_health_down_threshold`,
-`s3_health_interval_ms` and `s3_health_timeout_ms`. `PUT` replaces every
-override (an omitted or `null` field falls back to its `S3_HEALTH_*` env
-default), `DELETE` clears them, and `GET` returns the effective values. Each
-replica's probe re-reads them every tick.
+`/api/v2/settings` is a singleton of global settings, each a nullable override
+of an env default: `s3_health_up_threshold`, `s3_health_down_threshold`,
+`s3_health_interval_ms` and `s3_health_timeout_ms` (`S3_HEALTH_*`). `PUT`
+replaces every override (an omitted or `null` field reverts to its default),
+`PATCH` sets only the fields given, `DELETE` clears all, and every response
+carries the effective values. The S3 health probe re-reads them every tick.
 
 ## Architecture
 
@@ -220,7 +221,7 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
-| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` and `PUT`/`DELETE /api/v2/settings` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
+| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` and `PUT`/`PATCH`/`DELETE /api/v2/settings` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
 | `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
 | `ARTIFACTAPI_AUTH_UPLOADS` | `false` | Also require a token for every local repo write: file uploads/deletes, object evictions, `/api/v1/local` publishes and `/v2` push. Requires `ARTIFACTAPI_OIDC_ISSUER` |
 

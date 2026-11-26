@@ -37,7 +37,7 @@ func (f *fakeSettings) ResetSettings(context.Context) error {
 	return nil
 }
 
-var settingsDefaults = proxy.ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}
+var settingsDefaults = proxy.ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}.Settings()
 
 type settingsBody struct {
 	Up       int `json:"s3_health_up_threshold"`
@@ -90,6 +90,31 @@ func TestSettingsPut(t *testing.T) {
 	}
 }
 
+func TestSettingsPatchKeepsUnsetFields(t *testing.T) {
+	store := &fakeSettings{}
+	if code, _ := settingsCall(t, store, "PUT", `{"s3_health_up_threshold":1}`); code != 200 {
+		t.Fatalf("put: %d", code)
+	}
+	code, got := settingsCall(t, store, "PATCH", `{"s3_health_down_threshold":6}`)
+	if code != 200 || got != (settingsBody{1, 6, 3000, 1500}) {
+		t.Fatalf("patch: %d %+v", code, got)
+	}
+	if store.s.S3HealthUpThreshold == nil || *store.s.S3HealthUpThreshold != 1 || store.s.S3HealthIntervalMs != nil {
+		t.Errorf("patch must keep stored overrides and leave defaults unset: %+v", store.s)
+	}
+}
+
+func TestSettingsPatchValidatesMergedResult(t *testing.T) {
+	timeout := 2500
+	store := &fakeSettings{s: models.Settings{S3HealthTimeoutMs: &timeout}}
+	if code, _ := settingsCall(t, store, "PATCH", `{"s3_health_interval_ms":2000}`); code != 400 {
+		t.Fatalf("patch making interval <= stored timeout: %d, want 400", code)
+	}
+	if store.put != 0 {
+		t.Error("an invalid patch reached the store")
+	}
+}
+
 func TestSettingsPutRejectsInvalid(t *testing.T) {
 	for name, body := range map[string]string{
 		"zero up threshold":          `{"s3_health_up_threshold":0}`,
@@ -121,7 +146,7 @@ func TestSettingsDeleteResets(t *testing.T) {
 
 func TestSettingsStoreErrors(t *testing.T) {
 	store := &fakeSettings{err: errors.New("db down")}
-	for _, m := range []string{"GET", "PUT", "DELETE"} {
+	for _, m := range []string{"GET", "PUT", "PATCH", "DELETE"} {
 		if code, _ := settingsCall(t, store, m, `{}`); code != 500 {
 			t.Errorf("%s with store error = %d, want 500", m, code)
 		}

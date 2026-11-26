@@ -192,7 +192,7 @@ func (s *Server) routes() chi.Router {
 	statsHandler := v2.NewStatsHandler(s.db)
 	eventsHandler := v2.NewEventsHandler()
 	probeHandler := v2.NewProbeHandler(s.engine, s.db)
-	settingsHandler := v2.NewSettingsHandler(s.db, s.probeConfig())
+	settingsHandler := v2.NewSettingsHandler(s.db, s.probeConfig().Settings())
 
 	r.Route("/api/v2", func(r chi.Router) {
 		r.Mount("/remotes", writeAuth.RequireWrites(remotesHandler.Routes()))

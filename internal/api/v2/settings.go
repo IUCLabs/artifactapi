@@ -7,24 +7,24 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/IUCLabs/artifactapi/internal/proxy"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
-// SettingsStore persists the settings overrides. *database.DB satisfies it.
+// SettingsStore persists the global settings overrides. *database.DB satisfies it.
 type SettingsStore interface {
 	GetSettings(ctx context.Context) (models.Settings, error)
 	PutSettings(ctx context.Context, s models.Settings) error
 	ResetSettings(ctx context.Context) error
 }
 
-// SettingsHandler serves the singleton runtime settings; reads return effective values.
+// SettingsHandler serves the singleton global settings; responses carry effective values.
 type SettingsHandler struct {
 	store    SettingsStore
-	defaults proxy.ProbeConfig
+	defaults models.Settings
 }
 
-func NewSettingsHandler(store SettingsStore, defaults proxy.ProbeConfig) *SettingsHandler {
+// NewSettingsHandler takes the env defaults with every field set.
+func NewSettingsHandler(store SettingsStore, defaults models.Settings) *SettingsHandler {
 	return &SettingsHandler{store: store, defaults: defaults}
 }
 
@@ -32,6 +32,7 @@ func (h *SettingsHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.get)
 	r.Put("/", h.put)
+	r.Patch("/", h.patch)
 	r.Delete("/", h.reset)
 	return r
 }
@@ -42,7 +43,7 @@ func (h *SettingsHandler) get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, h.defaults.Apply(s).Settings())
+	writeJSON(w, http.StatusOK, h.defaults.Overlay(s))
 }
 
 // put replaces every override; an omitted or null field reverts to its env default.
@@ -52,11 +53,26 @@ func (h *SettingsHandler) put(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	if err := s.Validate(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	h.save(w, r, s)
+}
+
+// patch overrides only the fields set in the body, keeping the rest.
+func (h *SettingsHandler) patch(w http.ResponseWriter, r *http.Request) {
+	var body models.Settings
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	effective := h.defaults.Apply(s)
+	stored, err := h.store.GetSettings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.save(w, r, stored.Overlay(body))
+}
+
+func (h *SettingsHandler) save(w http.ResponseWriter, r *http.Request, s models.Settings) {
+	effective := h.defaults.Overlay(s)
 	if err := effective.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -65,7 +81,7 @@ func (h *SettingsHandler) put(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, effective.Settings())
+	writeJSON(w, http.StatusOK, effective)
 }
 
 func (h *SettingsHandler) reset(w http.ResponseWriter, r *http.Request) {

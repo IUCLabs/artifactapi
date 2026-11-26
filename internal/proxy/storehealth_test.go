@@ -118,7 +118,7 @@ func TestRunStoreProbe(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		RunStoreProbe(ctx, cfg, probe, testCache)
+		RunStoreProbe(ctx, cfg, nil, probe, testCache)
 		close(done)
 	}()
 	<-called
@@ -490,5 +490,124 @@ func TestUploadOutcomeKeepsHealth(t *testing.T) {
 
 	if val, _ := storeHealthKey(t); val != "up" {
 		t.Errorf("s3:health = %q after upload outcomes, want unchanged up", val)
+	}
+}
+
+func intp(v int) *int { return &v }
+
+func TestProbeConfigApply(t *testing.T) {
+	def := ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}
+	if got := def.Apply(models.Settings{}); got != def {
+		t.Fatalf("empty settings changed config: %+v", got)
+	}
+	got := def.Apply(models.Settings{S3HealthDownThreshold: intp(7), S3HealthIntervalMs: intp(5000)})
+	want := ProbeConfig{UpThreshold: 3, DownThreshold: 7, Interval: 5 * time.Second, Timeout: 1500 * time.Millisecond}
+	if got != want {
+		t.Fatalf("apply = %+v, want %+v", got, want)
+	}
+	if back := def.Apply(got.Settings()); back != got {
+		t.Fatalf("Settings round trip = %+v, want %+v", back, got)
+	}
+	for name, c := range map[string]ProbeConfig{
+		"zero up":            {UpThreshold: 0, DownThreshold: 1, Interval: time.Second, Timeout: time.Millisecond},
+		"zero down":          {UpThreshold: 1, DownThreshold: 0, Interval: time.Second, Timeout: time.Millisecond},
+		"timeout = interval": {UpThreshold: 1, DownThreshold: 1, Interval: time.Second, Timeout: time.Second},
+	} {
+		if c.Validate() == nil {
+			t.Errorf("%s: validated", name)
+		}
+	}
+}
+
+func TestProbeSettingsRefresh(t *testing.T) {
+	def := ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}
+	var stored models.Settings
+	var loadErr error
+	p := probeSettings{defaults: def, load: func(context.Context) (models.Settings, error) { return stored, loadErr }}
+
+	stored = models.Settings{S3HealthUpThreshold: intp(1), S3HealthIntervalMs: intp(2000)}
+	cfg := p.refresh(context.Background(), def)
+	if cfg.UpThreshold != 1 || cfg.Interval != 2*time.Second || cfg.DownThreshold != 3 {
+		t.Fatalf("refresh = %+v", cfg)
+	}
+
+	loadErr = errors.New("db down")
+	if got := p.refresh(context.Background(), cfg); got != cfg {
+		t.Fatalf("a load error must keep the last known config, got %+v", got)
+	}
+
+	loadErr = nil
+	stored = models.Settings{S3HealthIntervalMs: intp(1000)}
+	if got := p.refresh(context.Background(), cfg); got != cfg {
+		t.Fatalf("an invalid effective config (timeout >= interval) must be ignored, got %+v", got)
+	}
+
+	stored = models.Settings{}
+	if got := p.refresh(context.Background(), cfg); got != def {
+		t.Fatalf("cleared settings must revert to defaults, got %+v", got)
+	}
+
+	static := probeSettings{defaults: def}
+	if got := static.refresh(context.Background(), cfg); got != cfg {
+		t.Fatalf("nil loader changed config: %+v", got)
+	}
+}
+
+func TestRunStoreProbePicksUpSettings(t *testing.T) {
+	requireStack(t)
+	clearStoreHealth(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	def := ProbeConfig{UpThreshold: 1, DownThreshold: 3, Interval: 200 * time.Millisecond, Timeout: 100 * time.Millisecond}
+	type loaded struct {
+		s   models.Settings
+		err error
+	}
+	var current atomic.Pointer[loaded]
+	current.Store(&loaded{})
+	load := func(context.Context) (models.Settings, error) {
+		l := current.Load()
+		return l.s, l.err
+	}
+	called := make(chan struct{})
+	results := make(chan error)
+	probe := func(context.Context) error {
+		called <- struct{}{}
+		return <-results
+	}
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, def, load, probe, testCache)
+		close(done)
+	}()
+	<-called
+
+	fail := errors.New("probe failed")
+	step := func(err error, want string) {
+		t.Helper()
+		results <- err
+		<-called
+		if val, _ := storeHealthKey(t); val != want {
+			t.Fatalf("s3:health = %q, want %q", val, want)
+		}
+	}
+	step(nil, "up")
+	// The probe already in flight resolved its config; the change lands on the next tick.
+	current.Store(&loaded{s: models.Settings{S3HealthUpThreshold: intp(2), S3HealthDownThreshold: intp(1)}})
+	step(fail, "up")
+	step(fail, "down")
+
+	// A read failure keeps up_threshold 2 rather than reverting to the default of 1.
+	current.Store(&loaded{err: errors.New("db down")})
+	step(nil, "down")
+	step(nil, "up")
+
+	cancel()
+	results <- nil
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunStoreProbe did not return after cancel")
 	}
 }

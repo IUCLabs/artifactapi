@@ -60,6 +60,11 @@ func TestServerOIDCWriteAuth(t *testing.T) {
 	expect(201, "POST", "/api/v2/virtuals", virtual, good)
 	expect(401, "PUT", "/api/v2/virtuals/srv-oidc-v", virtual, "")
 	expect(401, "DELETE", "/api/v2/virtuals/srv-oidc-v", "", "")
+	expect(401, "PUT", "/api/v2/settings", `{"s3_health_down_threshold":4}`, "")
+	expect(401, "DELETE", "/api/v2/settings", "", "")
+	expect(200, "GET", "/api/v2/settings", "", "")
+	expect(200, "PUT", "/api/v2/settings", `{"s3_health_down_threshold":4}`, good)
+	expect(204, "DELETE", "/api/v2/settings", "", good)
 
 	expect(200, "GET", "/api/v2/remotes", "", "")
 	expect(200, "GET", "/api/v2/remotes/srv-oidc", "", "")

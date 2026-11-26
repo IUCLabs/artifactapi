@@ -192,10 +192,12 @@ func (s *Server) routes() chi.Router {
 	statsHandler := v2.NewStatsHandler(s.db)
 	eventsHandler := v2.NewEventsHandler()
 	probeHandler := v2.NewProbeHandler(s.engine, s.db)
+	settingsHandler := v2.NewSettingsHandler(s.db, s.probeConfig())
 
 	r.Route("/api/v2", func(r chi.Router) {
 		r.Mount("/remotes", writeAuth.RequireWrites(remotesHandler.Routes()))
 		r.Mount("/virtuals", writeAuth.RequireWrites(virtualsHandler.Routes()))
+		r.Mount("/settings", writeAuth.RequireWrites(settingsHandler.Routes()))
 		r.Mount("/health", healthHandler.Routes())
 		r.Mount("/stats", statsHandler.Routes())
 		r.Mount("/events", eventsHandler.Routes())
@@ -258,7 +260,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
 	go s.alpineSyncer.Run(ctx)
-	go proxy.RunStoreProbe(ctx, s.probeConfig(), s.store.Probe, s.cache)
+	go proxy.RunStoreProbe(ctx, s.probeConfig(), s.db.GetSettings, s.store.Probe, s.cache)
 
 	httpServer := s.newHTTPServer()
 
@@ -282,7 +284,7 @@ func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
 	go s.alpineSyncer.Run(ctx)
-	go proxy.RunStoreProbe(ctx, s.probeConfig(), s.store.Probe, s.cache)
+	go proxy.RunStoreProbe(ctx, s.probeConfig(), s.db.GetSettings, s.store.Probe, s.cache)
 
 	httpServer := s.newHTTPServer()
 

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/IUCLabs/artifactapi/internal/cache"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
@@ -48,6 +50,12 @@ func TestHealthS3State(t *testing.T) {
 		t.Fatalf("new redis: %v", err)
 	}
 	t.Cleanup(func() { _ = rc.Close() })
+	opts, err := redis.ParseURL(url)
+	if err != nil {
+		t.Fatalf("parse redis url: %v", err)
+	}
+	raw := redis.NewClient(opts)
+	t.Cleanup(func() { _ = raw.Close() })
 	h := NewHealthHandler(db, rc, nil)
 
 	cases := []struct {
@@ -55,9 +63,9 @@ func TestHealthS3State(t *testing.T) {
 		set        func() error
 		s3, status string
 	}{
-		{"missing key", func() error { return nil }, "unknown", "ok"},
+		{"missing key", func() error { return raw.Del(ctx, "s3:health").Err() }, "unknown", "ok"},
 		{"probe up", func() error { return rc.SetStoreHealth(ctx, true, time.Minute) }, "ok", "ok"},
-		{"probe down", func() error { return rc.SetStoreHealth(ctx, false, time.Minute) }, "down", "degraded"},
+		{"probe down", func() error { return rc.SetStoreHealth(ctx, false, time.Minute) }, "error", "degraded"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

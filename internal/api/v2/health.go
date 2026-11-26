@@ -41,7 +41,7 @@ func (h *HealthHandler) health(w http.ResponseWriter, r *http.Request) {
 
 	switch h.cache.StoreHealth(r.Context()) {
 	case cache.StoreStateDown:
-		status["s3"] = "down"
+		status["s3"] = "error"
 		status["status"] = "degraded"
 	case cache.StoreStateUnknown:
 		status["s3"] = "unknown"

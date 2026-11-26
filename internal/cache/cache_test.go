@@ -287,6 +287,16 @@ func TestStoreHealth(t *testing.T) {
 		t.Errorf("up state = %q, want up", s)
 	}
 
+	if err := testRedis.client.Set(ctx, storeHealthKey, "junk", time.Minute).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if s := testRedis.StoreHealth(ctx); s != StoreStateUnknown {
+		t.Errorf("junk state = %q, want unknown", s)
+	}
+	if !testRedis.StoreUp(ctx) {
+		t.Error("a junk value must read as up")
+	}
+
 	if err := testRedis.SetStoreHealth(ctx, false, 50*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}

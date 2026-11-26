@@ -39,9 +39,12 @@ func (h *HealthHandler) health(w http.ResponseWriter, r *http.Request) {
 		status["status"] = "degraded"
 	}
 
-	if !h.cache.StoreUp(r.Context()) {
-		status["s3"] = "error"
+	switch h.cache.StoreHealth(r.Context()) {
+	case cache.StoreStateDown:
+		status["s3"] = "down"
 		status["status"] = "degraded"
+	case cache.StoreStateUnknown:
+		status["s3"] = "unknown"
 	}
 
 	writeJSON(w, http.StatusOK, status)

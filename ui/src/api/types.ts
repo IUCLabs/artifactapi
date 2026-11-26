@@ -85,7 +85,7 @@ export interface HealthStatus {
   status: string;
   postgres: string;
   redis: string;
-  s3: string;
+  s3: 'ok' | 'down' | 'unknown';
 }
 
 export interface ProbeResult {

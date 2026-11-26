@@ -673,7 +673,7 @@ func TestHealthReportsStoreKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = testSrv.cache.SetStoreHealth(ctx, true, time.Millisecond) }()
-	if _, b := req(t, "GET", "/api/v2/health", ""); !strings.Contains(string(b), `"s3":"error"`) || !strings.Contains(string(b), `"status":"degraded"`) {
+	if _, b := req(t, "GET", "/api/v2/health", ""); !strings.Contains(string(b), `"s3":"down"`) || !strings.Contains(string(b), `"status":"degraded"`) {
 		t.Errorf("health with the store key down: %s", b)
 	}
 	if err := testSrv.cache.SetStoreHealth(ctx, true, time.Minute); err != nil {

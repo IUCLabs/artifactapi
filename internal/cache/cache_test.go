@@ -262,11 +262,17 @@ func TestStoreHealth(t *testing.T) {
 	if !testRedis.StoreUp(ctx) {
 		t.Error("a missing key must read as up")
 	}
+	if s := testRedis.StoreHealth(ctx); s != StoreStateUnknown {
+		t.Errorf("a missing key state = %q, want unknown", s)
+	}
 	if err := testRedis.SetStoreHealth(ctx, false, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if testRedis.StoreUp(ctx) {
 		t.Error("down must read as down")
+	}
+	if s := testRedis.StoreHealth(ctx); s != StoreStateDown {
+		t.Errorf("down state = %q, want down", s)
 	}
 	if ttl := testRedis.client.PTTL(ctx, storeHealthKey).Val(); ttl <= 0 || ttl > time.Minute {
 		t.Errorf("health key TTL = %s, want (0, 1m]", ttl)
@@ -276,6 +282,9 @@ func TestStoreHealth(t *testing.T) {
 	}
 	if !testRedis.StoreUp(ctx) {
 		t.Error("up must read as up")
+	}
+	if s := testRedis.StoreHealth(ctx); s != StoreStateUp {
+		t.Errorf("up state = %q, want up", s)
 	}
 
 	if err := testRedis.SetStoreHealth(ctx, false, 50*time.Millisecond); err != nil {
@@ -298,5 +307,8 @@ func TestStoreUpOnRedisError(t *testing.T) {
 	_ = closed.Close()
 	if !closed.StoreUp(ctx) {
 		t.Error("a Redis error must read as up")
+	}
+	if s := closed.StoreHealth(ctx); s != StoreStateUnknown {
+		t.Errorf("a Redis error state = %q, want unknown", s)
 	}
 }

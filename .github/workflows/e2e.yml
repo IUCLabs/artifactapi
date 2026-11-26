@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   e2e:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: iuclabs-dind
     timeout-minutes: 20
     permissions:
@@ -24,7 +25,7 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
-      # runner image has no make or C toolchain: mirrors `make e2e` without -race
+      # runner image has no make: keep in sync with `make e2e`
       - run: go test -tags=e2e -count=1 -timeout=10m ./e2e/... 2>&1 | tee e2e.log
         shell: bash
         env:

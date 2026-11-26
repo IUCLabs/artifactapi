@@ -77,7 +77,7 @@ type MinioConn struct {
 func StartMinio(ctx context.Context) (conn MinioConn, terminate func(), err error) {
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "minio/minio:latest",
+			Image:        "pgsty/minio:RELEASE.2026-08-04T00-00-00Z",
 			ExposedPorts: []string{"9000/tcp"},
 			Cmd:          []string{"server", "/data"},
 			Env: map[string]string{

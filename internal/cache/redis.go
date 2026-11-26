@@ -179,8 +179,31 @@ func (r *Redis) SetStoreHealth(ctx context.Context, up bool, ttl time.Duration) 
 	return r.client.Set(ctx, storeHealthKey, val, ttl).Err()
 }
 
-// StoreUp reports the probed object store state; a missing key or a Redis error counts as up.
-func (r *Redis) StoreUp(ctx context.Context) bool {
+// StoreState is the probed object store state as last written to Redis.
+type StoreState string
+
+const (
+	StoreStateUp      StoreState = "up"
+	StoreStateDown    StoreState = "down"
+	StoreStateUnknown StoreState = "unknown"
+)
+
+// StoreHealth reports the probed object store state; a missing key or a Redis error is unknown.
+func (r *Redis) StoreHealth(ctx context.Context) StoreState {
 	val, err := r.client.Get(ctx, storeHealthKey).Result()
-	return err != nil || val != "down"
+	switch {
+	case err != nil:
+		return StoreStateUnknown
+	case val == string(StoreStateDown):
+		return StoreStateDown
+	case val == string(StoreStateUp):
+		return StoreStateUp
+	default:
+		return StoreStateUnknown
+	}
+}
+
+// StoreUp reports whether the object store should be used; only a probed down state counts as down.
+func (r *Redis) StoreUp(ctx context.Context) bool {
+	return r.StoreHealth(ctx) != StoreStateDown
 }

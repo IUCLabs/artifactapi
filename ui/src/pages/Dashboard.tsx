@@ -66,7 +66,7 @@ export function Dashboard() {
           <Badge variant={health.redis === 'ok' ? 'green' : 'red'}>
             redis: {health.redis}
           </Badge>
-          <Badge variant={health.s3 === 'ok' ? 'green' : 'red'}>
+          <Badge variant={health.s3 === 'ok' ? 'green' : health.s3 === 'unknown' ? 'yellow' : 'red'}>
             s3: {health.s3}
           </Badge>
         </div>

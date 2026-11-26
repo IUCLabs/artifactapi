@@ -14,7 +14,12 @@ import (
 type S3 struct {
 	client *minio.Client
 	bucket string
+	// fast has no client retries; RequestPath routes metadata calls through it under metaTimeout.
+	fast        *minio.Client
+	metaTimeout time.Duration
 }
+
+const RequestTimeout = 2 * time.Second
 
 func NewS3(endpoint, accessKey, secretKey, bucket string, secure bool, region string) (*S3, error) {
 	opts := &minio.Options{
@@ -30,7 +35,14 @@ func NewS3(endpoint, accessKey, secretKey, bucket string, secure bool, region st
 		return nil, fmt.Errorf("create s3 client: %w", err)
 	}
 
-	s := &S3{client: client, bucket: bucket}
+	fastOpts := *opts
+	fastOpts.MaxRetries = 1
+	fast, err := minio.New(endpoint, &fastOpts)
+	if err != nil {
+		return nil, fmt.Errorf("create s3 client: %w", err)
+	}
+
+	s := &S3{client: client, bucket: bucket, fast: fast}
 
 	if err := s.ensureBucket(context.Background()); err != nil {
 		return nil, err
@@ -60,26 +72,77 @@ func (s *S3) Upload(ctx context.Context, key string, reader io.Reader, size int6
 	return err
 }
 
+// RequestPath returns a view of s whose Exists, Stat and Download head make one attempt under
+// RequestTimeout; uploads keep the retrying client.
+func (s *S3) RequestPath() *S3 {
+	v := *s
+	v.metaTimeout = RequestTimeout
+	return &v
+}
+
+// Retrying returns a view of s whose Download head uses the retrying client with no deadline.
+func (s *S3) Retrying() *S3 {
+	v := *s
+	v.metaTimeout = 0
+	return &v
+}
+
+func (s *S3) metaClient() *minio.Client {
+	if s.metaTimeout > 0 {
+		return s.fast
+	}
+	return s.client
+}
+
+// Probe checks that the bucket is reachable, with a single attempt.
+func (s *S3) Probe(ctx context.Context) error {
+	exists, err := s.fast.BucketExists(ctx, s.bucket)
+	if err == nil && !exists {
+		err = fmt.Errorf("bucket %s missing", s.bucket)
+	}
+	return err
+}
+
+// Download bounds only the time to the object's metadata; the body streams without a deadline.
 func (s *S3) Download(ctx context.Context, key string) (io.ReadCloser, *minio.ObjectInfo, error) {
-	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	cctx, cancel := context.WithCancel(ctx)
+	stop := func() bool { return true }
+	if s.metaTimeout > 0 {
+		stop = time.AfterFunc(s.metaTimeout, cancel).Stop
+	}
+	obj, err := s.metaClient().GetObject(cctx, s.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
+		cancel()
 		return nil, nil, err
 	}
 
 	info, err := obj.Stat()
+	if !stop() && ctx.Err() == nil {
+		err = context.DeadlineExceeded
+	}
 	if err != nil {
 		_ = obj.Close()
+		cancel()
 		return nil, nil, err
 	}
 
-	return obj, &info, nil
+	return cancelOnClose{obj, cancel}, &info, nil
+}
+
+type cancelOnClose struct {
+	*minio.Object
+	cancel context.CancelFunc
+}
+
+func (c cancelOnClose) Close() error {
+	defer c.cancel()
+	return c.Object.Close()
 }
 
 func (s *S3) Exists(ctx context.Context, key string) (bool, error) {
-	_, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
+	_, err := s.Stat(ctx, key)
 	if err != nil {
-		resp := minio.ToErrorResponse(err)
-		if resp.Code == "NoSuchKey" {
+		if IsNoSuchKey(err) {
 			return false, nil
 		}
 		return false, err
@@ -87,12 +150,21 @@ func (s *S3) Exists(ctx context.Context, key string) (bool, error) {
 	return true, nil
 }
 
+func IsNoSuchKey(err error) bool {
+	return minio.ToErrorResponse(err).Code == "NoSuchKey"
+}
+
 func (s *S3) Delete(ctx context.Context, key string) error {
 	return s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{})
 }
 
 func (s *S3) Stat(ctx context.Context, key string) (*minio.ObjectInfo, error) {
-	info, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
+	if s.metaTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.metaTimeout)
+		defer cancel()
+	}
+	info, err := s.metaClient().StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
 	if err != nil {
 		return nil, err
 	}

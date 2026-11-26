@@ -54,11 +54,12 @@ type Engine struct {
 }
 
 func NewEngine(db *database.DB, c *cache.Redis, s *storage.S3) *Engine {
+	store := s.RequestPath()
 	e := &Engine{
 		db:        db,
 		cache:     c,
-		store:     s,
-		cas:       storage.NewCAS(s),
+		store:     store,
+		cas:       storage.NewCAS(store),
 		circuit:   NewCircuitBreaker(c),
 		accessLog: make(chan database.AccessLogEntry, accessLogBufferSize),
 
@@ -124,7 +125,10 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 		slog.Warn("redis check failed, treating as miss", "error", err)
 	}
 
-	if fresh {
+	// While the probe reports the store down, misses stream from upstream with no store calls.
+	up := e.cache.StoreUp(ctx)
+
+	if fresh && up {
 		result, err := e.serveFromStore(ctx, remote, path)
 		if err == nil {
 			result.Source = "cache"
@@ -140,7 +144,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	}
 	locked := token != ""
 
-	if !locked {
+	if !locked && up {
 		// Another request holds the fetch lock. Poll the store until the leader
 		// populates it rather than immediately racing to fetch upstream too; a
 		// cold-cache stampede otherwise hits upstream once per waiter.
@@ -155,7 +159,7 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 		defer func() { _ = e.cache.ReleaseLock(context.WithoutCancel(ctx), remote.Name, path, token) }()
 	}
 
-	if class == ClassMutable && remote.CheckMutable {
+	if up && class == ClassMutable && remote.CheckMutable {
 		etag, _ := e.cache.GetETag(ctx, remote.Name, path)
 		if etag != "" {
 			notModified, err := e.checkUpstream(ctx, remote, path, etag, prov)
@@ -181,6 +185,9 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	// stale from the store if we have it, otherwise fail fast rather than
 	// hammering a known-bad upstream.
 	if e.circuit.IsOpen(ctx, remote.Name) {
+		if !up {
+			return nil, &ProxyError{Status: http.StatusServiceUnavailable, Message: "upstream circuit open"}
+		}
 		if stale, serr := e.serveFromStore(ctx, remote, path); serr == nil {
 			slog.Warn("circuit open, serving stale", "remote", remote.Name, "path", path)
 			stale.Source = "cache"
@@ -191,13 +198,13 @@ func (e *Engine) Fetch(ctx context.Context, remote models.Remote, path string, p
 	}
 
 	start := time.Now()
-	result, err := e.fetchFromUpstream(ctx, remote, path, prov, class, ttl, fwdHeaders)
+	result, err := e.fetchFromUpstream(ctx, remote, path, prov, class, ttl, fwdHeaders, up)
 	upstreamMS := int(time.Since(start).Milliseconds())
 	if err != nil {
 		if isNetworkError(err) {
 			e.circuit.RecordFailure(ctx, remote.Name)
 		}
-		if remote.StaleOnError && isNetworkError(err) {
+		if up && remote.StaleOnError && isNetworkError(err) {
 			_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
 			stale, serr := e.serveFromStore(ctx, remote, path)
 			if serr == nil {
@@ -321,8 +328,10 @@ func (e *Engine) Head(ctx context.Context, remote models.Remote, path string, pr
 	if artifact, err := e.db.GetArtifact(ctx, remote.Name, path); err == nil && artifact != nil {
 		return &HeadResult{ContentType: artifact.ContentType, Size: artifact.SizeBytes, Source: "cache"}, nil
 	}
-	if info, err := e.store.Stat(ctx, storage.IndexKey(remote.Name, path)); err == nil {
-		return &HeadResult{ContentType: info.ContentType, Size: info.Size, Source: "cache"}, nil
+	if e.cache.StoreUp(ctx) {
+		if info, err := e.store.Stat(ctx, storage.IndexKey(remote.Name, path)); err == nil {
+			return &HeadResult{ContentType: info.ContentType, Size: info.Size, Source: "cache"}, nil
+		}
 	}
 
 	return e.headUpstream(ctx, remote, path, prov, class)
@@ -416,7 +425,7 @@ func (e *Engine) headUpstreamOnce(ctx context.Context, remote models.Remote, pat
 // fetchFromUpstream fetches an artifact from upstream, load-balancing across the
 // remote's base URLs and failing over to the next mirror on a network error or
 // 5xx before returning an error.
-func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
+func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header, storeUp bool) (*FetchResult, error) {
 	order := e.baseURLAttemptOrder(remote)
 	if len(order) == 0 {
 		return nil, &ProxyError{Status: http.StatusBadGateway, Message: "no upstream base_url configured"}
@@ -424,7 +433,7 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 	var lastErr error
 	for i, url := range order {
 		ctr := e.beginAttempt(remote, url)
-		result, err := e.fetchFromUpstreamOnce(ctx, withBaseURL(remote, url), path, prov, class, ttl, clientHeaders)
+		result, err := e.fetchFromUpstreamOnce(ctx, withBaseURL(remote, url), path, prov, class, ttl, clientHeaders, storeUp)
 		endAttempt(ctr)
 		if err == nil {
 			return result, nil
@@ -439,7 +448,7 @@ func (e *Engine) fetchFromUpstream(ctx context.Context, remote models.Remote, pa
 	return nil, lastErr
 }
 
-func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header) (*FetchResult, error) {
+func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote, path string, prov provider.Provider, class Classification, ttl time.Duration, clientHeaders http.Header, storeUp bool) (*FetchResult, error) {
 	url := prov.UpstreamURL(remote, path)
 
 	authHeaders, err := prov.AuthHeaders(ctx, remote)
@@ -513,6 +522,10 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 			body = rewritten
 		}
 
+		if !storeUp {
+			return &FetchResult{Reader: io.NopCloser(bytesReader(body)), ContentType: contentType, Size: int64(len(body)), Source: "remote"}, nil
+		}
+
 		s3Key := storage.IndexKey(remote.Name, path)
 		if err := e.store.Upload(ctx, s3Key, bytesReader(body), int64(len(body)), contentType); err != nil {
 			if ctx.Err() != nil {
@@ -542,6 +555,10 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 		return nil, err
 	}
 
+	if !storeUp {
+		return &FetchResult{Reader: resp.Body, ContentType: contentType, Size: resp.ContentLength, Source: "remote"}, nil
+	}
+
 	// Immutable blobs are streamed through the content-addressable store
 	// (tempfile -> sha256 -> S3) so arbitrarily large artifacts never sit
 	// fully in memory. Immutable content is never rewritten in the proxy path.
@@ -565,7 +582,7 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 
 	_ = e.cache.SetTTL(ctx, remote.Name, path, ttl)
 
-	reader, info, err := e.store.Download(ctx, casResult.S3Key)
+	reader, info, err := e.store.Retrying().Download(ctx, casResult.S3Key)
 	if err != nil {
 		return nil, fmt.Errorf("serve stored blob: %w", err)
 	}
@@ -614,6 +631,9 @@ func (e *Engine) serveFromStore(ctx context.Context, remote models.Remote, path 
 				ContentType: info.ContentType,
 				Size:        info.Size,
 			}, nil
+		}
+		if !storage.IsNoSuchKey(err) {
+			return nil, fmt.Errorf("not in store: %w", err)
 		}
 	}
 

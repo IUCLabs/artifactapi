@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/testsupport"
+	"github.com/redis/go-redis/v9"
 )
 
 var testRedis *Redis
@@ -250,5 +251,52 @@ func TestForgetPrefix(t *testing.T) {
 		if ttl, etag := pathKeysExist(t, "fx-other", p); !ttl || !etag {
 			t.Errorf("other remote %s lost keys: ttl=%v etag=%v", p, ttl, etag)
 		}
+	}
+}
+
+func TestStoreHealth(t *testing.T) {
+	requireRedis(t)
+	ctx := context.Background()
+	t.Cleanup(func() { _ = testRedis.client.Del(ctx, storeHealthKey).Err() })
+
+	if !testRedis.StoreUp(ctx) {
+		t.Error("a missing key must read as up")
+	}
+	if err := testRedis.SetStoreHealth(ctx, false, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if testRedis.StoreUp(ctx) {
+		t.Error("down must read as down")
+	}
+	if ttl := testRedis.client.PTTL(ctx, storeHealthKey).Val(); ttl <= 0 || ttl > time.Minute {
+		t.Errorf("health key TTL = %s, want (0, 1m]", ttl)
+	}
+	if err := testRedis.SetStoreHealth(ctx, true, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if !testRedis.StoreUp(ctx) {
+		t.Error("up must read as up")
+	}
+
+	if err := testRedis.SetStoreHealth(ctx, false, 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if !testRedis.StoreUp(ctx) {
+		t.Error("an expired down key must read as up")
+	}
+}
+
+func TestStoreUpOnRedisError(t *testing.T) {
+	requireRedis(t)
+	ctx := context.Background()
+	if err := testRedis.SetStoreHealth(ctx, false, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = testRedis.client.Del(ctx, storeHealthKey).Err() })
+	closed := &Redis{client: redis.NewClient(testRedis.client.Options())}
+	_ = closed.Close()
+	if !closed.StoreUp(ctx) {
+		t.Error("a Redis error must read as up")
 	}
 }

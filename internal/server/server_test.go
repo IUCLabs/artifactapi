@@ -62,6 +62,11 @@ func TestMain(m *testing.M) {
 		S3AccessKey: minio.AccessKey,
 		S3SecretKey: minio.SecretKey,
 		S3Bucket:    "server-test",
+
+		S3HealthUpThreshold:   3,
+		S3HealthDownThreshold: 3,
+		S3HealthInterval:      3 * time.Second,
+		S3HealthTimeout:       1500 * time.Millisecond,
 	}
 
 	var srv *Server
@@ -658,5 +663,23 @@ func TestServerNotFound(t *testing.T) {
 	// Unknown local repo -> 404 in handleLocal.
 	if resp, _ := req(t, "GET", "/api/v1/local/nope/x", ""); resp.StatusCode != 404 {
 		t.Errorf("expected 404 for unknown local repo, got %d", resp.StatusCode)
+	}
+}
+
+func TestHealthReportsStoreKey(t *testing.T) {
+	requireStack(t)
+	ctx := context.Background()
+	if err := testSrv.cache.SetStoreHealth(ctx, false, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = testSrv.cache.SetStoreHealth(ctx, true, time.Millisecond) }()
+	if _, b := req(t, "GET", "/api/v2/health", ""); !strings.Contains(string(b), `"s3":"error"`) || !strings.Contains(string(b), `"status":"degraded"`) {
+		t.Errorf("health with the store key down: %s", b)
+	}
+	if err := testSrv.cache.SetStoreHealth(ctx, true, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, b := req(t, "GET", "/api/v2/health", ""); !strings.Contains(string(b), `"s3":"ok"`) {
+		t.Errorf("health with the store key up: %s", b)
 	}
 }

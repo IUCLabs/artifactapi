@@ -30,6 +30,7 @@ var (
 	testRedis  string
 	upstream   *httptest.Server
 	blobHits   atomic.Int64
+	testMinio  testsupport.MinioConn
 )
 
 func TestMain(m *testing.M) {
@@ -70,6 +71,7 @@ func TestMain(m *testing.M) {
 	}
 
 	testCache = redis
+	testMinio = minio
 	testRedis = redisURL
 	testDB = db
 	testEngine = NewEngine(db, redis, s3)

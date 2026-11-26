@@ -167,3 +167,20 @@ func (r *Redis) ForgetPrefix(ctx context.Context, remote, prefix string) error {
 }
 
 var globEscaper = strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`, `]`, `\]`)
+
+const storeHealthKey = "s3:health"
+
+// SetStoreHealth records the object store state probed by this replica.
+func (r *Redis) SetStoreHealth(ctx context.Context, up bool, ttl time.Duration) error {
+	val := "down"
+	if up {
+		val = "up"
+	}
+	return r.client.Set(ctx, storeHealthKey, val, ttl).Err()
+}
+
+// StoreUp reports the probed object store state; a missing key or a Redis error counts as up.
+func (r *Redis) StoreUp(ctx context.Context) bool {
+	val, err := r.client.Get(ctx, storeHealthKey).Result()
+	return err != nil || val != "down"
+}

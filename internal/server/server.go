@@ -258,6 +258,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
 	go s.alpineSyncer.Run(ctx)
+	go proxy.RunStoreProbe(ctx, s.probeConfig(), s.store.Probe, s.cache)
 
 	httpServer := s.newHTTPServer()
 
@@ -281,6 +282,7 @@ func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 	go s.syncer.Run(ctx)
 	go s.debSyncer.Run(ctx)
 	go s.alpineSyncer.Run(ctx)
+	go proxy.RunStoreProbe(ctx, s.probeConfig(), s.store.Probe, s.cache)
 
 	httpServer := s.newHTTPServer()
 
@@ -296,4 +298,13 @@ func (s *Server) RunOnListener(ctx context.Context, ln net.Listener) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Server) probeConfig() proxy.ProbeConfig {
+	return proxy.ProbeConfig{
+		UpThreshold:   s.cfg.S3HealthUpThreshold,
+		DownThreshold: s.cfg.S3HealthDownThreshold,
+		Interval:      s.cfg.S3HealthInterval,
+		Timeout:       s.cfg.S3HealthTimeout,
+	}
 }

@@ -5,7 +5,6 @@ MODULE := github.com/IUCLabs/artifactapi
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")
 GO_VERSION_REQUIRED := 1.23
 GO_VERSION_ACTUAL := $(shell go version | sed 's/go version go\([0-9]*\.[0-9]*\).*/\1/')
-RACE ?= -race
 
 check-go:
 	@if [ "$$(printf '%s\n%s' "$(GO_VERSION_REQUIRED)" "$(GO_VERSION_ACTUAL)" | sort -V | head -1)" != "$(GO_VERSION_REQUIRED)" ]; then \
@@ -27,7 +26,7 @@ fmt: check-go
 	goimports -w .
 
 e2e: check-go
-	TESTCONTAINERS_RYUK_DISABLED=true go test -tags=e2e $(RACE) -count=1 -timeout=5m ./e2e/...
+	TESTCONTAINERS_RYUK_DISABLED=true go test -tags=e2e -race -count=1 -timeout=5m ./e2e/...
 
 # Build the container, bring up the full docker-compose stack + a mock upstream,
 # and run the black-box suite against the running product.

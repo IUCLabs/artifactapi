@@ -18,7 +18,7 @@ ARG BASE_PATH=/
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-RUN sed -i "s|\${BASE_PATH}|${BASE_PATH}|g" /etc/nginx/conf.d/default.conf
+RUN prefix="${BASE_PATH%/}" && sed -i "s|\${BASE_PATH}|${prefix}|g" /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 

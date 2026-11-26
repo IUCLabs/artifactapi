@@ -118,7 +118,7 @@ func TestRunStoreProbe(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		RunStoreProbe(ctx, cfg, probe, testCache)
+		RunStoreProbe(ctx, cfg, nil, probe, testCache)
 		close(done)
 	}()
 	<-called
@@ -132,8 +132,8 @@ func TestRunStoreProbe(t *testing.T) {
 		if val != want {
 			t.Fatalf("s3:health = %q, want %q", val, want)
 		}
-		if want != "" && (ttl <= 0 || ttl > 3*cfg.Interval) {
-			t.Fatalf("s3:health TTL = %s, want (0, %s]", ttl, 3*cfg.Interval)
+		if want != "" && (ttl <= 3*cfg.Interval || ttl > healthTTL(cfg)) {
+			t.Fatalf("s3:health TTL = %s, want (%s, %s]", ttl, 3*cfg.Interval, healthTTL(cfg))
 		}
 	}
 	step(fail, "")
@@ -490,5 +490,251 @@ func TestUploadOutcomeKeepsHealth(t *testing.T) {
 
 	if val, _ := storeHealthKey(t); val != "up" {
 		t.Errorf("s3:health = %q after upload outcomes, want unchanged up", val)
+	}
+}
+
+func intp(v int) *int { return &v }
+
+func TestProbeConfigApply(t *testing.T) {
+	def := ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}
+	if got := def.Apply(models.Settings{}); got != def {
+		t.Fatalf("empty settings changed config: %+v", got)
+	}
+	got := def.Apply(models.Settings{S3HealthDownThreshold: intp(7), S3HealthIntervalMs: intp(5000)})
+	want := ProbeConfig{UpThreshold: 3, DownThreshold: 7, Interval: 5 * time.Second, Timeout: 1500 * time.Millisecond}
+	if got != want {
+		t.Fatalf("apply = %+v, want %+v", got, want)
+	}
+	if back := def.Apply(got.Settings()); back != got {
+		t.Fatalf("Settings round trip = %+v, want %+v", back, got)
+	}
+	for name, c := range map[string]ProbeConfig{
+		"zero up":            {UpThreshold: 0, DownThreshold: 1, Interval: time.Second, Timeout: 100 * time.Millisecond},
+		"zero down":          {UpThreshold: 1, DownThreshold: 0, Interval: time.Second, Timeout: 100 * time.Millisecond},
+		"timeout = interval": {UpThreshold: 1, DownThreshold: 1, Interval: time.Second, Timeout: time.Second},
+		"interval too short": {UpThreshold: 1, DownThreshold: 1, Interval: 499 * time.Millisecond, Timeout: 100 * time.Millisecond},
+		"timeout too short":  {UpThreshold: 1, DownThreshold: 1, Interval: time.Second, Timeout: 99 * time.Millisecond},
+		"threshold too high": {UpThreshold: 101, DownThreshold: 1, Interval: time.Second, Timeout: 100 * time.Millisecond},
+	} {
+		if c.Validate() == nil {
+			t.Errorf("%s: validated", name)
+		}
+	}
+}
+
+func TestProbeSettingsRefresh(t *testing.T) {
+	def := ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}
+	var stored models.Settings
+	var loadErr error
+	p := probeSettings{defaults: def, load: func(context.Context) (models.Settings, error) { return stored, loadErr }}
+
+	stored = models.Settings{S3HealthUpThreshold: intp(1), S3HealthIntervalMs: intp(2000)}
+	cfg := p.refresh(context.Background(), def)
+	if cfg.UpThreshold != 1 || cfg.Interval != 2*time.Second || cfg.DownThreshold != 3 {
+		t.Fatalf("refresh = %+v", cfg)
+	}
+
+	loadErr = errors.New("db down")
+	if got := p.refresh(context.Background(), cfg); got != cfg {
+		t.Fatalf("a load error must keep the last known config, got %+v", got)
+	}
+
+	loadErr = nil
+	stored = models.Settings{S3HealthIntervalMs: intp(1000)}
+	if got := p.refresh(context.Background(), cfg); got != cfg {
+		t.Fatalf("an invalid effective config (timeout >= interval) must be ignored, got %+v", got)
+	}
+
+	stored = models.Settings{}
+	if got := p.refresh(context.Background(), cfg); got != def {
+		t.Fatalf("cleared settings must revert to defaults, got %+v", got)
+	}
+
+	static := probeSettings{defaults: def}
+	if got := static.refresh(context.Background(), cfg); got != cfg {
+		t.Fatalf("nil loader changed config: %+v", got)
+	}
+}
+
+func TestProbeSettingsLoadTimeoutIgnoresProbeTimeout(t *testing.T) {
+	def := ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}
+	var budget time.Duration
+	p := probeSettings{defaults: def, load: func(ctx context.Context) (models.Settings, error) {
+		deadline, _ := ctx.Deadline()
+		budget = time.Until(deadline)
+		return models.Settings{S3HealthTimeoutMs: intp(100), S3HealthIntervalMs: intp(500)}, nil
+	}}
+	cfg := p.refresh(context.Background(), def)
+	if cfg.Timeout != 100*time.Millisecond {
+		t.Fatalf("refresh = %+v", cfg)
+	}
+	p.refresh(context.Background(), cfg)
+	if budget < settingsLoadTimeout-time.Second || budget > settingsLoadTimeout {
+		t.Fatalf("settings load budget = %s under a 100ms probe timeout, want about %s", budget, settingsLoadTimeout)
+	}
+}
+
+func TestRunStoreProbePicksUpSettings(t *testing.T) {
+	requireStack(t)
+	clearStoreHealth(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	def := ProbeConfig{UpThreshold: 1, DownThreshold: 3, Interval: 500 * time.Millisecond, Timeout: 100 * time.Millisecond}
+	type loaded struct {
+		s   models.Settings
+		err error
+	}
+	var current atomic.Pointer[loaded]
+	current.Store(&loaded{})
+	load := func(context.Context) (models.Settings, error) {
+		l := current.Load()
+		return l.s, l.err
+	}
+	called := make(chan struct{})
+	results := make(chan error)
+	probe := func(context.Context) error {
+		called <- struct{}{}
+		return <-results
+	}
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, def, load, probe, testCache)
+		close(done)
+	}()
+	<-called
+
+	fail := errors.New("probe failed")
+	step := func(err error, want string) {
+		t.Helper()
+		results <- err
+		<-called
+		if val, _ := storeHealthKey(t); val != want {
+			t.Fatalf("s3:health = %q, want %q", val, want)
+		}
+	}
+	step(nil, "up")
+	// The probe already in flight resolved its config; the change lands on the next tick.
+	current.Store(&loaded{s: models.Settings{S3HealthUpThreshold: intp(2), S3HealthDownThreshold: intp(1)}})
+	step(fail, "up")
+	step(fail, "down")
+
+	// A read failure keeps up_threshold 2 rather than reverting to the default of 1.
+	current.Store(&loaded{err: errors.New("db down")})
+	step(nil, "down")
+	step(nil, "up")
+
+	cancel()
+	results <- nil
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunStoreProbe did not return after cancel")
+	}
+}
+
+func TestRunStoreProbeKeyOutlivesStalledSettings(t *testing.T) {
+	requireStack(t)
+	clearStoreHealth(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	def := ProbeConfig{UpThreshold: 1, DownThreshold: 1, Interval: 500 * time.Millisecond, Timeout: 100 * time.Millisecond}
+	var writes atomic.Int64
+	load := func(lctx context.Context) (models.Settings, error) {
+		<-lctx.Done()
+		return models.Settings{}, lctx.Err()
+	}
+	probe := func(context.Context) error {
+		writes.Add(1)
+		return errors.New("probe failed")
+	}
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, def, load, probe, testCache)
+		close(done)
+	}()
+
+	first := time.Now().Add(settingsLoadTimeout + time.Second)
+	for val, _ := storeHealthKey(t); val != "down"; val, _ = storeHealthKey(t) {
+		if time.Now().After(first) {
+			t.Fatal("no store health written within the stalled settings budget")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	start := writes.Load()
+	for end := time.Now().Add(2*settingsLoadTimeout + time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if val, _ := storeHealthKey(t); val != "down" {
+			t.Fatalf("s3:health = %q between writes stalled on settings reads, want down", val)
+		}
+	}
+	if n := writes.Load() - start; n < 2 {
+		t.Fatalf("observed %d rewrites, want at least 2 stalled gaps spanned", n)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunStoreProbe did not return after cancel")
+	}
+}
+
+func TestRunStoreProbeFollowsIntervalChange(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Thresholds are never crossed, so the probe never writes to Redis.
+	def := ProbeConfig{UpThreshold: 100, DownThreshold: 100, Interval: time.Hour, Timeout: time.Second}
+	var interval atomic.Int64
+	interval.Store(500)
+	load := func(context.Context) (models.Settings, error) {
+		return models.Settings{S3HealthIntervalMs: intp(int(interval.Load())), S3HealthTimeoutMs: intp(100)}, nil
+	}
+	ticks := make(chan time.Time, 1000)
+	probe := func(context.Context) error {
+		ticks <- time.Now()
+		return errors.New("probe failed")
+	}
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, def, load, probe, nil)
+		close(done)
+	}()
+	next := func() time.Time {
+		t.Helper()
+		select {
+		case at := <-ticks:
+			return at
+		case <-time.After(5 * time.Second):
+			t.Fatal("no probe within 5s")
+			return time.Time{}
+		}
+	}
+
+	// The stored 500ms interval replaces the hour-long default before the first tick.
+	for range 2 {
+		next()
+	}
+
+	interval.Store(1500)
+	next()
+	prev := next()
+	if gap := next().Sub(prev); gap < 1200*time.Millisecond {
+		t.Fatalf("probe gap after raising the interval to 1.5s = %s", gap)
+	}
+
+	interval.Store(500)
+	next()
+	prev = next()
+	if gap := next().Sub(prev); gap > 1000*time.Millisecond {
+		t.Fatalf("probe gap after lowering the interval to 500ms = %s", gap)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunStoreProbe did not return after cancel")
 	}
 }

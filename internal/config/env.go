@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
 type Config struct {
@@ -105,23 +107,24 @@ func Load() (*Config, error) {
 	}
 
 	healthUp, err := strconv.Atoi(getenv("S3_HEALTH_UP_THRESHOLD", "3"))
-	if err != nil || healthUp < 1 {
-		return nil, fmt.Errorf("invalid S3_HEALTH_UP_THRESHOLD: must be a positive integer")
+	if err != nil {
+		return nil, fmt.Errorf("invalid S3_HEALTH_UP_THRESHOLD: must be an integer")
 	}
 	healthDown, err := strconv.Atoi(getenv("S3_HEALTH_DOWN_THRESHOLD", "3"))
-	if err != nil || healthDown < 1 {
-		return nil, fmt.Errorf("invalid S3_HEALTH_DOWN_THRESHOLD: must be a positive integer")
+	if err != nil {
+		return nil, fmt.Errorf("invalid S3_HEALTH_DOWN_THRESHOLD: must be an integer")
 	}
-	healthInterval, err := time.ParseDuration(getenv("S3_HEALTH_INTERVAL", "3s"))
-	if err != nil || healthInterval <= 0 {
-		return nil, fmt.Errorf("invalid S3_HEALTH_INTERVAL: must be a positive duration")
+	healthInterval, err := wholeMillis("S3_HEALTH_INTERVAL", "3s")
+	if err != nil {
+		return nil, err
 	}
-	healthTimeout, err := time.ParseDuration(getenv("S3_HEALTH_TIMEOUT", "1.5s"))
-	if err != nil || healthTimeout <= 0 {
-		return nil, fmt.Errorf("invalid S3_HEALTH_TIMEOUT: must be a positive duration")
+	healthTimeout, err := wholeMillis("S3_HEALTH_TIMEOUT", "1.5s")
+	if err != nil {
+		return nil, err
 	}
-	if healthTimeout >= healthInterval {
-		return nil, fmt.Errorf("invalid S3_HEALTH_TIMEOUT: must be shorter than S3_HEALTH_INTERVAL")
+	intervalMs, timeoutMs := int(healthInterval.Milliseconds()), int(healthTimeout.Milliseconds())
+	if err := (models.Settings{S3HealthUpThreshold: &healthUp, S3HealthDownThreshold: &healthDown, S3HealthIntervalMs: &intervalMs, S3HealthTimeoutMs: &timeoutMs}).Validate(); err != nil {
+		return nil, fmt.Errorf("invalid S3_HEALTH_* settings: %w", err)
 	}
 
 	oidcIssuer := getenv("ARTIFACTAPI_OIDC_ISSUER", "")
@@ -194,4 +197,12 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func wholeMillis(key, def string) (time.Duration, error) {
+	d, err := time.ParseDuration(getenv(key, def))
+	if err != nil || d%time.Millisecond != 0 {
+		return 0, fmt.Errorf("invalid %s: must be a duration in whole milliseconds", key)
+	}
+	return d, nil
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/IUCLabs/artifactapi/internal/cache"
+	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
 // ProbeConfig tunes the object store health probe.
@@ -14,6 +15,71 @@ type ProbeConfig struct {
 	DownThreshold int
 	Interval      time.Duration
 	Timeout       time.Duration
+}
+
+// Apply overlays the set fields of s onto c.
+func (c ProbeConfig) Apply(s models.Settings) ProbeConfig {
+	if s.S3HealthUpThreshold != nil {
+		c.UpThreshold = *s.S3HealthUpThreshold
+	}
+	if s.S3HealthDownThreshold != nil {
+		c.DownThreshold = *s.S3HealthDownThreshold
+	}
+	if s.S3HealthIntervalMs != nil {
+		c.Interval = time.Duration(*s.S3HealthIntervalMs) * time.Millisecond
+	}
+	if s.S3HealthTimeoutMs != nil {
+		c.Timeout = time.Duration(*s.S3HealthTimeoutMs) * time.Millisecond
+	}
+	return c
+}
+
+// Settings expresses c with every field set.
+func (c ProbeConfig) Settings() models.Settings {
+	up, down := c.UpThreshold, c.DownThreshold
+	interval, timeout := int(c.Interval.Milliseconds()), int(c.Timeout.Milliseconds())
+	return models.Settings{S3HealthUpThreshold: &up, S3HealthDownThreshold: &down, S3HealthIntervalMs: &interval, S3HealthTimeoutMs: &timeout}
+}
+
+func (c ProbeConfig) Validate() error {
+	return c.Settings().Validate()
+}
+
+// settingsLoadTimeout bounds each settings read independently of the probe timeout it may change.
+const settingsLoadTimeout = 2 * time.Second
+
+// SettingsLoader reads the stored settings overrides.
+type SettingsLoader func(context.Context) (models.Settings, error)
+
+// probeSettings resolves the effective config each tick, keeping the last good one on failure.
+type probeSettings struct {
+	defaults ProbeConfig
+	load     SettingsLoader
+	failing  bool
+}
+
+func (p *probeSettings) refresh(ctx context.Context, current ProbeConfig) ProbeConfig {
+	if p.load == nil {
+		return current
+	}
+	lctx, cancel := context.WithTimeout(ctx, settingsLoadTimeout)
+	s, err := p.load(lctx)
+	cancel()
+	if err == nil {
+		next := p.defaults.Apply(s)
+		if err = next.Validate(); err == nil {
+			if p.failing {
+				slog.Info("object store probe settings readable again")
+			}
+			p.failing = false
+			return next
+		}
+	}
+	if !p.failing && ctx.Err() == nil {
+		slog.Warn("object store probe settings not applied, keeping last known", "error", err)
+	}
+	p.failing = true
+	return current
 }
 
 // hysteresis settles on up or down only after a threshold of consecutive like results.
@@ -37,13 +103,29 @@ func (h *hysteresis) observe(err error) {
 	}
 }
 
-// RunStoreProbe probes the store every cfg.Interval and writes this replica's settled state to
-// Redis with a TTL of three intervals. Nothing is written until a threshold is first crossed.
-func RunStoreProbe(ctx context.Context, cfg ProbeConfig, probe func(context.Context) error, c *cache.Redis) {
+// healthTTL outlives the longest gap between writes: a tick can wait out the interval, then a
+// stalled settings read, then a hung probe.
+func healthTTL(cfg ProbeConfig) time.Duration {
+	return 3*cfg.Interval + settingsLoadTimeout + cfg.Timeout
+}
+
+// RunStoreProbe probes the store every interval and writes this replica's settled state to
+// Redis with a healthTTL expiry. Nothing is written until a threshold is first crossed.
+// Each tick re-resolves the config as defaults overlaid with load's settings; load may be nil.
+func RunStoreProbe(ctx context.Context, defaults ProbeConfig, load SettingsLoader, probe func(context.Context) error, c *cache.Redis) {
+	settings := probeSettings{defaults: defaults, load: load}
+	cfg := defaults
 	h := hysteresis{cfg: cfg}
 	ticker := time.NewTicker(cfg.Interval)
 	defer ticker.Stop()
 	for {
+		if next := settings.refresh(ctx, cfg); next != cfg {
+			slog.Info("object store probe settings changed", "up_threshold", next.UpThreshold, "down_threshold", next.DownThreshold, "interval", next.Interval, "timeout", next.Timeout)
+			if next.Interval != cfg.Interval {
+				ticker.Reset(next.Interval)
+			}
+			cfg, h.cfg = next, next
+		}
 		pctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		err := probe(pctx)
 		cancel()
@@ -56,7 +138,7 @@ func RunStoreProbe(ctx context.Context, cfg ProbeConfig, probe func(context.Cont
 			slog.Info("object store health settled", "up", h.up, "error", err)
 		}
 		if h.known {
-			if werr := c.SetStoreHealth(ctx, h.up, 3*cfg.Interval); werr != nil {
+			if werr := c.SetStoreHealth(ctx, h.up, healthTTL(cfg)); werr != nil {
 				slog.Warn("write store health failed", "error", werr)
 			}
 		}

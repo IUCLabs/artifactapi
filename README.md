@@ -147,8 +147,24 @@ GET/DELETE      /api/v2/remotes/{name}/objects  Browse / evict cached objects
 GET             /api/v2/stats                Overview stats
 GET             /api/v2/health               Service health
 POST            /api/v2/probe                Test a remote (fetch without streaming to client)
+GET/PUT/PATCH/DELETE /api/v2/settings        Read / replace / merge / reset global settings
 GET             /api/v2/events               SSE event stream
 ```
+
+`/api/v2/settings` is a singleton of global settings, each a nullable override
+of an env default: `s3_health_up_threshold`, `s3_health_down_threshold`,
+`s3_health_interval_ms` and `s3_health_timeout_ms` (`S3_HEALTH_*`). `PUT`
+replaces every override (an omitted or `null` field reverts to its default);
+`PATCH` is a merge patch (a value sets its field, `null` reverts it to its
+default, an absent field is kept); `DELETE` clears all. Thresholds must be
+1–100, `s3_health_interval_ms` 500–3600000 and `s3_health_timeout_ms` at least
+100 and below the interval; the `S3_HEALTH_*` env defaults must satisfy the same
+bounds in whole milliseconds or startup fails. Out-of-range values, unknown
+fields and trailing data after the JSON body are rejected with 400. Every response carries the effective values as top-level
+fields, the stored overrides under `overrides` (every key present, `null` when
+unset), and `valid` plus, when false, `error`: a changed env default can make
+stored overrides invalid, and the probe then keeps its last valid settings. The S3 health probe
+re-reads them every tick.
 
 ## Architecture
 
@@ -200,10 +216,10 @@ additive and idempotent for the same reason; a test enforces it.
 | `MINIO_BUCKET` | `artifacts` | S3 bucket |
 | `MINIO_SECURE` | `false` | Use HTTPS for S3 |
 | `MINIO_REGION` | | S3 region (AWS) |
-| `S3_HEALTH_INTERVAL` | `3s` | Object store health probe interval. The settled state is shared via Redis (`s3:health`, TTL 3× interval); while it is `down`, misses stream from upstream uncached |
-| `S3_HEALTH_TIMEOUT` | `1.5s` | Timeout of each health probe; must be shorter than `S3_HEALTH_INTERVAL` |
-| `S3_HEALTH_UP_THRESHOLD` | `3` | Consecutive passing probes before the store is marked up |
-| `S3_HEALTH_DOWN_THRESHOLD` | `3` | Consecutive failing probes before the store is marked down |
+| `S3_HEALTH_INTERVAL` | `3s` | Object store health probe interval, `500ms`–`1h`. The `S3_HEALTH_*` values are defaults, overridable at runtime via `/api/v2/settings`. The settled state is shared via Redis (`s3:health`, TTL 3× interval); while it is `down`, misses stream from upstream uncached |
+| `S3_HEALTH_TIMEOUT` | `1.5s` | Timeout of each health probe, at least `100ms` and shorter than `S3_HEALTH_INTERVAL` |
+| `S3_HEALTH_UP_THRESHOLD` | `3` | Consecutive passing probes before the store is marked up (1–100) |
+| `S3_HEALTH_DOWN_THRESHOLD` | `3` | Consecutive failing probes before the store is marked down (1–100) |
 | `GITHUB_SYNC_RATE` | `1` | `github_rpm` syncer global GitHub request rate (req/s), shared across all remotes. `1`/s = 3600/hr, under an authenticated token's ~5000/hr; unauthenticated (~60/hr) relies on ETag/304 |
 | `GITHUB_SYNC_BURST` | `5` | Token-bucket burst for the shared limiter |
 | `GITHUB_SYNC_WORKERS` | `3` | Concurrent `github_rpm` scan workers |
@@ -213,7 +229,7 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
-| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals` and `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
+| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` and `PUT`/`PATCH`/`DELETE /api/v2/settings` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
 | `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
 | `ARTIFACTAPI_AUTH_UPLOADS` | `false` | Also require a token for every local repo write: file uploads/deletes, object evictions, `/api/v1/local` publishes and `/v2` push. Requires `ARTIFACTAPI_OIDC_ISSUER` |
 

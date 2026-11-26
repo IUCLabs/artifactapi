@@ -132,8 +132,8 @@ func TestRunStoreProbe(t *testing.T) {
 		if val != want {
 			t.Fatalf("s3:health = %q, want %q", val, want)
 		}
-		if want != "" && (ttl <= 0 || ttl > 3*cfg.Interval) {
-			t.Fatalf("s3:health TTL = %s, want (0, %s]", ttl, 3*cfg.Interval)
+		if want != "" && (ttl <= 3*cfg.Interval || ttl > healthTTL(cfg)) {
+			t.Fatalf("s3:health TTL = %s, want (%s, %s]", ttl, 3*cfg.Interval, healthTTL(cfg))
 		}
 	}
 	step(fail, "")
@@ -626,6 +626,53 @@ func TestRunStoreProbePicksUpSettings(t *testing.T) {
 
 	cancel()
 	results <- nil
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunStoreProbe did not return after cancel")
+	}
+}
+
+func TestRunStoreProbeKeyOutlivesStalledSettings(t *testing.T) {
+	requireStack(t)
+	clearStoreHealth(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	def := ProbeConfig{UpThreshold: 1, DownThreshold: 1, Interval: 500 * time.Millisecond, Timeout: 100 * time.Millisecond}
+	var writes atomic.Int64
+	load := func(lctx context.Context) (models.Settings, error) {
+		<-lctx.Done()
+		return models.Settings{}, lctx.Err()
+	}
+	probe := func(context.Context) error {
+		writes.Add(1)
+		return errors.New("probe failed")
+	}
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, def, load, probe, testCache)
+		close(done)
+	}()
+
+	first := time.Now().Add(settingsLoadTimeout + time.Second)
+	for val, _ := storeHealthKey(t); val != "down"; val, _ = storeHealthKey(t) {
+		if time.Now().After(first) {
+			t.Fatal("no store health written within the stalled settings budget")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	start := writes.Load()
+	for end := time.Now().Add(2*settingsLoadTimeout + time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		if val, _ := storeHealthKey(t); val != "down" {
+			t.Fatalf("s3:health = %q between writes stalled on settings reads, want down", val)
+		}
+	}
+	if n := writes.Load() - start; n < 2 {
+		t.Fatalf("observed %d rewrites, want at least 2 stalled gaps spanned", n)
+	}
+
+	cancel()
 	select {
 	case <-done:
 	case <-time.After(time.Second):

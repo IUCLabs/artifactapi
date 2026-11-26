@@ -103,8 +103,14 @@ func (h *hysteresis) observe(err error) {
 	}
 }
 
+// healthTTL outlives the longest gap between writes: a tick can wait out the interval, then a
+// stalled settings read, then a hung probe.
+func healthTTL(cfg ProbeConfig) time.Duration {
+	return 3*cfg.Interval + settingsLoadTimeout + cfg.Timeout
+}
+
 // RunStoreProbe probes the store every interval and writes this replica's settled state to
-// Redis with a TTL of three intervals. Nothing is written until a threshold is first crossed.
+// Redis with a healthTTL expiry. Nothing is written until a threshold is first crossed.
 // Each tick re-resolves the config as defaults overlaid with load's settings; load may be nil.
 func RunStoreProbe(ctx context.Context, defaults ProbeConfig, load SettingsLoader, probe func(context.Context) error, c *cache.Redis) {
 	settings := probeSettings{defaults: defaults, load: load}
@@ -132,7 +138,7 @@ func RunStoreProbe(ctx context.Context, defaults ProbeConfig, load SettingsLoade
 			slog.Info("object store health settled", "up", h.up, "error", err)
 		}
 		if h.known {
-			if werr := c.SetStoreHealth(ctx, h.up, 3*cfg.Interval); werr != nil {
+			if werr := c.SetStoreHealth(ctx, h.up, healthTTL(cfg)); werr != nil {
 				slog.Warn("write store health failed", "error", werr)
 			}
 		}

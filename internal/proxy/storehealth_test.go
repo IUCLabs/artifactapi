@@ -613,14 +613,18 @@ func TestRunStoreProbePicksUpSettings(t *testing.T) {
 			t.Fatalf("s3:health = %q, want %q", val, want)
 		}
 	}
+	// Holding the in-flight probe past a settings refresh queues the change for the next probe.
+	settle := func(l *loaded) {
+		current.Store(l)
+		time.Sleep(settingsRefreshInterval + 300*time.Millisecond)
+	}
 	step(nil, "up")
-	// The probe already in flight resolved its config; the change lands on the next tick.
-	current.Store(&loaded{s: models.Settings{S3HealthUpThreshold: intp(2), S3HealthDownThreshold: intp(1)}})
+	settle(&loaded{s: models.Settings{S3HealthUpThreshold: intp(2), S3HealthDownThreshold: intp(1)}})
 	step(fail, "up")
 	step(fail, "down")
 
 	// A read failure keeps up_threshold 2 rather than reverting to the default of 1.
-	current.Store(&loaded{err: errors.New("db down")})
+	settle(&loaded{err: errors.New("db down")})
 	step(nil, "down")
 	step(nil, "up")
 
@@ -729,6 +733,59 @@ func TestRunStoreProbeFollowsIntervalChange(t *testing.T) {
 	prev = next()
 	if gap := next().Sub(prev); gap > 1000*time.Millisecond {
 		t.Fatalf("probe gap after lowering the interval to 500ms = %s", gap)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunStoreProbe did not return after cancel")
+	}
+}
+
+func TestRunStoreProbeShortensIntervalWithoutWaiting(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	def := ProbeConfig{UpThreshold: 100, DownThreshold: 100, Interval: 3 * time.Second, Timeout: 100 * time.Millisecond}
+	var interval atomic.Int64
+	interval.Store(60000)
+	load := func(context.Context) (models.Settings, error) {
+		return models.Settings{S3HealthIntervalMs: intp(int(interval.Load()))}, nil
+	}
+	ticks := make(chan time.Time, 100)
+	probe := func(context.Context) error {
+		ticks <- time.Now()
+		return errors.New("probe failed")
+	}
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, def, load, probe, nil)
+		close(done)
+	}()
+	next := func(within time.Duration) time.Time {
+		t.Helper()
+		select {
+		case at := <-ticks:
+			return at
+		case <-time.After(within):
+			t.Fatalf("no probe within %s", within)
+			return time.Time{}
+		}
+	}
+
+	first := next(time.Second)
+	interval.Store(3000)
+	if gap := next(4 * time.Second).Sub(first); gap < 2500*time.Millisecond || gap > 3500*time.Millisecond {
+		t.Fatalf("probe gap after shortening 60s to 3s = %s, want about 3s", gap)
+	}
+
+	interval.Store(60000)
+	time.Sleep(settingsRefreshInterval + 500*time.Millisecond)
+	changed := time.Now()
+	interval.Store(1000)
+	if lag := next(3 * time.Second).Sub(changed); lag > settingsRefreshInterval+500*time.Millisecond {
+		t.Fatalf("probe %s after shortening below the time since the last probe, want within one settings refresh", lag)
 	}
 
 	cancel()

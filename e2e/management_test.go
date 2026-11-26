@@ -17,8 +17,8 @@ func TestHealth(t *testing.T) {
 	}
 }
 
-func TestRoot(t *testing.T) {
-	result := getJSON(t, apiURL("/"))
+func TestVersion(t *testing.T) {
+	result := getJSON(t, apiURL("/version"))
 	if result["name"] != "artifactapi" {
 		t.Errorf("expected artifactapi, got %v", result["name"])
 	}

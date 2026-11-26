@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -48,5 +49,31 @@ func TestSettingsOverlay(t *testing.T) {
 	}
 	if *base.S3HealthDownThreshold != 3 {
 		t.Error("overlay mutated its receiver")
+	}
+}
+
+func TestSettingsPatch(t *testing.T) {
+	base := Settings{S3HealthUpThreshold: intp(2), S3HealthDownThreshold: intp(4)}
+	got, err := base.Patch(map[string]json.RawMessage{
+		"s3_health_up_threshold": json.RawMessage(" null "),
+		"s3_health_interval_ms":  json.RawMessage("5000"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.S3HealthUpThreshold != nil || *got.S3HealthDownThreshold != 4 || *got.S3HealthIntervalMs != 5000 || got.S3HealthTimeoutMs != nil {
+		t.Fatalf("patch = %+v", got)
+	}
+	if base.S3HealthUpThreshold == nil || base.S3HealthIntervalMs != nil {
+		t.Error("patch mutated its receiver")
+	}
+
+	for name, raw := range map[string]map[string]json.RawMessage{
+		"unknown key": {"s3_health_up_treshold": json.RawMessage("2")},
+		"wrong type":  {"s3_health_up_threshold": json.RawMessage(`"2"`)},
+	} {
+		if _, err := base.Patch(raw); err == nil {
+			t.Errorf("%s: patch accepted", name)
+		}
 	}
 }

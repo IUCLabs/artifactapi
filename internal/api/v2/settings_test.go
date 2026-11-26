@@ -29,6 +29,18 @@ func (f *fakeSettings) PutSettings(_ context.Context, s models.Settings) error {
 	f.s = s
 	return nil
 }
+func (f *fakeSettings) UpdateSettings(_ context.Context, fn func(models.Settings) (models.Settings, error)) error {
+	if f.err != nil {
+		return f.err
+	}
+	next, err := fn(f.s)
+	if err != nil {
+		return err
+	}
+	f.put++
+	f.s = next
+	return nil
+}
 func (f *fakeSettings) ResetSettings(context.Context) error {
 	if f.err != nil {
 		return f.err
@@ -46,19 +58,35 @@ type settingsBody struct {
 	Timeout  int `json:"s3_health_timeout_ms"`
 }
 
+type settingsValidity struct {
+	Valid bool   `json:"valid"`
+	Error string `json:"error"`
+}
+
 func settingsCall(t *testing.T, store *fakeSettings, method, body string) (int, settingsBody) {
 	t.Helper()
-	h := NewSettingsHandler(store, settingsDefaults).Routes()
+	code, out, _ := settingsCallWith(t, store, settingsDefaults, method, body)
+	return code, out
+}
+
+func settingsCallWith(t *testing.T, store *fakeSettings, defaults models.Settings, method, body string) (int, settingsBody, settingsValidity) {
+	t.Helper()
+	h := NewSettingsHandler(store, defaults).Routes()
 	req := httptest.NewRequest(method, "/", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	var out settingsBody
+	var v settingsValidity
 	if w.Code == http.StatusOK {
-		if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		raw := w.Body.Bytes()
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if err := json.Unmarshal(raw, &v); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
 	}
-	return w.Code, out
+	return w.Code, out, v
 }
 
 func TestSettingsGetReturnsEffectiveValues(t *testing.T) {
@@ -122,6 +150,7 @@ func TestSettingsPutRejectsInvalid(t *testing.T) {
 		"interval below env timeout": `{"s3_health_interval_ms":1000}`,
 		"timeout equal to interval":  `{"s3_health_interval_ms":2000,"s3_health_timeout_ms":2000}`,
 		"not json":                   `nope`,
+		"unknown field":              `{"s3_health_up_treshold":2}`,
 	} {
 		store := &fakeSettings{}
 		if code, _ := settingsCall(t, store, "PUT", body); code != 400 {
@@ -150,5 +179,108 @@ func TestSettingsStoreErrors(t *testing.T) {
 		if code, _ := settingsCall(t, store, m, `{}`); code != 500 {
 			t.Errorf("%s with store error = %d, want 500", m, code)
 		}
+	}
+}
+
+func TestSettingsPatchNullClearsOverride(t *testing.T) {
+	store := &fakeSettings{}
+	if code, _ := settingsCall(t, store, "PUT", `{"s3_health_up_threshold":1,"s3_health_down_threshold":6}`); code != 200 {
+		t.Fatalf("put: %d", code)
+	}
+	code, got := settingsCall(t, store, "PATCH", `{"s3_health_up_threshold":null}`)
+	if code != 200 || got != (settingsBody{3, 6, 3000, 1500}) {
+		t.Fatalf("patch null: %d %+v", code, got)
+	}
+	if store.s.S3HealthUpThreshold != nil || store.s.S3HealthDownThreshold == nil || *store.s.S3HealthDownThreshold != 6 {
+		t.Errorf("null must clear only its override: %+v", store.s)
+	}
+}
+
+func TestSettingsPatchRejectsUnknownAndMalformed(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown field": `{"s3_health_up_treshold":2}`,
+		"wrong type":    `{"s3_health_up_threshold":"2"}`,
+		"not an object": `[1]`,
+		"not json":      `nope`,
+	} {
+		one := 1
+		store := &fakeSettings{s: models.Settings{S3HealthUpThreshold: &one}}
+		if code, _ := settingsCall(t, store, "PATCH", body); code != 400 {
+			t.Errorf("%s: status %d, want 400", name, code)
+		}
+		if store.put != 0 || store.s.S3HealthUpThreshold != &one {
+			t.Errorf("%s: a rejected patch changed the store", name)
+		}
+	}
+}
+
+func TestSettingsGetReportsValidity(t *testing.T) {
+	store := &fakeSettings{}
+	if code, _, v := settingsCallWith(t, store, settingsDefaults, "GET", ""); code != 200 || !v.Valid || v.Error != "" {
+		t.Fatalf("defaults: %d %+v", code, v)
+	}
+
+	timeout := 2500
+	store.s.S3HealthTimeoutMs = &timeout
+	if code, _, v := settingsCallWith(t, store, settingsDefaults, "GET", ""); code != 200 || !v.Valid {
+		t.Fatalf("timeout below env interval: %d %+v", code, v)
+	}
+	shorter := proxy.ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 2 * time.Second, Timeout: time.Second}.Settings()
+	code, got, v := settingsCallWith(t, store, shorter, "GET", "")
+	if code != 200 || got != (settingsBody{3, 3, 2000, 2500}) {
+		t.Fatalf("stored timeout over a shrunk env interval: %d %+v", code, got)
+	}
+	if v.Valid || !strings.Contains(v.Error, "s3_health_timeout_ms") {
+		t.Fatalf("validity = %+v, want invalid naming the timeout", v)
+	}
+}
+
+func TestSettingsResponsesCarryOverrides(t *testing.T) {
+	store := &fakeSettings{}
+	wantKeys := []string{"s3_health_up_threshold", "s3_health_down_threshold", "s3_health_interval_ms", "s3_health_timeout_ms"}
+	call := func(method, body string) map[string]*int {
+		t.Helper()
+		req := httptest.NewRequest(method, "/", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		NewSettingsHandler(store, settingsDefaults).Routes().ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", method, w.Code, w.Body)
+		}
+		var out struct {
+			Overrides map[string]*int `json:"overrides"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range wantKeys {
+			if _, ok := out.Overrides[k]; !ok {
+				t.Fatalf("%s: overrides missing %q: %v", method, k, out.Overrides)
+			}
+		}
+		return out.Overrides
+	}
+	unset := func(o map[string]*int, keys ...string) bool {
+		for _, k := range keys {
+			if o[k] != nil {
+				return false
+			}
+		}
+		return true
+	}
+
+	if o := call("GET", ""); !unset(o, wantKeys...) {
+		t.Fatalf("no overrides stored: %v", o)
+	}
+	if o := call("PUT", `{"s3_health_down_threshold":6}`); o["s3_health_down_threshold"] == nil || *o["s3_health_down_threshold"] != 6 || !unset(o, "s3_health_up_threshold", "s3_health_interval_ms", "s3_health_timeout_ms") {
+		t.Fatalf("put overrides: %v", o)
+	}
+	if o := call("PATCH", `{"s3_health_up_threshold":2}`); o["s3_health_up_threshold"] == nil || *o["s3_health_up_threshold"] != 2 || o["s3_health_down_threshold"] == nil {
+		t.Fatalf("patch overrides: %v", o)
+	}
+	if o := call("PATCH", `{"s3_health_down_threshold":null}`); o["s3_health_down_threshold"] != nil || o["s3_health_up_threshold"] == nil {
+		t.Fatalf("cleared override must read null: %v", o)
+	}
+	if o := call("GET", ""); *o["s3_health_up_threshold"] != 2 || !unset(o, "s3_health_down_threshold", "s3_health_interval_ms", "s3_health_timeout_ms") {
+		t.Fatalf("get overrides: %v", o)
 	}
 }

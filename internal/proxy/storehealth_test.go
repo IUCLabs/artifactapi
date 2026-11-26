@@ -611,3 +611,62 @@ func TestRunStoreProbePicksUpSettings(t *testing.T) {
 		t.Fatal("RunStoreProbe did not return after cancel")
 	}
 }
+
+func TestRunStoreProbeFollowsIntervalChange(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Thresholds are never crossed, so the probe never writes to Redis.
+	def := ProbeConfig{UpThreshold: 1 << 20, DownThreshold: 1 << 20, Interval: time.Hour, Timeout: time.Second}
+	var interval atomic.Int64
+	interval.Store(20)
+	load := func(context.Context) (models.Settings, error) {
+		return models.Settings{S3HealthIntervalMs: intp(int(interval.Load())), S3HealthTimeoutMs: intp(10)}, nil
+	}
+	ticks := make(chan time.Time, 1000)
+	probe := func(context.Context) error {
+		ticks <- time.Now()
+		return errors.New("probe failed")
+	}
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, def, load, probe, nil)
+		close(done)
+	}()
+	next := func() time.Time {
+		t.Helper()
+		select {
+		case at := <-ticks:
+			return at
+		case <-time.After(5 * time.Second):
+			t.Fatal("no probe within 5s")
+			return time.Time{}
+		}
+	}
+
+	// The stored 20ms interval replaces the hour-long default before the first tick.
+	for range 5 {
+		next()
+	}
+
+	interval.Store(400)
+	next()
+	prev := next()
+	if gap := next().Sub(prev); gap < 300*time.Millisecond {
+		t.Fatalf("probe gap after raising the interval to 400ms = %s", gap)
+	}
+
+	interval.Store(20)
+	next()
+	prev = next()
+	if gap := next().Sub(prev); gap > 200*time.Millisecond {
+		t.Fatalf("probe gap after lowering the interval to 20ms = %s", gap)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunStoreProbe did not return after cancel")
+	}
+}

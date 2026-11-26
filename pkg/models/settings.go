@@ -1,8 +1,11 @@
 package models
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 )
 
 // Settings is the singleton global settings resource. Every field is a nullable override of an
@@ -23,6 +26,32 @@ func (s Settings) Overlay(o Settings) Settings {
 		}
 	}
 	return s
+}
+
+// Patch applies a JSON merge patch: a given value sets its field, an explicit null clears it,
+// an absent key is kept, and an unknown key is an error.
+func (s Settings) Patch(raw map[string]json.RawMessage) (Settings, error) {
+	dst := reflect.ValueOf(&s).Elem()
+	fields := map[string]reflect.Value{}
+	for i := range dst.NumField() {
+		fields[strings.Split(dst.Type().Field(i).Tag.Get("json"), ",")[0]] = dst.Field(i)
+	}
+	for k, v := range raw {
+		f, ok := fields[k]
+		if !ok {
+			return s, fmt.Errorf("unknown setting %q", k)
+		}
+		if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+			f.SetZero()
+			continue
+		}
+		p := reflect.New(f.Type())
+		if err := json.Unmarshal(v, p.Interface()); err != nil {
+			return s, fmt.Errorf("%s: %w", k, err)
+		}
+		f.Set(p.Elem())
+	}
+	return s, nil
 }
 
 // Validate rejects any set field below 1, and a set timeout not shorter than a set interval.

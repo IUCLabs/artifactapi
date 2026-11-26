@@ -154,9 +154,14 @@ GET             /api/v2/events               SSE event stream
 `/api/v2/settings` is a singleton of global settings, each a nullable override
 of an env default: `s3_health_up_threshold`, `s3_health_down_threshold`,
 `s3_health_interval_ms` and `s3_health_timeout_ms` (`S3_HEALTH_*`). `PUT`
-replaces every override (an omitted or `null` field reverts to its default),
-`PATCH` sets only the fields given, `DELETE` clears all, and every response
-carries the effective values. The S3 health probe re-reads them every tick.
+replaces every override (an omitted or `null` field reverts to its default);
+`PATCH` is a merge patch (a value sets its field, `null` reverts it to its
+default, an absent field is kept); `DELETE` clears all. Unknown fields are
+rejected with 400. Every response carries the effective values as top-level
+fields, the stored overrides under `overrides` (every key present, `null` when
+unset), and `valid` plus, when false, `error`: a changed env default can make
+stored overrides invalid, and the probe then keeps its last valid settings. The S3 health probe
+re-reads them every tick.
 
 ## Architecture
 

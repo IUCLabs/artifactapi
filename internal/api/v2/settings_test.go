@@ -151,6 +151,13 @@ func TestSettingsPutRejectsInvalid(t *testing.T) {
 		"timeout equal to interval":  `{"s3_health_interval_ms":2000,"s3_health_timeout_ms":2000}`,
 		"not json":                   `nope`,
 		"unknown field":              `{"s3_health_up_treshold":2}`,
+		"threshold above 100":        `{"s3_health_down_threshold":101}`,
+		"interval below 500ms":       `{"s3_health_interval_ms":499,"s3_health_timeout_ms":100}`,
+		"interval above 1h":          `{"s3_health_interval_ms":3600001}`,
+		"interval beyond int32":      `{"s3_health_interval_ms":4294967296}`,
+		"timeout below 100ms":        `{"s3_health_timeout_ms":99}`,
+		"trailing value":             `{"s3_health_up_threshold":2}{"s3_health_up_threshold":3}`,
+		"trailing garbage":           `{"s3_health_up_threshold":2} x`,
 	} {
 		store := &fakeSettings{}
 		if code, _ := settingsCall(t, store, "PUT", body); code != 400 {
@@ -202,6 +209,8 @@ func TestSettingsPatchRejectsUnknownAndMalformed(t *testing.T) {
 		"wrong type":    `{"s3_health_up_threshold":"2"}`,
 		"not an object": `[1]`,
 		"not json":      `nope`,
+		"out of range":  `{"s3_health_up_threshold":101}`,
+		"trailing data": `{"s3_health_up_threshold":2}{}`,
 	} {
 		one := 1
 		store := &fakeSettings{s: models.Settings{S3HealthUpThreshold: &one}}

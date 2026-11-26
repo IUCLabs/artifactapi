@@ -54,19 +54,29 @@ func (s Settings) Patch(raw map[string]json.RawMessage) (Settings, error) {
 	return s, nil
 }
 
-// Validate rejects any set field below 1, and a set timeout not shorter than a set interval.
+// Bounds of the S3 health settings; migrations/0012_settings.sql mirrors them as CHECKs.
+const (
+	S3HealthThresholdMin  = 1
+	S3HealthThresholdMax  = 100
+	S3HealthIntervalMsMin = 500
+	S3HealthIntervalMsMax = 3_600_000
+	S3HealthTimeoutMsMin  = 100
+)
+
+// Validate rejects any set field outside its bounds, and a set timeout not shorter than a set interval.
 func (s Settings) Validate() error {
 	for _, f := range []struct {
-		name string
-		v    *int
+		name     string
+		v        *int
+		min, max int
 	}{
-		{"s3_health_up_threshold", s.S3HealthUpThreshold},
-		{"s3_health_down_threshold", s.S3HealthDownThreshold},
-		{"s3_health_interval_ms", s.S3HealthIntervalMs},
-		{"s3_health_timeout_ms", s.S3HealthTimeoutMs},
+		{"s3_health_up_threshold", s.S3HealthUpThreshold, S3HealthThresholdMin, S3HealthThresholdMax},
+		{"s3_health_down_threshold", s.S3HealthDownThreshold, S3HealthThresholdMin, S3HealthThresholdMax},
+		{"s3_health_interval_ms", s.S3HealthIntervalMs, S3HealthIntervalMsMin, S3HealthIntervalMsMax},
+		{"s3_health_timeout_ms", s.S3HealthTimeoutMs, S3HealthTimeoutMsMin, S3HealthIntervalMsMax - 1},
 	} {
-		if f.v != nil && *f.v < 1 {
-			return fmt.Errorf("%s must be at least 1, got %d", f.name, *f.v)
+		if f.v != nil && (*f.v < f.min || *f.v > f.max) {
+			return fmt.Errorf("%s must be between %d and %d, got %d", f.name, f.min, f.max, *f.v)
 		}
 	}
 	if s.S3HealthIntervalMs != nil && s.S3HealthTimeoutMs != nil && *s.S3HealthTimeoutMs >= *s.S3HealthIntervalMs {

@@ -12,19 +12,25 @@ func TestSettingsValidate(t *testing.T) {
 	if err := (&Settings{}).Validate(); err != nil {
 		t.Fatalf("empty settings: %v", err)
 	}
-	ok := Settings{S3HealthUpThreshold: intp(1), S3HealthDownThreshold: intp(5), S3HealthIntervalMs: intp(2), S3HealthTimeoutMs: intp(1)}
-	if err := ok.Validate(); err != nil {
+	lowest := Settings{S3HealthUpThreshold: intp(1), S3HealthDownThreshold: intp(1), S3HealthIntervalMs: intp(500), S3HealthTimeoutMs: intp(100)}
+	if err := lowest.Validate(); err != nil {
 		t.Fatalf("minimum values: %v", err)
 	}
-	for name, s := range map[string]Settings{
-		"s3_health_up_threshold":   {S3HealthUpThreshold: intp(0)},
-		"s3_health_down_threshold": {S3HealthDownThreshold: intp(-1)},
-		"s3_health_interval_ms":    {S3HealthIntervalMs: intp(0)},
-		"s3_health_timeout_ms":     {S3HealthTimeoutMs: intp(0)},
+	highest := Settings{S3HealthUpThreshold: intp(100), S3HealthDownThreshold: intp(100), S3HealthIntervalMs: intp(3_600_000), S3HealthTimeoutMs: intp(3_599_999)}
+	if err := highest.Validate(); err != nil {
+		t.Fatalf("maximum values: %v", err)
+	}
+	for name, cases := range map[string][]Settings{
+		"s3_health_up_threshold":   {{S3HealthUpThreshold: intp(0)}, {S3HealthUpThreshold: intp(101)}},
+		"s3_health_down_threshold": {{S3HealthDownThreshold: intp(-1)}, {S3HealthDownThreshold: intp(101)}},
+		"s3_health_interval_ms":    {{S3HealthIntervalMs: intp(499)}, {S3HealthIntervalMs: intp(3_600_001)}, {S3HealthIntervalMs: intp(1 << 32)}},
+		"s3_health_timeout_ms":     {{S3HealthTimeoutMs: intp(99)}, {S3HealthTimeoutMs: intp(3_600_000)}},
 	} {
-		err := s.Validate()
-		if err == nil || !strings.Contains(err.Error(), name) {
-			t.Errorf("%s below 1: err = %v, want one naming the field", name, err)
+		for _, s := range cases {
+			err := s.Validate()
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("%s out of bounds in %+v: err = %v, want one naming the field", name, s, err)
+			}
 		}
 	}
 }

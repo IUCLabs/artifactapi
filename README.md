@@ -156,8 +156,11 @@ of an env default: `s3_health_up_threshold`, `s3_health_down_threshold`,
 `s3_health_interval_ms` and `s3_health_timeout_ms` (`S3_HEALTH_*`). `PUT`
 replaces every override (an omitted or `null` field reverts to its default);
 `PATCH` is a merge patch (a value sets its field, `null` reverts it to its
-default, an absent field is kept); `DELETE` clears all. Unknown fields are
-rejected with 400. Every response carries the effective values as top-level
+default, an absent field is kept); `DELETE` clears all. Thresholds must be
+1–100, `s3_health_interval_ms` 500–3600000 and `s3_health_timeout_ms` at least
+100 and below the interval; the `S3_HEALTH_*` env defaults must satisfy the same
+bounds in whole milliseconds or startup fails. Out-of-range values, unknown
+fields and trailing data after the JSON body are rejected with 400. Every response carries the effective values as top-level
 fields, the stored overrides under `overrides` (every key present, `null` when
 unset), and `valid` plus, when false, `error`: a changed env default can make
 stored overrides invalid, and the probe then keeps its last valid settings. The S3 health probe
@@ -213,10 +216,10 @@ additive and idempotent for the same reason; a test enforces it.
 | `MINIO_BUCKET` | `artifacts` | S3 bucket |
 | `MINIO_SECURE` | `false` | Use HTTPS for S3 |
 | `MINIO_REGION` | | S3 region (AWS) |
-| `S3_HEALTH_INTERVAL` | `3s` | Object store health probe interval. The `S3_HEALTH_*` values are defaults, overridable at runtime via `/api/v2/settings`. The settled state is shared via Redis (`s3:health`, TTL 3× interval); while it is `down`, misses stream from upstream uncached |
-| `S3_HEALTH_TIMEOUT` | `1.5s` | Timeout of each health probe; must be shorter than `S3_HEALTH_INTERVAL` |
-| `S3_HEALTH_UP_THRESHOLD` | `3` | Consecutive passing probes before the store is marked up |
-| `S3_HEALTH_DOWN_THRESHOLD` | `3` | Consecutive failing probes before the store is marked down |
+| `S3_HEALTH_INTERVAL` | `3s` | Object store health probe interval, `500ms`–`1h`. The `S3_HEALTH_*` values are defaults, overridable at runtime via `/api/v2/settings`. The settled state is shared via Redis (`s3:health`, TTL 3× interval); while it is `down`, misses stream from upstream uncached |
+| `S3_HEALTH_TIMEOUT` | `1.5s` | Timeout of each health probe, at least `100ms` and shorter than `S3_HEALTH_INTERVAL` |
+| `S3_HEALTH_UP_THRESHOLD` | `3` | Consecutive passing probes before the store is marked up (1–100) |
+| `S3_HEALTH_DOWN_THRESHOLD` | `3` | Consecutive failing probes before the store is marked down (1–100) |
 | `GITHUB_SYNC_RATE` | `1` | `github_rpm` syncer global GitHub request rate (req/s), shared across all remotes. `1`/s = 3600/hr, under an authenticated token's ~5000/hr; unauthenticated (~60/hr) relies on ETag/304 |
 | `GITHUB_SYNC_BURST` | `5` | Token-bucket burst for the shared limiter |
 | `GITHUB_SYNC_WORKERS` | `3` | Concurrent `github_rpm` scan workers |

@@ -2,8 +2,6 @@ package proxy
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -44,16 +42,11 @@ func (c ProbeConfig) Settings() models.Settings {
 }
 
 func (c ProbeConfig) Validate() error {
-	switch {
-	case c.UpThreshold < 1 || c.DownThreshold < 1:
-		return errors.New("s3 health thresholds must be at least 1")
-	case c.Interval <= 0 || c.Timeout <= 0:
-		return errors.New("s3 health interval and timeout must be positive")
-	case c.Timeout >= c.Interval:
-		return fmt.Errorf("s3 health timeout %s must be shorter than interval %s", c.Timeout, c.Interval)
-	}
-	return nil
+	return c.Settings().Validate()
 }
+
+// settingsLoadTimeout bounds each settings read independently of the probe timeout it may change.
+const settingsLoadTimeout = 2 * time.Second
 
 // SettingsLoader reads the stored settings overrides.
 type SettingsLoader func(context.Context) (models.Settings, error)
@@ -69,7 +62,7 @@ func (p *probeSettings) refresh(ctx context.Context, current ProbeConfig) ProbeC
 	if p.load == nil {
 		return current
 	}
-	lctx, cancel := context.WithTimeout(ctx, current.Timeout)
+	lctx, cancel := context.WithTimeout(ctx, settingsLoadTimeout)
 	s, err := p.load(lctx)
 	cancel()
 	if err == nil {

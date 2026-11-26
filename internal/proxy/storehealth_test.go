@@ -509,9 +509,12 @@ func TestProbeConfigApply(t *testing.T) {
 		t.Fatalf("Settings round trip = %+v, want %+v", back, got)
 	}
 	for name, c := range map[string]ProbeConfig{
-		"zero up":            {UpThreshold: 0, DownThreshold: 1, Interval: time.Second, Timeout: time.Millisecond},
-		"zero down":          {UpThreshold: 1, DownThreshold: 0, Interval: time.Second, Timeout: time.Millisecond},
+		"zero up":            {UpThreshold: 0, DownThreshold: 1, Interval: time.Second, Timeout: 100 * time.Millisecond},
+		"zero down":          {UpThreshold: 1, DownThreshold: 0, Interval: time.Second, Timeout: 100 * time.Millisecond},
 		"timeout = interval": {UpThreshold: 1, DownThreshold: 1, Interval: time.Second, Timeout: time.Second},
+		"interval too short": {UpThreshold: 1, DownThreshold: 1, Interval: 499 * time.Millisecond, Timeout: 100 * time.Millisecond},
+		"timeout too short":  {UpThreshold: 1, DownThreshold: 1, Interval: time.Second, Timeout: 99 * time.Millisecond},
+		"threshold too high": {UpThreshold: 101, DownThreshold: 1, Interval: time.Second, Timeout: 100 * time.Millisecond},
 	} {
 		if c.Validate() == nil {
 			t.Errorf("%s: validated", name)
@@ -553,13 +556,31 @@ func TestProbeSettingsRefresh(t *testing.T) {
 	}
 }
 
+func TestProbeSettingsLoadTimeoutIgnoresProbeTimeout(t *testing.T) {
+	def := ProbeConfig{UpThreshold: 3, DownThreshold: 3, Interval: 3 * time.Second, Timeout: 1500 * time.Millisecond}
+	var budget time.Duration
+	p := probeSettings{defaults: def, load: func(ctx context.Context) (models.Settings, error) {
+		deadline, _ := ctx.Deadline()
+		budget = time.Until(deadline)
+		return models.Settings{S3HealthTimeoutMs: intp(100), S3HealthIntervalMs: intp(500)}, nil
+	}}
+	cfg := p.refresh(context.Background(), def)
+	if cfg.Timeout != 100*time.Millisecond {
+		t.Fatalf("refresh = %+v", cfg)
+	}
+	p.refresh(context.Background(), cfg)
+	if budget < settingsLoadTimeout-time.Second || budget > settingsLoadTimeout {
+		t.Fatalf("settings load budget = %s under a 100ms probe timeout, want about %s", budget, settingsLoadTimeout)
+	}
+}
+
 func TestRunStoreProbePicksUpSettings(t *testing.T) {
 	requireStack(t)
 	clearStoreHealth(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	def := ProbeConfig{UpThreshold: 1, DownThreshold: 3, Interval: 200 * time.Millisecond, Timeout: 100 * time.Millisecond}
+	def := ProbeConfig{UpThreshold: 1, DownThreshold: 3, Interval: 500 * time.Millisecond, Timeout: 100 * time.Millisecond}
 	type loaded struct {
 		s   models.Settings
 		err error
@@ -617,11 +638,11 @@ func TestRunStoreProbeFollowsIntervalChange(t *testing.T) {
 	defer cancel()
 
 	// Thresholds are never crossed, so the probe never writes to Redis.
-	def := ProbeConfig{UpThreshold: 1 << 20, DownThreshold: 1 << 20, Interval: time.Hour, Timeout: time.Second}
+	def := ProbeConfig{UpThreshold: 100, DownThreshold: 100, Interval: time.Hour, Timeout: time.Second}
 	var interval atomic.Int64
-	interval.Store(20)
+	interval.Store(500)
 	load := func(context.Context) (models.Settings, error) {
-		return models.Settings{S3HealthIntervalMs: intp(int(interval.Load())), S3HealthTimeoutMs: intp(10)}, nil
+		return models.Settings{S3HealthIntervalMs: intp(int(interval.Load())), S3HealthTimeoutMs: intp(100)}, nil
 	}
 	ticks := make(chan time.Time, 1000)
 	probe := func(context.Context) error {
@@ -644,23 +665,23 @@ func TestRunStoreProbeFollowsIntervalChange(t *testing.T) {
 		}
 	}
 
-	// The stored 20ms interval replaces the hour-long default before the first tick.
-	for range 5 {
+	// The stored 500ms interval replaces the hour-long default before the first tick.
+	for range 2 {
 		next()
 	}
 
-	interval.Store(400)
+	interval.Store(1500)
 	next()
 	prev := next()
-	if gap := next().Sub(prev); gap < 300*time.Millisecond {
-		t.Fatalf("probe gap after raising the interval to 400ms = %s", gap)
+	if gap := next().Sub(prev); gap < 1200*time.Millisecond {
+		t.Fatalf("probe gap after raising the interval to 1.5s = %s", gap)
 	}
 
-	interval.Store(20)
+	interval.Store(500)
 	next()
 	prev = next()
-	if gap := next().Sub(prev); gap > 200*time.Millisecond {
-		t.Fatalf("probe gap after lowering the interval to 20ms = %s", gap)
+	if gap := next().Sub(prev); gap > 1000*time.Millisecond {
+		t.Fatalf("probe gap after lowering the interval to 500ms = %s", gap)
 	}
 
 	cancel()

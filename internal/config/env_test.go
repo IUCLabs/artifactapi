@@ -122,6 +122,11 @@ func TestLoadInvalidHealthProbe(t *testing.T) {
 		"timeout":          {"S3_HEALTH_TIMEOUT": "-1s"},
 		"timeout=interval": {"S3_HEALTH_INTERVAL": "2s", "S3_HEALTH_TIMEOUT": "2s"},
 		"timeout>interval": {"S3_HEALTH_INTERVAL": "1s", "S3_HEALTH_TIMEOUT": "3s"},
+		"up too high":      {"S3_HEALTH_UP_THRESHOLD": "101"},
+		"interval too low": {"S3_HEALTH_INTERVAL": "499ms", "S3_HEALTH_TIMEOUT": "100ms"},
+		"interval > 1h":    {"S3_HEALTH_INTERVAL": "1h1ms"},
+		"timeout too low":  {"S3_HEALTH_TIMEOUT": "99ms"},
+		"sub-ms timeout":   {"S3_HEALTH_TIMEOUT": "1500500us"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			for k, v := range env {

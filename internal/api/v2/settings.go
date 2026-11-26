@@ -3,6 +3,8 @@ package v2
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -70,7 +72,7 @@ func (h *SettingsHandler) put(w http.ResponseWriter, r *http.Request) {
 	var s models.Settings
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&s); err != nil {
+	if err := decodeOne(dec, &s); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -89,7 +91,7 @@ func (h *SettingsHandler) put(w http.ResponseWriter, r *http.Request) {
 // default, and an absent field is kept.
 func (h *SettingsHandler) patch(w http.ResponseWriter, r *http.Request) {
 	var raw map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+	if err := decodeOne(json.NewDecoder(r.Body), &raw); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -114,6 +116,17 @@ func (h *SettingsHandler) patch(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.respond(w, saved)
 	}
+}
+
+// decodeOne decodes a single JSON value and rejects anything after it.
+func decodeOne(dec *json.Decoder, v any) error {
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("unexpected data after the JSON value")
+	}
+	return nil
 }
 
 func (h *SettingsHandler) validate(s models.Settings) error {

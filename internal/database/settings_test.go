@@ -52,11 +52,20 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSettingsRejectsNonPositive(t *testing.T) {
+func TestSettingsRejectsOutOfBounds(t *testing.T) {
 	requireDB(t)
 	t.Cleanup(func() { _ = testDB.ResetSettings(ctx()) })
-	if err := testDB.PutSettings(ctx(), models.Settings{S3HealthDownThreshold: intp(0)}); err == nil {
-		t.Fatal("a zero threshold must violate the column check")
+	for name, s := range map[string]models.Settings{
+		"zero threshold":      {S3HealthDownThreshold: intp(0)},
+		"threshold over 100":  {S3HealthUpThreshold: intp(101)},
+		"interval under 500":  {S3HealthIntervalMs: intp(499)},
+		"interval over 1h":    {S3HealthIntervalMs: intp(3_600_001)},
+		"timeout under 100":   {S3HealthTimeoutMs: intp(99)},
+		"timeout >= interval": {S3HealthIntervalMs: intp(1000), S3HealthTimeoutMs: intp(1000)},
+	} {
+		if err := testDB.PutSettings(ctx(), s); err == nil {
+			t.Errorf("%s must violate a column check", name)
+		}
 	}
 }
 

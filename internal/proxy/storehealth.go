@@ -104,7 +104,8 @@ func (h *hysteresis) observe(err error) {
 }
 
 // healthTTL outlives the longest gap between writes: the first probe can wait out a stalled
-// settings read, a fixed-rate tick can slip by up to an interval, then a hung probe.
+// settings read, and each later probe starts an interval after the last one began, so a hung
+// probe stretches the gap to about Interval+Timeout.
 func healthTTL(cfg ProbeConfig) time.Duration {
 	return 3*cfg.Interval + settingsLoadTimeout + cfg.Timeout
 }

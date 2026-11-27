@@ -90,10 +90,10 @@ func (c clientRun) run(ctx context.Context, timeout time.Duration) (string, erro
 		defer func() { _ = ctr.Terminate(context.WithoutCancel(ctx)) }()
 	}
 	if err != nil {
-		return containerLogs(ctx, ctr), fmt.Errorf("start %s: %w", c.image, err)
+		return containerLogs(context.WithoutCancel(ctx), ctr), fmt.Errorf("start %s: %w", c.image, err)
 	}
 	if err := ctr.CopyToContainer(ctx, []byte{}, "/tmp/.aa-go", 0o644); err != nil {
-		return "", fmt.Errorf("signal %s: %w", c.image, err)
+		return containerLogs(context.WithoutCancel(ctx), ctr), fmt.Errorf("signal %s: %w", c.image, err)
 	}
 	for {
 		state, err := ctr.State(ctx)

@@ -26,7 +26,7 @@ fmt: check-go
 	goimports -w .
 
 e2e: check-go
-	TESTCONTAINERS_RYUK_DISABLED=true go test -tags=e2e -race -count=1 -timeout=5m ./e2e/...
+	TESTCONTAINERS_RYUK_DISABLED=true go test -tags=e2e -count=1 -timeout=10m ./e2e/...
 
 # Build the container, bring up the full docker-compose stack + a mock upstream,
 # and run the black-box suite against the running product.

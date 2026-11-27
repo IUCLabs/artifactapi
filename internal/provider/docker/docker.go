@@ -49,10 +49,6 @@ func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
 	return strings.TrimRight(remote.BaseURL, "/") + "/v2/" + strings.TrimLeft(path, "/")
 }
 
-func (p *Provider) RewriteResponse(_ []byte, _ models.Remote, _ string) ([]byte, error) {
-	return nil, nil
-}
-
 func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {
 	h := http.Header{}
 	if remote.Username != "" && remote.Password != "" {

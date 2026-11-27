@@ -133,12 +133,14 @@ func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote
 	defer func() { _ = result.Reader.Close() }()
 
 	var body io.Reader = result.Reader
-	if sr, ok := prov.(provider.ServeRewriter); ok && prov.Classify(path) == provider.Mutable {
-		raw, ok := rewriteServed(w, r, sr, *remote, result.Reader)
-		if !ok {
-			return
+	if prov.Classify(path) == provider.Mutable {
+		if sr, ok := h.serveRewriter(r, *remote, prov); ok {
+			raw, ok := rewriteServed(w, r, sr, *remote, result.Reader)
+			if !ok {
+				return
+			}
+			body, result.Size = bytes.NewReader(raw), int64(len(raw))
 		}
-		body, result.Size = bytes.NewReader(raw), int64(len(raw))
 	}
 
 	w.Header().Set("Content-Type", result.ContentType)
@@ -171,10 +173,44 @@ func writeProxyError(w http.ResponseWriter, pe *proxy.ProxyError) {
 	})
 }
 
+// rewritesMutable: HEAD takes the GET path when a mutable body is rewritten or keyed by forwarded query.
 func rewritesMutable(prov provider.Provider, path string) bool {
 	_, sr := prov.(provider.ServeRewriter)
+	_, rel := prov.(provider.ReleasesRewriter)
 	_, rr := prov.(provider.ResponseRewriter)
-	return (sr || rr) && prov.Classify(path) == provider.Mutable
+	qf, ok := prov.(provider.QueryForwarder)
+	fq := ok && len(qf.ForwardedQuery(path)) > 0
+	return (sr || rel || rr || fq) && prov.Classify(path) == provider.Mutable
+}
+
+type releasesRewriter struct {
+	rw       provider.ReleasesRewriter
+	releases models.Remote
+}
+
+func (r releasesRewriter) RewriteServed(body []byte, remote models.Remote, proxyBaseURL string) []byte {
+	return r.rw.RewriteReleases(body, remote, r.releases, proxyBaseURL)
+}
+
+// serveRewriter returns the provider's per-request rewriter, binding the
+// releases remote's config for providers that rewrite links onto it.
+func (h *ProxyHandler) serveRewriter(r *http.Request, remote models.Remote, prov provider.Provider) (provider.ServeRewriter, bool) {
+	if sr, ok := prov.(provider.ServeRewriter); ok {
+		return sr, true
+	}
+	rw, ok := prov.(provider.ReleasesRewriter)
+	if !ok {
+		return nil, false
+	}
+	var releases models.Remote
+	if remote.ReleasesRemote != "" {
+		if rel, err := h.db.GetRemote(r.Context(), remote.ReleasesRemote); err == nil {
+			releases = *rel
+		} else {
+			slog.Warn("releases remote lookup failed", "remote", remote.Name, "releases_remote", remote.ReleasesRemote, "error", err)
+		}
+	}
+	return releasesRewriter{rw: rw, releases: releases}, true
 }
 
 // handleProxyHead answers HEAD like GET without a body. Responses a provider

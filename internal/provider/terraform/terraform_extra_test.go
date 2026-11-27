@@ -71,23 +71,31 @@ func TestTFUploadResponse(t *testing.T) {
 	}
 }
 
-func TestTFRewriteResponse(t *testing.T) {
+func TestTFRewriteServedNoop(t *testing.T) {
 	p := &Provider{}
 	remote := models.Remote{Name: "tf", ReleasesRemote: "hashicorp-releases"}
-
-	if out, _ := p.RewriteResponse([]byte(`{"download_url":"x"}`), models.Remote{}, "http://proxy"); out != nil {
-		t.Error("no ReleasesRemote should be a no-op")
-	}
-	if out, _ := p.RewriteResponse([]byte("not json"), remote, "http://proxy"); out != nil {
-		t.Error("invalid json should be a no-op")
-	}
-	body := []byte(`{"download_url":"https://releases.hashicorp.com/terraform-provider-aws/1.0/aws.zip"}`)
-	out, err := p.RewriteResponse(body, remote, "http://proxy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(out), "http://proxy/api/v1/remote/hashicorp-releases/") {
-		t.Errorf("download_url not rewritten: %s", out)
+	releases := models.Remote{Name: "hashicorp-releases", BaseURL: "https://releases.hashicorp.com"}
+	const hc = `{"download_url":"https://releases.hashicorp.com/a.zip"}`
+	for _, tc := range []struct {
+		name     string
+		remote   models.Remote
+		releases models.Remote
+		body     string
+	}{
+		{"no releases remote", models.Remote{Name: "tf"}, releases, hc},
+		{"releases remote unresolved", remote, models.Remote{}, hc},
+		{"releases remote has no base url", remote, models.Remote{Name: "hashicorp-releases"}, hc},
+		{"not json", remote, releases, "not json"},
+		{"versions document", remote, releases, `{"versions":[{"version":"1.0.0"}]}`},
+		{"relative url", remote, releases, `{"download_url":"a.zip"}`},
+		{"unparseable url", remote, releases, `{"download_url":"://bad"}`},
+		{"other host", remote, releases, `{"download_url":"https://github.com/integrations/terraform-provider-github/releases/download/v6.6.0/a.zip"}`},
+		{"other scheme", remote, releases, `{"download_url":"http://releases.hashicorp.com/a.zip"}`},
+		{"outside base path", remote, models.Remote{Name: "hashicorp-releases", BaseURL: "https://releases.hashicorp.com/terraform-provider-aws"}, `{"download_url":"https://releases.hashicorp.com/terraform-provider-awsx/a.zip"}`},
+	} {
+		if got := string(p.RewriteReleases([]byte(tc.body), tc.remote, tc.releases, "http://proxy")); got != tc.body {
+			t.Errorf("%s: body changed to %s", tc.name, got)
+		}
 	}
 }
 
@@ -146,21 +154,6 @@ func TestTFContentTypeAndEmptyIndex(t *testing.T) {
 	p.ServeLocalIndex(w, r, empty, "repo", "hashicorp/aws/1.0.0.json")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("empty version doc should be 404, got %d", w.Code)
-	}
-}
-
-func TestRewriteDownloadURL(t *testing.T) {
-	// Empty proxy base -> unchanged.
-	if got := rewriteDownloadURL("https://x/a.zip", "rel", ""); got != "https://x/a.zip" {
-		t.Errorf("empty base: %q", got)
-	}
-	// Unparseable URL -> unchanged.
-	if got := rewriteDownloadURL("://bad", "rel", "http://p"); got != "://bad" {
-		t.Errorf("bad url: %q", got)
-	}
-	// Normal rewrite.
-	if got := rewriteDownloadURL("https://cdn/path/a.zip", "rel", "http://p"); got != "http://p/api/v1/remote/rel/path/a.zip" {
-		t.Errorf("rewrite: %q", got)
 	}
 }
 

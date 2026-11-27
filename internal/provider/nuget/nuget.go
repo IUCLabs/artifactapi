@@ -57,10 +57,6 @@ func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
 	return origin(remote.BaseURL) + "/" + path
 }
 
-func (p *Provider) RewriteResponse(_ []byte, _ models.Remote, _ string) ([]byte, error) {
-	return nil, nil
-}
-
 // RewriteServed points upstream-origin URLs in cached JSON back at this remote.
 // It runs per request because the URLs must name the requesting host.
 func (p *Provider) RewriteServed(body []byte, remote models.Remote, proxyBaseURL string) []byte {

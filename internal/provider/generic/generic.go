@@ -57,10 +57,6 @@ func (p *Provider) UpstreamURL(remote models.Remote, reqPath string) string {
 	return base + "/" + strings.TrimLeft(reqPath, "/")
 }
 
-func (p *Provider) RewriteResponse(_ []byte, _ models.Remote, _ string) ([]byte, error) {
-	return nil, nil
-}
-
 // AuthHeaders authenticates outbound requests. A per-remote username/password
 // (Basic auth) takes precedence. Otherwise, when the remote points at a GitHub
 // host (e.g. a releases_remote proxying private release assets), the process-wide

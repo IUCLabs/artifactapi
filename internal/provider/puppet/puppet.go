@@ -66,20 +66,6 @@ func pageOffset(v string) (string, bool) {
 	return strconv.FormatUint(n, 10), err == nil
 }
 
-func (p *Provider) RewritesResponse() {}
-
-func (p *Provider) RewriteResponse(body []byte, remote models.Remote, proxyBaseURL string) ([]byte, error) {
-	if proxyBaseURL == "" {
-		return nil, nil
-	}
-	content := string(body)
-	proxyURL := strings.TrimRight(proxyBaseURL, "/") + "/api/v1/remote/" + remote.Name
-	content = strings.ReplaceAll(content, `"/v3/files/`, `"`+proxyURL+`/v3/files/`)
-	baseURL := strings.TrimRight(remote.BaseURL, "/")
-	content = strings.ReplaceAll(content, baseURL, proxyURL)
-	return []byte(content), nil
-}
-
 func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {
 	return auth.BasicHeaders(remote), nil
 }

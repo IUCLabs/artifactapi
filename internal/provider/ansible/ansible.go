@@ -69,7 +69,7 @@ func pageLimit(v string) (string, bool) {
 // RewriteResponse points href, download_url and links.* at the remote. Links
 // stay root-relative, which ansible-galaxy joins onto the server URL, so the
 // cached body is independent of the request host.
-func (p *Provider) RewriteResponse(body []byte, remote models.Remote, _ string) ([]byte, error) {
+func (p *Provider) RewriteResponse(body []byte, remote models.Remote) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	var doc any

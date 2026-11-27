@@ -76,7 +76,7 @@ func TestForwardedQuery(t *testing.T) {
 
 func rewrite(t *testing.T, remote models.Remote, body string) map[string]any {
 	t.Helper()
-	out, err := (&Provider{}).RewriteResponse([]byte(body), remote, "")
+	out, err := (&Provider{}).RewriteResponse([]byte(body), remote)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestRewriteResponseEscapesRemoteName(t *testing.T) {
 }
 
 func TestRewriteResponseKeepsLargeNumbers(t *testing.T) {
-	out, err := (&Provider{}).RewriteResponse([]byte(`{"n":12345678901234567890}`), models.Remote{Name: "g"}, "")
+	out, err := (&Provider{}).RewriteResponse([]byte(`{"n":12345678901234567890}`), models.Remote{Name: "g"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestRewriteResponseKeepsLargeNumbers(t *testing.T) {
 }
 
 func TestRewriteResponseSkipsNonJSON(t *testing.T) {
-	out, err := (&Provider{}).RewriteResponse([]byte("<html>"), models.Remote{Name: "g"}, "")
+	out, err := (&Provider{}).RewriteResponse([]byte("<html>"), models.Remote{Name: "g"})
 	if err != nil || out != nil {
 		t.Errorf("got %q, %v; want nil, nil", out, err)
 	}

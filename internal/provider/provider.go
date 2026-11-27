@@ -23,7 +23,6 @@ type Provider interface {
 	Classify(path string) Mutability
 	ContentType(path string) string
 	UpstreamURL(remote models.Remote, path string) string
-	RewriteResponse(body []byte, remote models.Remote, proxyBaseURL string) ([]byte, error)
 	AuthHeaders(ctx context.Context, remote models.Remote) (http.Header, error)
 }
 

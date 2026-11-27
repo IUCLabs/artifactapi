@@ -57,9 +57,6 @@ func TestRPMPureFuncs(t *testing.T) {
 	if got := p.UpstreamURL(models.Remote{BaseURL: "https://mirror/"}, "/Packages/x.rpm"); got != "https://mirror/Packages/x.rpm" {
 		t.Errorf("upstream url %q", got)
 	}
-	if out, _ := p.RewriteResponse(nil, models.Remote{}, "http://p"); out != nil {
-		t.Error("rpm never rewrites")
-	}
 	h, _ := p.AuthHeaders(context.Background(), models.Remote{Username: "u", Password: "p"})
 	if h.Get("Authorization") == "" {
 		t.Error("auth header")

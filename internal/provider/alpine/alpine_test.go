@@ -46,12 +46,6 @@ func TestUpstreamURL(t *testing.T) {
 	}
 }
 
-func TestRewriteResponse(t *testing.T) {
-	if out, err := (&Provider{}).RewriteResponse([]byte("x"), models.Remote{}, "http://proxy"); out != nil || err != nil {
-		t.Error("alpine never rewrites")
-	}
-}
-
 func TestAuthHeaders(t *testing.T) {
 	h, _ := (&Provider{}).AuthHeaders(context.Background(), models.Remote{Username: "u", Password: "p"})
 	if h.Get("Authorization") == "" {

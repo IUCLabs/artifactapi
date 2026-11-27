@@ -1,7 +1,9 @@
 package provider
 
-// ResponseRewriter marks providers whose RewriteResponse changes mutable
-// bodies, so the served length is only known after a fetch.
+import "github.com/IUCLabs/artifactapi/pkg/models"
+
+// ResponseRewriter rewrites a mutable remote response once, before it is
+// cached, so its links must not depend on the requesting host.
 type ResponseRewriter interface {
-	RewritesResponse()
+	RewriteResponse(body []byte, remote models.Remote) ([]byte, error)
 }

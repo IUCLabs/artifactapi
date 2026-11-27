@@ -117,10 +117,6 @@ func (p *GitHubProvider) UpstreamURL(remote models.Remote, path string) string {
 	return strings.TrimRight(remote.BaseURL, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
-func (p *GitHubProvider) RewriteResponse(_ []byte, _ models.Remote, _ string) ([]byte, error) {
-	return nil, nil
-}
-
 func (p *GitHubProvider) AuthHeaders(ctx context.Context, remote models.Remote) (http.Header, error) {
 	return p.githubHeaders(ctx, remote, false)
 }

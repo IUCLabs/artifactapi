@@ -106,10 +106,7 @@ const (
 
 var pypiRemote = models.Remote{Name: "pypi", BaseURL: "https://pypi.org"}
 
-func TestRewriteResponseIsNoop(t *testing.T) {
-	if out, err := (&Provider{}).RewriteResponse([]byte("x"), pypiRemote, ""); out != nil || err != nil {
-		t.Errorf("cached bodies must stay upstream-shaped, got %q, %v", out, err)
-	}
+func TestNoCacheTimeRewrite(t *testing.T) {
 	if _, ok := any(&Provider{}).(provider.ResponseRewriter); ok {
 		t.Error("pypi rewrites at serve time, not before caching")
 	}

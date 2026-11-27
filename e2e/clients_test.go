@@ -239,7 +239,8 @@ ls /tmp/collections/ansible_collections/ansible/posix/MANIFEST.json
 }
 
 func testTerraform(t *testing.T) {
-	r := withRemote(t, "cl-tf", models.PackageTerraform, "https://registry.terraform.io")
+	rel := withRemote(t, "cl-tf-releases", models.PackageGeneric, "https://releases.hashicorp.com")
+	withRemote(t, "cl-tf", models.PackageTerraform, "https://registry.terraform.io", `"releases_remote":"cl-tf-releases"`)
 	missThenHit(t, clientRun{image: imgTerraform, script: `
 mkdir /w && cd /w
 cat > /tmp/tf.rc <<EOF
@@ -260,7 +261,8 @@ terraform {
 }
 EOF
 TF_CLI_CONFIG_FILE=/tmp/tf.rc terraform init -input=false
-`}, cached{r, re(`^hashicorp/null/3\.2\.4/download/linux/amd64$`)})
+`}, cached{rel, re(`^terraform-provider-null/3\.2\.4/terraform-provider-null_3\.2\.4_linux_amd64\.zip$`)},
+		cached{rel, re(`^terraform-provider-null/3\.2\.4/terraform-provider-null_3\.2\.4_SHA256SUMS$`)})
 }
 
 func testGeneric(t *testing.T) {

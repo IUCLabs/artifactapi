@@ -11,6 +11,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/provider/helm"
 	"github.com/IUCLabs/artifactapi/internal/provider/npm"
 	"github.com/IUCLabs/artifactapi/internal/provider/nuget"
+	"github.com/IUCLabs/artifactapi/internal/provider/puppet"
 	"github.com/IUCLabs/artifactapi/internal/provider/rpm"
 	"github.com/IUCLabs/artifactapi/internal/provider/terraform"
 )
@@ -41,6 +42,9 @@ func TestRewritesMutable(t *testing.T) {
 		{"helm chart", &helm.Provider{}, "charts/demo-1.0.0.tgz", false},
 		{"terraform download doc", &terraform.Provider{}, "hashicorp/null/3.2.4/download/linux/amd64", true},
 		{"terraform versions", &terraform.Provider{}, "hashicorp/null/versions", true},
+		{"puppet release listing", &puppet.Provider{}, "v3/releases", true},
+		{"puppet release detail", &puppet.Provider{}, "v3/releases/puppetlabs-stdlib-9.0.0", false},
+		{"puppet module tarball", &puppet.Provider{}, "v3/files/puppetlabs-stdlib-9.0.0.tar.gz", false},
 	}
 	for _, tc := range tests {
 		if got := rewritesMutable(tc.prov, tc.path); got != tc.want {

@@ -92,3 +92,39 @@ func TestTerraformDownloadRewrittenAtServe(t *testing.T) {
 		t.Errorf("github download_url = %q, want untouched %q", github["download_url"], gh)
 	}
 }
+
+func TestPuppetReleasesHeadMatchesGetWithQuery(t *testing.T) {
+	h, _ := npmTestServer(t)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"query":%q}`, r.URL.RawQuery)
+	}))
+	t.Cleanup(upstream.Close)
+	repo := remoteRepo(t, h, models.PackagePuppet, upstream.URL, "")
+
+	do := func(method, path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.Routes().ServeHTTP(w, httptest.NewRequest(method, path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s %s = %d: %s", method, path, w.Code, w.Body)
+		}
+		return w
+	}
+	filtered := "/remote/" + repo + "/v3/releases?module=puppetlabs-stdlib&limit=5&offset=10"
+	do(http.MethodGet, "/remote/"+repo+"/v3/releases")
+	head := do(http.MethodHead, filtered)
+	get := do(http.MethodGet, filtered)
+
+	want := `{"query":"limit=5&module=puppetlabs-stdlib&offset=10"}`
+	if get.Body.String() != want {
+		t.Fatalf("GET body = %s, want %s", get.Body, want)
+	}
+	for _, k := range []string{"Content-Length", "Content-Type"} {
+		if hv, gv := head.Header().Get(k), get.Header().Get(k); hv != gv {
+			t.Errorf("HEAD %s = %q, GET %q", k, hv, gv)
+		}
+	}
+	if got := head.Header().Get("Content-Length"); got != fmt.Sprint(len(want)) {
+		t.Errorf("HEAD Content-Length = %q, want %d", got, len(want))
+	}
+}

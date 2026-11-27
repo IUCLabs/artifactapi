@@ -173,11 +173,14 @@ func writeProxyError(w http.ResponseWriter, pe *proxy.ProxyError) {
 	})
 }
 
+// rewritesMutable: HEAD takes the GET path when a mutable body is rewritten or keyed by forwarded query.
 func rewritesMutable(prov provider.Provider, path string) bool {
 	_, sr := prov.(provider.ServeRewriter)
 	_, rel := prov.(provider.ReleasesRewriter)
 	_, rr := prov.(provider.ResponseRewriter)
-	return (sr || rel || rr) && prov.Classify(path) == provider.Mutable
+	qf, ok := prov.(provider.QueryForwarder)
+	fq := ok && len(qf.ForwardedQuery(path)) > 0
+	return (sr || rel || rr || fq) && prov.Classify(path) == provider.Mutable
 }
 
 type releasesRewriter struct {

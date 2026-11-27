@@ -637,44 +637,88 @@ func TestRunStoreProbePicksUpSettings(t *testing.T) {
 	}
 }
 
-func TestRunStoreProbeKeyOutlivesStalledSettings(t *testing.T) {
+func TestRunStoreProbeFirstWriteWaitsOutStalledSettings(t *testing.T) {
 	requireStack(t)
 	clearStoreHealth(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	def := ProbeConfig{UpThreshold: 1, DownThreshold: 1, Interval: 500 * time.Millisecond, Timeout: 100 * time.Millisecond}
-	var writes atomic.Int64
 	load := func(lctx context.Context) (models.Settings, error) {
 		<-lctx.Done()
 		return models.Settings{}, lctx.Err()
 	}
-	probe := func(context.Context) error {
-		writes.Add(1)
-		return errors.New("probe failed")
-	}
+	probe := func(context.Context) error { return errors.New("probe failed") }
 	done := make(chan struct{})
 	go func() {
 		RunStoreProbe(ctx, def, load, probe, testCache)
 		close(done)
 	}()
 
-	first := time.Now().Add(settingsLoadTimeout + time.Second)
+	deadline := time.Now().Add(settingsLoadTimeout + time.Second)
 	for val, _ := storeHealthKey(t); val != "down"; val, _ = storeHealthKey(t) {
-		if time.Now().After(first) {
+		if time.Now().After(deadline) {
 			t.Fatal("no store health written within the stalled settings budget")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	start := writes.Load()
-	for end := time.Now().Add(2*settingsLoadTimeout + time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
-		if val, _ := storeHealthKey(t); val != "down" {
-			t.Fatalf("s3:health = %q between writes stalled on settings reads, want down", val)
+	if _, ttl := storeHealthKey(t); ttl < healthTTL(def)-time.Second {
+		t.Fatalf("s3:health TTL = %s after a stalled first settings read, want about %s", ttl, healthTTL(def))
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("RunStoreProbe did not return after cancel")
+	}
+}
+
+func TestRunStoreProbeRewritesTTLOnIntervalChange(t *testing.T) {
+	requireStack(t)
+	clearStoreHealth(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	def := ProbeConfig{UpThreshold: 1, DownThreshold: 1, Interval: time.Hour, Timeout: 100 * time.Millisecond}
+	var interval atomic.Int64
+	interval.Store(500)
+	load := func(context.Context) (models.Settings, error) {
+		return models.Settings{S3HealthIntervalMs: intp(int(interval.Load()))}, nil
+	}
+	probe := func(context.Context) error { return nil }
+	done := make(chan struct{})
+	go func() {
+		RunStoreProbe(ctx, def, load, probe, testCache)
+		close(done)
+	}()
+
+	short := def
+	short.Interval = 500 * time.Millisecond
+	long := def
+	long.Interval = 10 * time.Second
+	waitKey := func(within time.Duration, ok func(string, time.Duration) bool) {
+		t.Helper()
+		deadline := time.Now().Add(within)
+		for {
+			val, ttl := storeHealthKey(t)
+			if ok(val, ttl) {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("s3:health = %q with TTL %s after %s", val, ttl, within)
+			}
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
-	if n := writes.Load() - start; n < 2 {
-		t.Fatalf("observed %d rewrites, want at least 2 stalled gaps spanned", n)
-	}
+	waitKey(2*time.Second, func(val string, ttl time.Duration) bool {
+		return val == "up" && ttl > 0 && ttl <= healthTTL(short)
+	})
+
+	interval.Store(long.Interval.Milliseconds())
+	waitKey(settingsRefreshInterval+500*time.Millisecond, func(val string, ttl time.Duration) bool {
+		return val == "up" && ttl > healthTTL(long)-time.Second
+	})
 
 	cancel()
 	select {

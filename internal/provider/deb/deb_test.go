@@ -67,9 +67,6 @@ func TestDebPureFuncs(t *testing.T) {
 	if p.Type() != models.PackageDeb {
 		t.Errorf("type = %q", p.Type())
 	}
-	if out, _ := p.RewriteResponse(nil, models.Remote{}, "http://p"); out != nil {
-		t.Error("deb never rewrites")
-	}
 	if got := p.UpstreamURL(models.Remote{BaseURL: "https://mirror/"}, "/dists/bookworm/Release"); got != "https://mirror/dists/bookworm/Release" {
 		t.Errorf("upstream url %q", got)
 	}

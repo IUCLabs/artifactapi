@@ -6,6 +6,8 @@ Shared classification, TTL and eviction rules: [caching](../common/caching.md).
 |---|---|---|
 | `helm` | `index.yaml` | `.tgz` charts |
 
+Chart urls under `base_url` in a served `index.yaml` point back at the remote.
+
 ## Terraform
 
 ```hcl

@@ -71,23 +71,23 @@ func TestTFUploadResponse(t *testing.T) {
 	}
 }
 
-func TestTFRewriteResponse(t *testing.T) {
+func TestTFRewriteServedNoop(t *testing.T) {
 	p := &Provider{}
 	remote := models.Remote{Name: "tf", ReleasesRemote: "hashicorp-releases"}
-
-	if out, _ := p.RewriteResponse([]byte(`{"download_url":"x"}`), models.Remote{}, "http://proxy"); out != nil {
-		t.Error("no ReleasesRemote should be a no-op")
-	}
-	if out, _ := p.RewriteResponse([]byte("not json"), remote, "http://proxy"); out != nil {
-		t.Error("invalid json should be a no-op")
-	}
-	body := []byte(`{"download_url":"https://releases.hashicorp.com/terraform-provider-aws/1.0/aws.zip"}`)
-	out, err := p.RewriteResponse(body, remote, "http://proxy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(out), "http://proxy/api/v1/remote/hashicorp-releases/") {
-		t.Errorf("download_url not rewritten: %s", out)
+	for _, tc := range []struct {
+		name   string
+		remote models.Remote
+		body   string
+	}{
+		{"no releases remote", models.Remote{Name: "tf"}, `{"download_url":"https://releases.hashicorp.com/a.zip"}`},
+		{"not json", remote, "not json"},
+		{"versions document", remote, `{"versions":[{"version":"1.0.0"}]}`},
+		{"relative url", remote, `{"download_url":"a.zip"}`},
+		{"unparseable url", remote, `{"download_url":"://bad"}`},
+	} {
+		if got := string(p.RewriteServed([]byte(tc.body), tc.remote, "http://proxy")); got != tc.body {
+			t.Errorf("%s: body changed to %s", tc.name, got)
+		}
 	}
 }
 
@@ -146,21 +146,6 @@ func TestTFContentTypeAndEmptyIndex(t *testing.T) {
 	p.ServeLocalIndex(w, r, empty, "repo", "hashicorp/aws/1.0.0.json")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("empty version doc should be 404, got %d", w.Code)
-	}
-}
-
-func TestRewriteDownloadURL(t *testing.T) {
-	// Empty proxy base -> unchanged.
-	if got := rewriteDownloadURL("https://x/a.zip", "rel", ""); got != "https://x/a.zip" {
-		t.Errorf("empty base: %q", got)
-	}
-	// Unparseable URL -> unchanged.
-	if got := rewriteDownloadURL("://bad", "rel", "http://p"); got != "://bad" {
-		t.Errorf("bad url: %q", got)
-	}
-	// Normal rewrite.
-	if got := rewriteDownloadURL("https://cdn/path/a.zip", "rel", "http://p"); got != "http://p/api/v1/remote/rel/path/a.zip" {
-		t.Errorf("rewrite: %q", got)
 	}
 }
 

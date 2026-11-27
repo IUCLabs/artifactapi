@@ -20,6 +20,8 @@ func init() {
 
 var versionsRe = regexp.MustCompile(`[^/]+/[^/]+/versions$`)
 
+var downloadRe = regexp.MustCompile(`^[^/]+/[^/]+/[^/]+/download/[^/]+/[^/]+$`)
+
 var providerZipRe = regexp.MustCompile(
 	`^terraform-provider-([a-zA-Z0-9_-]+)_([0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.]+)?)_([a-z0-9]+)_([a-z0-9]+)\.zip$`,
 )
@@ -52,7 +54,7 @@ type Provider struct{}
 func (p *Provider) Type() models.PackageType { return models.PackageTerraform }
 
 func (p *Provider) Classify(path string) provider.Mutability {
-	if versionsRe.MatchString(path) {
+	if versionsRe.MatchString(path) || downloadRe.MatchString(path) {
 		return provider.Mutable
 	}
 	return provider.Immutable
@@ -73,44 +75,39 @@ func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
 	return strings.TrimRight(remote.BaseURL, "/") + "/v1/providers/" + strings.TrimLeft(path, "/")
 }
 
-func (p *Provider) RewritesResponse() {}
-
-func (p *Provider) RewriteResponse(body []byte, remote models.Remote, proxyBaseURL string) ([]byte, error) {
+// RewriteServed points a cached download document's archive, SHA256SUMS and
+// signature URLs at the releases remote, so provider zips are fetched and
+// cached there.
+func (p *Provider) RewriteServed(body []byte, remote models.Remote, proxyBaseURL string) []byte {
 	if remote.ReleasesRemote == "" {
-		return nil, nil
+		return body
 	}
-	if !json.Valid(body) {
-		return nil, nil
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return body
 	}
-
-	var data map[string]any
-	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, nil
-	}
-
+	prefix := strings.TrimRight(proxyBaseURL, "/") + provider.RemoteMountPath + url.PathEscape(remote.ReleasesRemote)
 	changed := false
 	for _, field := range []string{"download_url", "shasums_url", "shasums_signature_url"} {
-		if val, ok := data[field].(string); ok && val != "" {
-			rewritten := rewriteDownloadURL(val, remote.ReleasesRemote, proxyBaseURL)
-			if rewritten != val {
-				data[field] = rewritten
-				changed = true
-			}
+		var val string
+		if json.Unmarshal(doc[field], &val) != nil {
+			continue
 		}
+		u, err := url.Parse(val)
+		if err != nil || !u.IsAbs() {
+			continue
+		}
+		doc[field], _ = json.Marshal(prefix + u.EscapedPath())
+		changed = true
 	}
-
 	if !changed {
-		return nil, nil
+		return body
 	}
-	return json.Marshal(data)
-}
-
-func rewriteDownloadURL(originalURL, releasesRemote, proxyBaseURL string) string {
-	parsed, err := url.Parse(originalURL)
-	if err != nil || proxyBaseURL == "" {
-		return originalURL
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return body
 	}
-	return strings.TrimRight(proxyBaseURL, "/") + "/api/v1/remote/" + releasesRemote + parsed.Path
+	return out
 }
 
 func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {

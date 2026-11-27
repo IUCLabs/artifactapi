@@ -46,7 +46,7 @@ So `blocklist` beats the allowlist, and `immutable_patterns` beats
 
 | | Immutable | Mutable |
 |---|---|---|
-| Stored as | content-addressed blob (sha256), streamed | per-path index object, buffered and rewritten by the provider |
+| Stored as | content-addressed blob (sha256), streamed | per-path index object, buffered; links may be rewritten to point back at the remote |
 | Fresh for | `immutable_ttl` (`0` = forever) | `mutable_ttl` |
 | After expiry | refetched from upstream | revalidated with `If-None-Match` when `check_mutable` is set and an ETag is stored, else refetched |
 | Upstream down | `stale_on_error` serves the stored copy and re-arms the TTL; an open circuit breaker always serves stale if a copy exists, else 503 | same |

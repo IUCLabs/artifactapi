@@ -42,26 +42,25 @@ func TestUpstreamURL(t *testing.T) {
 	}
 }
 
-func TestRewriteResponse(t *testing.T) {
+func TestRewriteServed(t *testing.T) {
 	p := &Provider{}
-	remote := models.Remote{Name: "npmjs", BaseURL: "https://registry.npmjs.org"}
+	remote := models.Remote{Name: "npmjs", BaseURL: "https://registry.npmjs.org/"}
+	const tarball = "https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz"
 
-	if out, _ := p.RewriteResponse([]byte(`{"a":1}`), remote, ""); out != nil {
-		t.Error("empty proxyBaseURL should be a no-op")
+	out := string(p.RewriteServed([]byte(`{"dist":{"tarball":"`+tarball+`"},"homepage":"https://registry.npmjs.org.evil/x"}`), remote, "https://aa.example:8443/"))
+	want := `{"dist":{"tarball":"https://aa.example:8443/api/v1/remote/npmjs/@scope/pkg/-/pkg-1.0.0.tgz"},"homepage":"https://registry.npmjs.org.evil/x"}`
+	if out != want {
+		t.Fatalf("got %s, want %s", out, want)
 	}
-	if out, _ := p.RewriteResponse([]byte("not json"), remote, "http://proxy"); out != nil {
-		t.Error("invalid json should be a no-op")
+	path := "@scope/pkg/-/pkg-1.0.0.tgz"
+	if p.Classify(path) != provider.Immutable || p.UpstreamURL(remote, path) != tarball {
+		t.Errorf("rewritten tarball %q must route back to %q as an immutable artifact", path, tarball)
 	}
-	body := []byte(`{"tarball":"https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz"}`)
-	out, err := p.RewriteResponse(body, remote, "http://proxy")
-	if err != nil {
-		t.Fatal(err)
+	if got := p.RewriteServed([]byte("not json"), remote, "https://aa.example"); string(got) != "not json" {
+		t.Errorf("non-JSON body changed: %s", got)
 	}
-	if string(out) != `{"tarball":"http://proxy/api/v1/remote/npmjs/pkg/-/pkg-1.0.0.tgz"}` {
-		t.Errorf("rewrite: %s", out)
-	}
-	if out, _ := p.RewriteResponse([]byte(`{"x":"unrelated"}`), remote, "http://proxy"); out != nil {
-		t.Error("no matching base URL should be a no-op")
+	if _, ok := any(p).(provider.ResponseRewriter); ok {
+		t.Error("npm rewrites at serve time, not before caching")
 	}
 }
 

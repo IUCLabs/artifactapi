@@ -2,7 +2,6 @@ package puppet
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/IUCLabs/artifactapi/internal/provider"
@@ -48,28 +47,6 @@ func TestUpstreamURL(t *testing.T) {
 	}
 }
 
-func TestRewriteResponse(t *testing.T) {
-	p := &Provider{}
-	remote := models.Remote{Name: "forge", BaseURL: "https://forgeapi.puppet.com"}
-
-	if out, _ := p.RewriteResponse([]byte("x"), remote, ""); out != nil {
-		t.Error("empty proxyBaseURL is a no-op")
-	}
-
-	body := []byte(`{"file_uri":"/v3/files/mod.tar.gz","home":"https://forgeapi.puppet.com/x"}`)
-	out, err := p.RewriteResponse(body, remote, "http://proxy")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(out)
-	if !strings.Contains(s, "http://proxy/api/v1/remote/forge/v3/files/mod.tar.gz") {
-		t.Errorf("v3/files not rewritten: %s", s)
-	}
-	if !strings.Contains(s, "http://proxy/api/v1/remote/forge/x") {
-		t.Errorf("base URL not rewritten: %s", s)
-	}
-}
-
 func TestAuthHeaders(t *testing.T) {
 	h, _ := (&Provider{}).AuthHeaders(context.Background(), models.Remote{})
 	if h.Get("Authorization") != "" {
@@ -99,5 +76,17 @@ func TestForwardedQuery(t *testing.T) {
 		if _, ok := f[name](bad); ok {
 			t.Errorf("%s(%q) accepted", name, bad)
 		}
+	}
+}
+
+// Forge clients join a root-relative file_uri onto the module repository URL
+// and reject absolute ones, so cached bodies must stay upstream-shaped.
+func TestNoRewrite(t *testing.T) {
+	p := any(&Provider{})
+	if _, ok := p.(provider.ServeRewriter); ok {
+		t.Error("puppet must not rewrite served bodies")
+	}
+	if _, ok := p.(provider.ResponseRewriter); ok {
+		t.Error("puppet must not rewrite cached bodies")
 	}
 }

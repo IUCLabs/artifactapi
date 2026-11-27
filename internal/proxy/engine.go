@@ -514,12 +514,14 @@ func (e *Engine) fetchFromUpstreamOnce(ctx context.Context, remote models.Remote
 			return nil, fmt.Errorf("read upstream body: %w", err)
 		}
 
-		rewritten, err := prov.RewriteResponse(body, remote, "")
-		if err != nil {
-			return nil, fmt.Errorf("rewrite response: %w", err)
-		}
-		if rewritten != nil {
-			body = rewritten
+		if rr, ok := prov.(provider.ResponseRewriter); ok {
+			rewritten, err := rr.RewriteResponse(body, remote)
+			if err != nil {
+				return nil, fmt.Errorf("rewrite response: %w", err)
+			}
+			if rewritten != nil {
+				body = rewritten
+			}
 		}
 
 		if !storeUp {
@@ -1011,7 +1013,7 @@ func endAttempt(ctr *atomic.Int64) {
 }
 
 // withBaseURL narrows a remote's active BaseURL to a single selected mirror so
-// providers (UpstreamURL/AuthHeaders/RewriteResponse) operate on exactly that
+// providers (UpstreamURL/AuthHeaders) operate on exactly that
 // upstream for this attempt.
 func withBaseURL(remote models.Remote, url string) models.Remote {
 	remote.BaseURL = url

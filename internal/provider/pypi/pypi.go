@@ -59,10 +59,6 @@ func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
 	return strings.TrimRight(remote.BaseURL, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
-func (p *Provider) RewriteResponse(_ []byte, _ models.Remote, _ string) ([]byte, error) {
-	return nil, nil
-}
-
 // RewriteServed points file links in cached simple (HTML and PEP 691 JSON) and
 // JSON API indexes at this remote, so downloads are fetched and cached here.
 func (p *Provider) RewriteServed(body []byte, remote models.Remote, proxyBaseURL string) []byte {

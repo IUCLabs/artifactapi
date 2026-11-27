@@ -37,20 +37,15 @@ func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
 	return strings.TrimRight(remote.BaseURL, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
-func (p *Provider) RewritesResponse() {}
-
-func (p *Provider) RewriteResponse(body []byte, remote models.Remote, proxyBaseURL string) ([]byte, error) {
-	if proxyBaseURL == "" || !json.Valid(body) {
-		return nil, nil
-	}
-	content := string(body)
+// RewriteServed points tarball URLs in cached packuments at this remote, so
+// tarballs are fetched and cached here.
+func (p *Provider) RewriteServed(body []byte, remote models.Remote, proxyBaseURL string) []byte {
 	baseURL := strings.TrimRight(remote.BaseURL, "/")
-	proxyURL := strings.TrimRight(proxyBaseURL, "/") + "/api/v1/remote/" + remote.Name
-	rewritten := strings.ReplaceAll(content, baseURL, proxyURL)
-	if rewritten == content {
-		return nil, nil
+	if baseURL == "" || !json.Valid(body) {
+		return body
 	}
-	return []byte(rewritten), nil
+	proxyURL := strings.TrimRight(proxyBaseURL, "/") + provider.RemoteMountPath + remote.Name
+	return []byte(strings.ReplaceAll(string(body), baseURL+"/", proxyURL+"/"))
 }
 
 func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {

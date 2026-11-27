@@ -37,11 +37,8 @@ func TestDockerContentType(t *testing.T) {
 	}
 }
 
-func TestDockerRewriteAndAuth(t *testing.T) {
+func TestDockerAuth(t *testing.T) {
 	p := &Provider{}
-	if out, err := p.RewriteResponse([]byte("x"), models.Remote{}, "http://p"); out != nil || err != nil {
-		t.Error("docker never rewrites")
-	}
 	h, _ := p.AuthHeaders(context.Background(), models.Remote{Username: "u", Password: "p"})
 	if h.Get("Authorization") == "" {
 		t.Error("expected basic auth header")

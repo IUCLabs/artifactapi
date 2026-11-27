@@ -31,7 +31,7 @@ func TestMain(m *testing.M) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	pgContainer, err := tcpostgres.Run(ctx,
-		"postgres:17-alpine",
+		"docker.io/library/postgres:17.12-alpine@sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73",
 		tcpostgres.WithDatabase("artifacts"),
 		tcpostgres.WithUsername("artifacts"),
 		tcpostgres.WithPassword("artifacts123"),
@@ -45,7 +45,7 @@ func TestMain(m *testing.M) {
 	defer pgContainer.Terminate(ctx)
 
 	redisContainer, err := tcredis.Run(ctx,
-		"redis:7-alpine",
+		"docker.io/library/redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe",
 		testcontainers.WithWaitStrategy(
 			wait.ForListeningPort("6379/tcp").WithStartupTimeout(30*time.Second),
 		),
@@ -57,7 +57,7 @@ func TestMain(m *testing.M) {
 
 	minioContainer, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372",
+			Image:        "docker.io/pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372",
 			ExposedPorts: []string{"9000/tcp"},
 			Cmd:          []string{"server", "/data"},
 			Env: map[string]string{

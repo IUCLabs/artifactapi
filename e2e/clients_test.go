@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"testing"
+	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 
@@ -129,6 +130,7 @@ node -e 'require("is-number")'
 func testDocker(t *testing.T) {
 	r := withRemote(t, "cl-docker", models.PackageDocker, "https://registry-1.docker.io")
 	sock := testcontainers.MustExtractDockerSocket(t.Context())
+	// The daemon pulls via 127.0.0.1, so it must share the test's network namespace.
 	missThenHit(t, clientRun{
 		image: imgDockerCLI,
 		binds: []string{sock + ":/var/run/docker.sock"},
@@ -153,7 +155,7 @@ func testHelm(t *testing.T) {
 	missThenHit(t, clientRun{image: imgHelm, script: `
 helm pull cert-manager --repo "$AA/api/v1/remote/cl-helm" --version v1.16.2 -d /tmp
 ls /tmp/cert-manager-v1.16.2.tgz
-`}, cached{r, re(`cert-manager-v1\.16\.2\.tgz$`)})
+`}, cached{r, re(`^charts/cert-manager-v1\.16\.2\.tgz$`)})
 }
 
 func testCargo(t *testing.T) {
@@ -191,9 +193,10 @@ ruby -e 'require "rack"; puts Rack.release'
 func testDotnet(t *testing.T) {
 	r := withRemote(t, "cl-nuget", models.PackageNuGet, "https://api.nuget.org/v3/index.json")
 	missThenHit(t, clientRun{
-		image: imgDotnet,
-		tls:   true,
-		env:   map[string]string{"DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1", "NUGET_PACKAGES": "/tmp/nuget"},
+		image:   imgDotnet,
+		tls:     true,
+		timeout: 4 * time.Minute,
+		env:     map[string]string{"DOTNET_CLI_TELEMETRY_OPTOUT": "1", "DOTNET_NOLOGO": "1", "NUGET_PACKAGES": "/tmp/nuget"},
 		script: `
 update-ca-certificates >/dev/null
 mkdir /w && cd /w
@@ -213,7 +216,7 @@ cat > e2e.csproj <<EOF
 </Project>
 EOF
 dotnet restore
-`}, cached{r, re(`newtonsoft\.json\.13\.0\.3\.nupkg$`)})
+`}, cached{r, re(`^v3-flatcontainer/newtonsoft\.json/13\.0\.3/newtonsoft\.json\.13\.0\.3\.nupkg$`)})
 }
 
 func testPuppet(t *testing.T) {
@@ -222,16 +225,17 @@ func testPuppet(t *testing.T) {
 export PATH=/opt/puppetlabs/bin:$PATH
 puppet module install puppetlabs-stdlib --version 9.7.0 --ignore-dependencies --target-dir /tmp/modules --module_repository "$AA/api/v1/remote/cl-forge"
 ls /tmp/modules/stdlib/metadata.json
-`}, cached{r, re(`puppetlabs-stdlib-9\.7\.0\.tar\.gz$`)})
+`}, cached{r, re(`^v3/files/puppetlabs-stdlib-9\.7\.0\.tar\.gz$`)})
 }
 
 func testAnsibleGalaxy(t *testing.T) {
 	r := withRemote(t, "cl-galaxy", models.PackageAnsible, "https://galaxy.ansible.com")
+	withRemote(t, "cl-galaxy-pypi", models.PackagePyPI, "https://files.pythonhosted.org")
 	missThenHit(t, clientRun{image: imgPython, script: `
-pip install --no-cache-dir --retries 5 -q ansible-core==2.19.4
+pip install --no-cache-dir --retries 5 -q --index-url "$AA/api/v1/remote/cl-galaxy-pypi/simple/" --trusted-host "${AA_HOST%:*}" ansible-core==2.19.4
 ansible-galaxy collection install ansible.posix:==2.1.0 -p /tmp/collections -s "$AA/api/v1/remote/cl-galaxy/api/"
 ls /tmp/collections/ansible_collections/ansible/posix/MANIFEST.json
-`}, cached{r, re(`ansible-posix-2\.1\.0\.tar\.gz$`)})
+`}, cached{r, re(`^api/v3/plugin/ansible/content/published/collections/artifacts/ansible-posix-2\.1\.0\.tar\.gz$`)})
 }
 
 func testTerraform(t *testing.T) {

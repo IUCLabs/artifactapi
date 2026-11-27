@@ -23,10 +23,13 @@ import (
 
 const (
 	containerHost   = testcontainers.HostInternal
-	clientTimeout   = 6 * time.Minute
+	clientTimeout   = 2 * time.Minute
 	missAttempts    = 3
 	hitAttempts     = 2
 	attemptCooldown = 5 * time.Second
+	// deadlineMargin leaves room for cleanup before -timeout panics the binary.
+	deadlineMargin = time.Minute
+	minAttempt     = 30 * time.Second
 )
 
 var serverPort string
@@ -42,12 +45,13 @@ type clientRun struct {
 	env    map[string]string
 	binds  []string
 	// tls exposes the TLS front as $AA_TLS and installs its CA at caPath.
-	tls bool
+	tls     bool
+	timeout time.Duration
 }
 
 const caPath = "/usr/local/share/ca-certificates/artifactapi-e2e.crt"
 
-func (c clientRun) run(ctx context.Context) (string, error) {
+func (c clientRun) run(ctx context.Context, timeout time.Duration) (string, error) {
 	env := map[string]string{"AA": proxyURL(), "AA_HOST": containerHost}
 	for k, v := range c.env {
 		env[k] = v
@@ -61,7 +65,7 @@ func (c clientRun) run(ctx context.Context) (string, error) {
 		env["AA_TLS"] = "https://" + containerHost + ":" + tlsPort
 		files = append(files, testcontainers.ContainerFile{Reader: bytes.NewReader(tlsCA), ContainerFilePath: caPath, FileMode: 0o644})
 	}
-	ctx, cancel := context.WithTimeout(ctx, clientTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// The host tunnel comes up after start, so the script waits for a go signal.
 	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -124,17 +128,34 @@ func containerLogs(ctx context.Context, ctr testcontainers.Container) string {
 	return string(b)
 }
 
+// attemptTimeout caps an attempt at the client timeout and the time left
+// before the test binary's deadline; false means too little is left to try.
+func attemptTimeout(t *testing.T, c clientRun) (time.Duration, bool) {
+	d := clientTimeout
+	if c.timeout > 0 {
+		d = c.timeout
+	}
+	if dl, ok := t.Deadline(); ok {
+		d = min(d, time.Until(dl)-deadlineMargin)
+	}
+	return d, d >= minAttempt
+}
+
 func runAttempts(t *testing.T, label string, c clientRun, attempts int) {
 	t.Helper()
-	var lastErr error
+	lastErr := fmt.Errorf("no time left before the test deadline")
 	var lastOut string
 	for i := 1; i <= attempts; i++ {
-		out, err := c.run(t.Context())
+		timeout, ok := attemptTimeout(t, c)
+		if !ok {
+			break
+		}
+		out, err := c.run(t.Context(), timeout)
 		if err == nil {
 			return
 		}
 		lastErr, lastOut = err, out
-		t.Logf("%s attempt %d/%d failed: %v", label, i, attempts, err)
+		t.Logf("%s attempt %d/%d failed: %v\n%s", label, i, attempts, err, tail(out, 20))
 		if i < attempts {
 			time.Sleep(attemptCooldown)
 		}

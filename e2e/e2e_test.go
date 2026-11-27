@@ -6,12 +6,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
+	tclog "github.com/testcontainers/testcontainers-go/log"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -24,6 +27,8 @@ var baseURL string
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
+	tclog.SetDefault(tclog.NewNoopLogger())
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	pgContainer, err := tcpostgres.Run(ctx,
 		"postgres:17-alpine",
@@ -105,6 +110,9 @@ func TestMain(m *testing.M) {
 
 	addr := startServer(srvCtx, srv)
 	baseURL = "http://" + addr
+	if err := startTLSFront(baseURL); err != nil {
+		log.Fatalf("tls front: %v", err)
+	}
 
 	code := m.Run()
 	cancel()
@@ -116,7 +124,8 @@ func startServer(ctx context.Context, srv *server.Server) string {
 	if err != nil {
 		log.Fatalf("listener: %v", err)
 	}
-	addr := ln.Addr().String()
+	_, serverPort, _ = net.SplitHostPort(ln.Addr().String())
+	addr := "127.0.0.1:" + serverPort
 
 	go srv.RunOnListener(ctx, ln)
 

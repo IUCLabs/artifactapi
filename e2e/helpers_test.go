@@ -13,7 +13,7 @@ import (
 )
 
 func findListener() (net.Listener, error) {
-	return net.Listen("tcp", "127.0.0.1:0")
+	return net.Listen("tcp", ":0")
 }
 
 func apiURL(path string) string {

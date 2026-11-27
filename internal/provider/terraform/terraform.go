@@ -77,7 +77,8 @@ func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
 
 // RewriteReleases points a cached download document's archive, SHA256SUMS and
 // signature URLs that live on the releases remote's origin at that remote, so
-// provider zips are fetched and cached there. URLs on other hosts are left as is.
+// provider zips are fetched and cached there. URLs on other hosts, or carrying a
+// query (the releases remote doesn't forward queries upstream), are left as is.
 func (p *Provider) RewriteReleases(body []byte, remote, releases models.Remote, proxyBaseURL string) []byte {
 	if remote.ReleasesRemote == "" || releases.Name != remote.ReleasesRemote {
 		return body
@@ -98,18 +99,14 @@ func (p *Provider) RewriteReleases(body []byte, remote, releases models.Remote, 
 			continue
 		}
 		u, err := url.Parse(val)
-		if err != nil || !u.IsAbs() || !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) {
+		if err != nil || !u.IsAbs() || u.RawQuery != "" || u.ForceQuery || !sameOrigin(u, base) {
 			continue
 		}
 		rest, ok := strings.CutPrefix(u.EscapedPath(), base.EscapedPath())
 		if !ok || (rest != "" && !strings.HasPrefix(rest, "/")) {
 			continue
 		}
-		out := prefix + rest
-		if u.RawQuery != "" {
-			out += "?" + u.RawQuery
-		}
-		doc[field], _ = json.Marshal(out)
+		doc[field], _ = json.Marshal(prefix + rest)
 		changed = true
 	}
 	if !changed {
@@ -120,6 +117,25 @@ func (p *Provider) RewriteReleases(body []byte, remote, releases models.Remote, 
 		return body
 	}
 	return out
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
 }
 
 func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {

@@ -80,7 +80,7 @@ func TestTerraformDownloadRewrittenAtServe(t *testing.T) {
 		t.Fatal(err)
 	}
 	prefix := "https://aa.example/api/v1/remote/" + releases + "/terraform-provider-null/3.2.4/"
-	if null["download_url"] != prefix+"terraform-provider-null_3.2.4_linux_amd64.zip?x=1" || null["shasums_url"] != prefix+"SHA256SUMS" {
+	if null["download_url"] != releasesUp.URL+"/terraform-provider-null/3.2.4/terraform-provider-null_3.2.4_linux_amd64.zip?x=1" || null["shasums_url"] != prefix+"SHA256SUMS" {
 		t.Errorf("null download doc = %v", null)
 	}
 

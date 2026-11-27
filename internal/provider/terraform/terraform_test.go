@@ -90,12 +90,56 @@ func TestProvider_RewriteReleases_OnlyReleasesOrigin(t *testing.T) {
 	}
 	want := map[string]string{
 		"download_url":          gh,
-		"shasums_url":           "http://proxy/api/v1/remote/hashicorp-releases/x/SHA256SUMS?token=a%2Fb&v=1",
+		"shasums_url":           "https://releases.hashicorp.com/x/SHA256SUMS?token=a%2Fb&v=1",
 		"shasums_signature_url": "http://proxy/api/v1/remote/hashicorp-releases/x/SHA256SUMS.sig",
 	}
 	for field, w := range want {
 		if doc[field] != w {
 			t.Errorf("%s = %q, want %q", field, doc[field], w)
+		}
+	}
+}
+
+func TestProvider_RewriteReleases_QueryUntouched(t *testing.T) {
+	p := &terraform.Provider{}
+	remote := models.Remote{Name: "tf", ReleasesRemote: "rel"}
+	releases := models.Remote{Name: "rel", BaseURL: "https://releases.hashicorp.com"}
+	for _, u := range []string{
+		"https://releases.hashicorp.com/x/a.zip?X-Amz-Signature=abc",
+		"https://releases.hashicorp.com/x/a.zip?",
+	} {
+		body, _ := json.Marshal(map[string]string{"download_url": u})
+		if got := string(p.RewriteReleases(body, remote, releases, "http://proxy")); got != string(body) {
+			t.Errorf("%s: got %s, want unchanged", u, got)
+		}
+	}
+}
+
+func TestProvider_RewriteReleases_Ports(t *testing.T) {
+	p := &terraform.Provider{}
+	remote := models.Remote{Name: "tf", ReleasesRemote: "rel"}
+	cases := []struct {
+		base, url string
+		rewrite   bool
+	}{
+		{"https://releases.hashicorp.com:443", "https://releases.hashicorp.com/a.zip", true},
+		{"https://releases.hashicorp.com", "https://Releases.Hashicorp.com:443/a.zip", true},
+		{"http://mirror.example:80/", "http://mirror.example/a.zip", true},
+		{"https://mirror.example:8443", "https://mirror.example:8443/a.zip", true},
+		{"https://mirror.example:8443", "https://mirror.example/a.zip", false},
+		{"https://mirror.example", "https://mirror.example:8443/a.zip", false},
+		{"https://mirror.example:80", "https://mirror.example/a.zip", false},
+	}
+	for _, tc := range cases {
+		releases := models.Remote{Name: "rel", BaseURL: tc.base}
+		body, _ := json.Marshal(map[string]string{"download_url": tc.url})
+		got := string(p.RewriteReleases(body, remote, releases, "http://proxy"))
+		want := string(body)
+		if tc.rewrite {
+			want = `{"download_url":"http://proxy/api/v1/remote/rel/a.zip"}`
+		}
+		if got != want {
+			t.Errorf("base %s url %s: got %s, want %s", tc.base, tc.url, got, want)
 		}
 	}
 }

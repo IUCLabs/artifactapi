@@ -133,12 +133,14 @@ func (h *ProxyHandler) serveFetch(w http.ResponseWriter, r *http.Request, remote
 	defer func() { _ = result.Reader.Close() }()
 
 	var body io.Reader = result.Reader
-	if sr, ok := h.serveRewriter(r, *remote, prov); ok && prov.Classify(path) == provider.Mutable {
-		raw, ok := rewriteServed(w, r, sr, *remote, result.Reader)
-		if !ok {
-			return
+	if prov.Classify(path) == provider.Mutable {
+		if sr, ok := h.serveRewriter(r, *remote, prov); ok {
+			raw, ok := rewriteServed(w, r, sr, *remote, result.Reader)
+			if !ok {
+				return
+			}
+			body, result.Size = bytes.NewReader(raw), int64(len(raw))
 		}
-		body, result.Size = bytes.NewReader(raw), int64(len(raw))
 	}
 
 	w.Header().Set("Content-Type", result.ContentType)

@@ -20,12 +20,16 @@ func init() {
 var fileRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*\.(whl|tar\.gz|zip)$`)
 var normalizeRe = regexp.MustCompile(`[-_.]+`)
 
+const filesHost = "https://files.pythonhosted.org/"
+
+var jsonAPIRe = regexp.MustCompile(`^pypi/[^/]+/([^/]+/)?json/?$`)
+
 type Provider struct{}
 
 func (p *Provider) Type() models.PackageType { return models.PackagePyPI }
 
 func (p *Provider) Classify(path string) provider.Mutability {
-	if strings.Contains(path, "simple/") {
+	if strings.Contains(path, "simple/") || jsonAPIRe.MatchString(path) {
 		return provider.Mutable
 	}
 	return provider.Immutable
@@ -42,27 +46,31 @@ func (p *Provider) ContentType(path string) string {
 	if strings.Contains(path, "simple/") {
 		return "text/html"
 	}
+	if jsonAPIRe.MatchString(path) {
+		return "application/json"
+	}
 	return "application/octet-stream"
 }
 
 func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
-	if strings.HasPrefix(path, "simple/") {
+	if strings.HasPrefix(path, "simple/") || jsonAPIRe.MatchString(path) {
 		return "https://pypi.org/" + path
 	}
 	return strings.TrimRight(remote.BaseURL, "/") + "/" + strings.TrimLeft(path, "/")
 }
 
-func (p *Provider) RewritesResponse() {}
+func (p *Provider) RewriteResponse(_ []byte, _ models.Remote, _ string) ([]byte, error) {
+	return nil, nil
+}
 
-func (p *Provider) RewriteResponse(body []byte, remote models.Remote, proxyBaseURL string) ([]byte, error) {
-	if proxyBaseURL == "" {
-		return nil, nil
-	}
-	content := string(body)
+// RewriteServed points file links in cached simple (HTML and PEP 691 JSON) and
+// JSON API indexes at this remote, so downloads are fetched and cached here.
+func (p *Provider) RewriteServed(body []byte, remote models.Remote, proxyBaseURL string) []byte {
 	proxyURL := strings.TrimRight(proxyBaseURL, "/") + "/api/v1/remote/" + remote.Name + "/"
-	content = strings.ReplaceAll(content, "https://files.pythonhosted.org/", proxyURL)
-	content = strings.ReplaceAll(content, "../../", proxyURL)
-	return []byte(content), nil
+	return []byte(strings.NewReplacer(
+		filesHost, proxyURL,
+		`href="/simple/`, `href="`+proxyURL+`simple/`,
+	).Replace(string(body)))
 }
 
 func (p *Provider) AuthHeaders(_ context.Context, remote models.Remote) (http.Header, error) {

@@ -51,7 +51,7 @@ const settingsLoadTimeout = 2 * time.Second
 // SettingsLoader reads the stored settings overrides.
 type SettingsLoader func(context.Context) (models.Settings, error)
 
-// probeSettings resolves the effective config each tick, keeping the last good one on failure.
+// probeSettings resolves the effective config, keeping the last good one on failure.
 type probeSettings struct {
 	defaults ProbeConfig
 	load     SettingsLoader
@@ -103,29 +103,101 @@ func (h *hysteresis) observe(err error) {
 	}
 }
 
-// healthTTL outlives the longest gap between writes: a tick can wait out the interval, then a
-// stalled settings read, then a hung probe.
+// healthTTL outlives the longest gap between writes: the first probe can wait out a stalled
+// settings read, and each later probe starts an interval after the last one began, so a hung
+// probe stretches the gap to about Interval+Timeout.
 func healthTTL(cfg ProbeConfig) time.Duration {
 	return 3*cfg.Interval + settingsLoadTimeout + cfg.Timeout
 }
 
-// RunStoreProbe probes the store every interval and writes this replica's settled state to
-// Redis with a healthTTL expiry. Nothing is written until a threshold is first crossed.
-// Each tick re-resolves the config as defaults overlaid with load's settings; load may be nil.
-func RunStoreProbe(ctx context.Context, defaults ProbeConfig, load SettingsLoader, probe func(context.Context) error, c *cache.Redis) {
-	settings := probeSettings{defaults: defaults, load: load}
-	cfg := defaults
-	h := hysteresis{cfg: cfg}
-	ticker := time.NewTicker(cfg.Interval)
+func logProbeSettings(c ProbeConfig) {
+	slog.Info("object store probe settings changed", "up_threshold", c.UpThreshold, "down_threshold", c.DownThreshold, "interval", c.Interval, "timeout", c.Timeout)
+}
+
+// settingsRefreshInterval is how often settings are re-read, independent of the probe interval.
+const settingsRefreshInterval = time.Second
+
+// watchSettings re-reads settings every settingsRefreshInterval and publishes each change to out,
+// replacing any value not yet taken.
+func watchSettings(ctx context.Context, settings *probeSettings, cfg ProbeConfig, out chan ProbeConfig) {
+	ticker := time.NewTicker(settingsRefreshInterval)
 	defer ticker.Stop()
 	for {
-		if next := settings.refresh(ctx, cfg); next != cfg {
-			slog.Info("object store probe settings changed", "up_threshold", next.UpThreshold, "down_threshold", next.DownThreshold, "interval", next.Interval, "timeout", next.Timeout)
-			if next.Interval != cfg.Interval {
-				ticker.Reset(next.Interval)
-			}
-			cfg, h.cfg = next, next
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
+		next := settings.refresh(ctx, cfg)
+		if next == cfg {
+			continue
+		}
+		logProbeSettings(next)
+		cfg = next
+		select {
+		case <-out:
+		default:
+		}
+		out <- next
+	}
+}
+
+// RunStoreProbe probes the store every interval and writes this replica's settled state to
+// Redis with a healthTTL expiry. Nothing is written until a threshold is first crossed.
+// The config is defaults overlaid with load's settings, re-read every settingsRefreshInterval;
+// an interval change reschedules the next probe at once. load may be nil.
+func RunStoreProbe(ctx context.Context, defaults ProbeConfig, load SettingsLoader, probe func(context.Context) error, c *cache.Redis) {
+	settings := &probeSettings{defaults: defaults, load: load}
+	cfg := settings.refresh(ctx, defaults)
+	if cfg != defaults {
+		logProbeSettings(cfg)
+	}
+	h := hysteresis{cfg: cfg}
+	updates := make(chan ProbeConfig, 1)
+	if load != nil {
+		wctx, stop := context.WithCancel(ctx)
+		watched := make(chan struct{})
+		go func() {
+			watchSettings(wctx, settings, cfg, updates)
+			close(watched)
+		}()
+		defer func() { stop(); <-watched }()
+	}
+	apply := func(next ProbeConfig) {
+		cfg, h.cfg = next, next
+	}
+	write := func() {
+		if !h.known {
+			return
+		}
+		if werr := c.SetStoreHealth(ctx, h.up, healthTTL(cfg)); werr != nil {
+			slog.Warn("write store health failed", "error", werr)
+		}
+	}
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	var last time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case next := <-updates:
+			changed := next.Interval != cfg.Interval
+			apply(next)
+			if changed && !last.IsZero() {
+				timer.Reset(max(0, cfg.Interval-time.Since(last)))
+				// The written TTL was sized for the old interval.
+				write()
+			}
+			continue
+		case <-timer.C:
+		}
+		select {
+		case next := <-updates:
+			apply(next)
+		default:
+		}
+		last = time.Now()
 		pctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		err := probe(pctx)
 		cancel()
@@ -137,15 +209,7 @@ func RunStoreProbe(ctx context.Context, defaults ProbeConfig, load SettingsLoade
 		if h.known && (!known || up != h.up) {
 			slog.Info("object store health settled", "up", h.up, "error", err)
 		}
-		if h.known {
-			if werr := c.SetStoreHealth(ctx, h.up, healthTTL(cfg)); werr != nil {
-				slog.Warn("write store health failed", "error", werr)
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+		write()
+		timer.Reset(max(0, cfg.Interval-time.Since(last)))
 	}
 }

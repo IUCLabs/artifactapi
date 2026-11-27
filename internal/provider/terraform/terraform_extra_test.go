@@ -74,18 +74,26 @@ func TestTFUploadResponse(t *testing.T) {
 func TestTFRewriteServedNoop(t *testing.T) {
 	p := &Provider{}
 	remote := models.Remote{Name: "tf", ReleasesRemote: "hashicorp-releases"}
+	releases := models.Remote{Name: "hashicorp-releases", BaseURL: "https://releases.hashicorp.com"}
+	const hc = `{"download_url":"https://releases.hashicorp.com/a.zip"}`
 	for _, tc := range []struct {
-		name   string
-		remote models.Remote
-		body   string
+		name     string
+		remote   models.Remote
+		releases models.Remote
+		body     string
 	}{
-		{"no releases remote", models.Remote{Name: "tf"}, `{"download_url":"https://releases.hashicorp.com/a.zip"}`},
-		{"not json", remote, "not json"},
-		{"versions document", remote, `{"versions":[{"version":"1.0.0"}]}`},
-		{"relative url", remote, `{"download_url":"a.zip"}`},
-		{"unparseable url", remote, `{"download_url":"://bad"}`},
+		{"no releases remote", models.Remote{Name: "tf"}, releases, hc},
+		{"releases remote unresolved", remote, models.Remote{}, hc},
+		{"releases remote has no base url", remote, models.Remote{Name: "hashicorp-releases"}, hc},
+		{"not json", remote, releases, "not json"},
+		{"versions document", remote, releases, `{"versions":[{"version":"1.0.0"}]}`},
+		{"relative url", remote, releases, `{"download_url":"a.zip"}`},
+		{"unparseable url", remote, releases, `{"download_url":"://bad"}`},
+		{"other host", remote, releases, `{"download_url":"https://github.com/integrations/terraform-provider-github/releases/download/v6.6.0/a.zip"}`},
+		{"other scheme", remote, releases, `{"download_url":"http://releases.hashicorp.com/a.zip"}`},
+		{"outside base path", remote, models.Remote{Name: "hashicorp-releases", BaseURL: "https://releases.hashicorp.com/terraform-provider-aws"}, `{"download_url":"https://releases.hashicorp.com/terraform-provider-awsx/a.zip"}`},
 	} {
-		if got := string(p.RewriteServed([]byte(tc.body), tc.remote, "http://proxy")); got != tc.body {
+		if got := string(p.RewriteReleases([]byte(tc.body), tc.remote, tc.releases, "http://proxy")); got != tc.body {
 			t.Errorf("%s: body changed to %s", tc.name, got)
 		}
 	}

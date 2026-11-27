@@ -35,7 +35,7 @@ func TestProvider_Classify(t *testing.T) {
 	}
 }
 
-func TestProvider_RewriteServed_DownloadDoc(t *testing.T) {
+func TestProvider_RewriteReleases_DownloadDoc(t *testing.T) {
 	p := &terraform.Provider{}
 	remote := models.Remote{Name: "tf", ReleasesRemote: "hashicorp-releases"}
 	releases := models.Remote{Name: "hashicorp-releases", BaseURL: "https://releases.hashicorp.com"}
@@ -49,7 +49,7 @@ func TestProvider_RewriteServed_DownloadDoc(t *testing.T) {
 	})
 
 	var doc map[string]any
-	if err := json.Unmarshal(p.RewriteServed(body, remote, "https://aa.example:8443/"), &doc); err != nil {
+	if err := json.Unmarshal(p.RewriteReleases(body, remote, releases, "https://aa.example:8443/"), &doc); err != nil {
 		t.Fatal(err)
 	}
 	const prefix = "https://aa.example:8443/api/v1/remote/hashicorp-releases/"
@@ -70,5 +70,47 @@ func TestProvider_RewriteServed_DownloadDoc(t *testing.T) {
 	}
 	if _, ok := any(p).(provider.ResponseRewriter); ok {
 		t.Error("terraform rewrites at serve time, not before caching")
+	}
+}
+
+func TestProvider_RewriteReleases_OnlyReleasesOrigin(t *testing.T) {
+	p := &terraform.Provider{}
+	remote := models.Remote{Name: "tf", ReleasesRemote: "hashicorp-releases"}
+	releases := models.Remote{Name: "hashicorp-releases", BaseURL: "https://releases.hashicorp.com/"}
+	const gh = "https://github.com/integrations/terraform-provider-github/releases/download/v6.6.0/terraform-provider-github_6.6.0_linux_amd64.zip"
+	body, _ := json.Marshal(map[string]any{
+		"download_url":          gh,
+		"shasums_url":           "https://releases.hashicorp.com/x/SHA256SUMS?token=a%2Fb&v=1",
+		"shasums_signature_url": "https://RELEASES.hashicorp.com/x/SHA256SUMS.sig",
+	})
+
+	var doc map[string]string
+	if err := json.Unmarshal(p.RewriteReleases(body, remote, releases, "http://proxy"), &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"download_url":          gh,
+		"shasums_url":           "http://proxy/api/v1/remote/hashicorp-releases/x/SHA256SUMS?token=a%2Fb&v=1",
+		"shasums_signature_url": "http://proxy/api/v1/remote/hashicorp-releases/x/SHA256SUMS.sig",
+	}
+	for field, w := range want {
+		if doc[field] != w {
+			t.Errorf("%s = %q, want %q", field, doc[field], w)
+		}
+	}
+}
+
+func TestProvider_RewriteReleases_BasePath(t *testing.T) {
+	p := &terraform.Provider{}
+	remote := models.Remote{Name: "tf", ReleasesRemote: "rel"}
+	releases := models.Remote{Name: "rel", BaseURL: "https://mirror.example/hashicorp"}
+	body := []byte(`{"download_url":"https://mirror.example/hashicorp/terraform-provider-null/3.2.4/a.zip"}`)
+	got := string(p.RewriteReleases(body, remote, releases, "http://proxy"))
+	if want := `{"download_url":"http://proxy/api/v1/remote/rel/terraform-provider-null/3.2.4/a.zip"}`; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+	g := &generic.Provider{}
+	if u := g.UpstreamURL(releases, "terraform-provider-null/3.2.4/a.zip"); u != "https://mirror.example/hashicorp/terraform-provider-null/3.2.4/a.zip" {
+		t.Errorf("round trip upstream = %s", u)
 	}
 }

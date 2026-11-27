@@ -75,18 +75,22 @@ func (p *Provider) UpstreamURL(remote models.Remote, path string) string {
 	return strings.TrimRight(remote.BaseURL, "/") + "/v1/providers/" + strings.TrimLeft(path, "/")
 }
 
-// RewriteServed points a cached download document's archive, SHA256SUMS and
-// signature URLs at the releases remote, so provider zips are fetched and
-// cached there.
-func (p *Provider) RewriteServed(body []byte, remote models.Remote, proxyBaseURL string) []byte {
-	if remote.ReleasesRemote == "" {
+// RewriteReleases points a cached download document's archive, SHA256SUMS and
+// signature URLs that live on the releases remote's origin at that remote, so
+// provider zips are fetched and cached there. URLs on other hosts are left as is.
+func (p *Provider) RewriteReleases(body []byte, remote, releases models.Remote, proxyBaseURL string) []byte {
+	if remote.ReleasesRemote == "" || releases.Name != remote.ReleasesRemote {
+		return body
+	}
+	base, err := url.Parse(strings.TrimRight(releases.BaseURL, "/"))
+	if err != nil || !base.IsAbs() {
 		return body
 	}
 	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(body, &doc); err != nil {
 		return body
 	}
-	prefix := strings.TrimRight(proxyBaseURL, "/") + provider.RemoteMountPath + url.PathEscape(remote.ReleasesRemote)
+	prefix := strings.TrimRight(proxyBaseURL, "/") + provider.RemoteMountPath + url.PathEscape(releases.Name)
 	changed := false
 	for _, field := range []string{"download_url", "shasums_url", "shasums_signature_url"} {
 		var val string
@@ -94,10 +98,18 @@ func (p *Provider) RewriteServed(body []byte, remote models.Remote, proxyBaseURL
 			continue
 		}
 		u, err := url.Parse(val)
-		if err != nil || !u.IsAbs() {
+		if err != nil || !u.IsAbs() || !strings.EqualFold(u.Scheme, base.Scheme) || !strings.EqualFold(u.Host, base.Host) {
 			continue
 		}
-		doc[field], _ = json.Marshal(prefix + u.EscapedPath())
+		rest, ok := strings.CutPrefix(u.EscapedPath(), base.EscapedPath())
+		if !ok || (rest != "" && !strings.HasPrefix(rest, "/")) {
+			continue
+		}
+		out := prefix + rest
+		if u.RawQuery != "" {
+			out += "?" + u.RawQuery
+		}
+		doc[field], _ = json.Marshal(out)
 		changed = true
 	}
 	if !changed {

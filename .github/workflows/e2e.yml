@@ -26,7 +26,7 @@ jobs:
         with:
           go-version-file: go.mod
       # runner image has no make: keep in sync with `make e2e`
-      - run: go test -tags=e2e -count=1 -timeout=10m ./e2e/... 2>&1 | tee e2e.log
+      - run: go test -tags=e2e -count=1 -timeout=15m -parallel=17 -v ./e2e/... 2>&1 | tee e2e.log
         shell: bash
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"

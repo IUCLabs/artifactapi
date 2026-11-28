@@ -72,3 +72,38 @@ func TestInstallationAppIDSendsAppJWT(t *testing.T) {
 		t.Fatalf("foreign installation err = %v; want 404", err)
 	}
 }
+
+func TestAppSlug(t *testing.T) {
+	keyPEM := testRSAKeyPEM(t)
+	key, _ := ParsePrivateKey(keyPEM)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 42, "slug": "aa-ci"})
+	}))
+	defer srv.Close()
+	if got, err := AppSlug(context.Background(), srv.Client(), srv.URL, 42, key); err != nil || got != "aa-ci" {
+		t.Fatalf("AppSlug = %q %v", got, err)
+	}
+}
+
+func TestTransient(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	addr := srv.URL
+	srv.Close()
+	_, netErr := ConvertManifest(context.Background(), nil, addr, "x")
+	for err, want := range map[error]bool{
+		&StatusError{Status: 502}: true,
+		&StatusError{Status: 429}: true,
+		&StatusError{Status: 404}: false,
+		&StatusError{Status: 422}: false,
+		errors.New("decode"):      false,
+		netErr:                    true,
+	} {
+		if got := Transient(err); got != want {
+			t.Errorf("Transient(%v) = %v, want %v", err, got, want)
+		}
+	}
+}

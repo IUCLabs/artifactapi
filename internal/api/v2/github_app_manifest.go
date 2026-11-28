@@ -37,15 +37,17 @@ const UIPath = "/ui"
 // satisfies it.
 type StateStore interface {
 	PutState(ctx context.Context, key string, val []byte, ttl time.Duration) error
-	// TakeState atomically reads and deletes key; missing or expired is nil.
-	TakeState(ctx context.Context, key string) ([]byte, error)
+	// GetState reads key without consuming it; missing or expired is nil.
+	GetState(ctx context.Context, key string) ([]byte, error)
+	// TakeStateIf atomically deletes key if it still holds val.
+	TakeStateIf(ctx context.Context, key string, val []byte) (bool, error)
 }
 
 // ManifestAppStore persists apps created from a manifest. *database.DB satisfies it.
 type ManifestAppStore interface {
 	GetGitHubApp(ctx context.Context, name string) (*models.GitHubApp, error)
 	CreateGitHubApp(ctx context.Context, a *models.GitHubApp) error
-	PutGitHubApp(ctx context.Context, a *models.GitHubApp) error
+	SetGitHubAppInstallation(ctx context.Context, name string, appID, installationID int64) (*models.GitHubApp, error)
 }
 
 // GitHubAppManifestHandler serves the GitHub App Manifest create flow under
@@ -73,12 +75,13 @@ func (h *GitHubAppManifestHandler) Routes() chi.Router {
 }
 
 type manifestState struct {
-	Name    string `json:"name"`
-	Owner   string `json:"owner,omitempty"`
-	WebBase string `json:"web_base"`
-	APIBase string `json:"api_base"`
-	Subject string `json:"subject"`
-	AppID   int64  `json:"app_id,omitempty"`
+	Name    string    `json:"name"`
+	Owner   string    `json:"owner,omitempty"`
+	WebBase string    `json:"web_base"`
+	APIBase string    `json:"api_base"`
+	Subject string    `json:"subject"`
+	AppID   int64     `json:"app_id,omitempty"`
+	Expires time.Time `json:"expires"`
 }
 
 const (
@@ -95,6 +98,15 @@ var (
 // maxGitHubAppNameLen is GitHub's limit on an app's display name.
 const maxGitHubAppNameLen = 34
 
+// webBaseFor returns the web base URL of a stored app's API base URL.
+func webBaseFor(apiBase string) string {
+	u, err := url.Parse(apiBase)
+	if err != nil || u.Host == "api.github.com" {
+		return "https://github.com"
+	}
+	return "https://" + u.Host
+}
+
 // githubEndpoints maps a web host to its web and API base URLs: github.com, or
 // a GHES host listed in GITHUB_APP_API_HOSTS served at /api/v3.
 func githubEndpoints(host string, apiHosts []string) (webBase, apiBase string, err error) {
@@ -109,7 +121,7 @@ func githubEndpoints(host string, apiHosts []string) (webBase, apiBase string, e
 		return "https://github.com", models.DefaultGitHubAPIBaseURL, nil
 	}
 	if !slices.Contains(apiHosts, h) {
-		return "", "", fmt.Errorf("github_host %q is not github.com or listed in GITHUB_APP_API_HOSTS", h)
+		return "", "", fmt.Errorf("github_host %q is not allowed: it expects the GitHub web host (e.g. github.com, or a GHES host listed in GITHUB_APP_API_HOSTS), not the API host", h)
 	}
 	apiBase = "https://" + h + "/api/v3"
 	if err := models.ValidateGitHubAPIBaseURL(apiBase, apiHosts); err != nil {
@@ -131,6 +143,7 @@ func (h *GitHubAppManifestHandler) putState(ctx context.Context, prefix string, 
 	if err != nil {
 		return "", err
 	}
+	st.Expires = time.Now().Add(ManifestStateTTL)
 	b, err := json.Marshal(st)
 	if err != nil {
 		return "", err
@@ -138,15 +151,43 @@ func (h *GitHubAppManifestHandler) putState(ctx context.Context, prefix string, 
 	return state, h.states.PutState(ctx, prefix+state, b, ManifestStateTTL)
 }
 
-// takeState consumes state and checks it was issued to the caller, writing the
-// error response itself when it returns false.
+// issueInstallState stores an install state, retrying once since by now the
+// GitHub App already exists.
+func (h *GitHubAppManifestHandler) issueInstallState(ctx context.Context, st manifestState) (string, error) {
+	state, err := h.putState(ctx, installStatePrefix, st)
+	if err != nil {
+		slog.Warn("github app manifest: store install state, retrying", "name", st.Name, "err", err)
+		state, err = h.putState(ctx, installStatePrefix, st)
+	}
+	return state, err
+}
+
+// restoreState puts a consumed state back for its remaining lifetime so the
+// caller can retry after a transient failure.
+func (h *GitHubAppManifestHandler) restoreState(ctx context.Context, prefix, state string, st manifestState) {
+	ttl := time.Until(st.Expires)
+	if ttl <= 0 {
+		return
+	}
+	b, err := json.Marshal(st)
+	if err == nil {
+		err = h.states.PutState(context.WithoutCancel(ctx), prefix+state, b, ttl)
+	}
+	if err != nil {
+		slog.Error("github app manifest: restore state", "name", st.Name, "err", err)
+	}
+}
+
+// takeState consumes state once it is confirmed issued to the caller, so a
+// mismatched subject never burns it. It writes the error response itself when
+// it returns false.
 func (h *GitHubAppManifestHandler) takeState(w http.ResponseWriter, r *http.Request, prefix, state string) (manifestState, bool) {
 	var st manifestState
 	if !stateRe.MatchString(state) {
 		http.Error(w, "invalid state", http.StatusBadRequest)
 		return st, false
 	}
-	b, err := h.states.TakeState(r.Context(), prefix+state)
+	b, err := h.states.GetState(r.Context(), prefix+state)
 	if err != nil {
 		slog.Error("github app manifest: load state", "err", err)
 		http.Error(w, "failed to load state", http.StatusInternalServerError)
@@ -163,6 +204,16 @@ func (h *GitHubAppManifestHandler) takeState(w http.ResponseWriter, r *http.Requ
 	}
 	if st.Subject != auth.Subject(r.Context()) {
 		http.Error(w, "state was issued to a different user", http.StatusForbidden)
+		return st, false
+	}
+	taken, err := h.states.TakeStateIf(r.Context(), prefix+state, b)
+	if err != nil {
+		slog.Error("github app manifest: consume state", "err", err)
+		http.Error(w, "failed to load state", http.StatusInternalServerError)
+		return st, false
+	}
+	if !taken {
+		http.Error(w, "state is unknown, expired or already used; start again", http.StatusBadRequest)
 		return st, false
 	}
 	return st, true
@@ -226,6 +277,14 @@ func validGitHubDisplayName(n string) error {
 	return nil
 }
 
+func defaultGitHubDisplayName(name string) string {
+	n := "artifactapi-" + name
+	if len(n) > maxGitHubAppNameLen {
+		n = strings.TrimRight(n[:maxGitHubAppNameLen], "-.")
+	}
+	return n
+}
+
 func (h *GitHubAppManifestHandler) start(w http.ResponseWriter, r *http.Request) {
 	var req manifestStartRequest
 	if !decodeBody(w, r, &req) {
@@ -240,7 +299,7 @@ func (h *GitHubAppManifestHandler) start(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if req.GitHubAppName == "" {
-		req.GitHubAppName = "artifactapi-" + req.Name
+		req.GitHubAppName = defaultGitHubDisplayName(req.Name)
 	}
 	if err := validGitHubDisplayName(req.GitHubAppName); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -323,6 +382,11 @@ func (h *GitHubAppManifestHandler) convert(w http.ResponseWriter, r *http.Reques
 			http.Error(w, "GitHub rejected the manifest code (expired or already used); start again", http.StatusBadRequest)
 			return
 		}
+		if githubauth.Transient(err) {
+			h.restoreState(r.Context(), createStatePrefix, req.State, st)
+			http.Error(w, "GitHub manifest conversion failed; retry", http.StatusBadGateway)
+			return
+		}
 		http.Error(w, "GitHub manifest conversion failed", http.StatusBadGateway)
 		return
 	}
@@ -346,10 +410,12 @@ func (h *GitHubAppManifestHandler) convert(w http.ResponseWriter, r *http.Reques
 	}
 	slog.Info("github app created from manifest", "name", st.Name, "app_id", conv.ID, "slug", conv.Slug)
 	st.AppID = conv.ID
-	installState, err := h.putState(r.Context(), installStatePrefix, st)
+	installState, err := h.issueInstallState(r.Context(), st)
 	if err != nil {
-		slog.Error("github app manifest: store install state", "err", err)
-		http.Error(w, "failed to store state", http.StatusInternalServerError)
+		slog.Error("github app manifest: store install state", "name", st.Name, "err", err)
+		http.Error(w, fmt.Sprintf("github app %q was created but its install link could not be issued; "+
+			"use Install on the GitHub Apps page (POST /api/v2/github-apps/%s/install-url) to finish", st.Name, st.Name),
+			http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, manifestConvertResponse{
@@ -399,6 +465,11 @@ func (h *GitHubAppManifestHandler) installed(w http.ResponseWriter, r *http.Requ
 	case errors.As(err, &se) && se.Status == http.StatusNotFound:
 		http.Error(w, fmt.Sprintf("installation %d does not belong to this app", req.InstallationID), http.StatusBadRequest)
 		return
+	case githubauth.Transient(err):
+		slog.Warn("github app manifest: installation lookup failed", "name", st.Name, "err", err)
+		h.restoreState(r.Context(), installStatePrefix, req.State, st)
+		http.Error(w, "GitHub installation lookup failed; retry", http.StatusBadGateway)
+		return
 	case err != nil:
 		slog.Warn("github app manifest: installation lookup failed", "name", st.Name, "err", err)
 		http.Error(w, "GitHub installation lookup failed", http.StatusBadGateway)
@@ -407,11 +478,62 @@ func (h *GitHubAppManifestHandler) installed(w http.ResponseWriter, r *http.Requ
 		http.Error(w, fmt.Sprintf("installation %d belongs to app %d, not %d", req.InstallationID, owner, app.AppID), http.StatusBadRequest)
 		return
 	}
-	app.InstallationID = req.InstallationID
-	if err := h.store.PutGitHubApp(r.Context(), app); err != nil {
+	saved, err := h.store.SetGitHubAppInstallation(r.Context(), st.Name, st.AppID, req.InstallationID)
+	if errors.Is(err, database.ErrGitHubAppChanged) {
+		http.Error(w, fmt.Sprintf("github app %q was deleted or replaced since it was created", st.Name), http.StatusConflict)
+		return
+	}
+	if err != nil {
 		slog.Error("github app manifest: save installation", "name", st.Name, "err", err)
 		http.Error(w, "failed to store github app", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, app)
+	writeJSON(w, http.StatusOK, saved)
+}
+
+// installLink issues a fresh install URL for an existing, not yet installed app.
+func (h *GitHubAppManifestHandler) installLink(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if err := validGitHubAppName(name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	app, err := h.store.GetGitHubApp(r.Context(), name)
+	if errors.Is(err, database.ErrGitHubAppNotFound) {
+		http.Error(w, fmt.Sprintf("github app %q not found", name), http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("github app manifest: get app", "name", name, "err", err)
+		http.Error(w, "failed to load github app", http.StatusInternalServerError)
+		return
+	}
+	if app.InstallationID != 0 {
+		http.Error(w, fmt.Sprintf("github app %q is already installed", name), http.StatusConflict)
+		return
+	}
+	key, err := githubauth.ParsePrivateKey(app.PrivateKey)
+	if err != nil {
+		slog.Error("github app manifest: stored key", "name", name, "err", err)
+		http.Error(w, "stored private key is invalid", http.StatusInternalServerError)
+		return
+	}
+	slug, err := githubauth.AppSlug(r.Context(), h.client, app.APIBaseURL, app.AppID, key)
+	if err != nil {
+		slog.Warn("github app manifest: app lookup failed", "name", name, "err", err)
+		http.Error(w, "GitHub app lookup failed", http.StatusBadGateway)
+		return
+	}
+	webBase := webBaseFor(app.APIBaseURL)
+	state, err := h.issueInstallState(r.Context(), manifestState{
+		Name: name, WebBase: webBase, APIBase: app.APIBaseURL, Subject: auth.Subject(r.Context()), AppID: app.AppID,
+	})
+	if err != nil {
+		slog.Error("github app manifest: store install state", "name", name, "err", err)
+		http.Error(w, "failed to store state", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, manifestConvertResponse{
+		Name: name, AppID: app.AppID, Slug: slug, InstallURL: installURL(webBase, slug, state),
+	})
 }

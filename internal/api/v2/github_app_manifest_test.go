@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,9 +22,10 @@ import (
 )
 
 type memStates struct {
-	mu   sync.Mutex
-	now  time.Time
-	vals map[string]memState
+	mu       sync.Mutex
+	now      time.Time
+	vals     map[string]memState
+	failPuts int
 }
 
 type memState struct {
@@ -34,19 +36,33 @@ type memState struct {
 func (m *memStates) PutState(_ context.Context, key string, val []byte, ttl time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failPuts > 0 {
+		m.failPuts--
+		return errors.New("redis unavailable")
+	}
 	m.vals[key] = memState{val: val, expires: m.now.Add(ttl)}
 	return nil
 }
 
-func (m *memStates) TakeState(_ context.Context, key string) ([]byte, error) {
+func (m *memStates) GetState(_ context.Context, key string) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.vals[key]
-	delete(m.vals, key)
 	if !ok || !m.now.Before(s.expires) {
 		return nil, nil
 	}
 	return s.val, nil
+}
+
+func (m *memStates) TakeStateIf(_ context.Context, key string, val []byte) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.vals[key]
+	if !ok || !m.now.Before(s.expires) || !bytes.Equal(s.val, val) {
+		return false, nil
+	}
+	delete(m.vals, key)
+	return true, nil
 }
 
 func (m *memStates) advance(d time.Duration) {
@@ -81,12 +97,23 @@ func (m *memApps) CreateGitHubApp(_ context.Context, a *models.GitHubApp) error 
 	return nil
 }
 
-func (m *memApps) PutGitHubApp(_ context.Context, a *models.GitHubApp) error {
+func (m *memApps) SetGitHubAppInstallation(_ context.Context, name string, appID, installationID int64) (*models.GitHubApp, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	a, ok := m.apps[name]
+	if !ok || a.AppID != appID {
+		return nil, database.ErrGitHubAppChanged
+	}
+	a.InstallationID = installationID
 	a.UpdatedAt = time.Now()
-	m.apps[a.Name] = *a
-	return nil
+	m.apps[name] = a
+	return &a, nil
+}
+
+func (m *memApps) set(a models.GitHubApp) {
+	m.mu.Lock()
+	m.apps[a.Name] = a
+	m.mu.Unlock()
 }
 
 const (
@@ -95,11 +122,18 @@ const (
 	clientSecret   = "client-secret-do-not-leak"
 	ownInstall     = 99
 	foreignInstall = 98
+	flakyInstall   = 97
 )
 
-// fakeGitHub serves manifest conversion (code "good"; anything else 404s) and
-// installation lookups authenticated by the app JWT, under /api/v3 as GHES does.
-func fakeGitHub(t *testing.T, keyPEM string) *httptest.Server {
+// ghHooks lets a test act while the fake GitHub serves an installation lookup.
+type ghHooks struct {
+	onInstall func()
+}
+
+// fakeGitHub serves manifest conversion (code "good"; "flaky" 502s; anything
+// else 404s), and app and installation lookups authenticated by the app JWT,
+// under /api/v3 as GHES does.
+func fakeGitHub(t *testing.T, keyPEM string, hooks *ghHooks) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -109,7 +143,9 @@ func fakeGitHub(t *testing.T, keyPEM string) *httptest.Server {
 				"id": fakeAppID, "slug": "artifactapi-ci", "pem": keyPEM, "client_id": "Iv1.abc",
 				"client_secret": clientSecret, "webhook_secret": webhookSecret,
 			})
-		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v3/app/installations/"):
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v3/app-manifests/flaky/conversions":
+			http.Error(w, "unicorn", http.StatusBadGateway)
+		case r.Method == http.MethodGet && (r.URL.Path == "/api/v3/app" || strings.HasPrefix(r.URL.Path, "/api/v3/app/installations/")):
 			tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 			parts := strings.Split(tok, ".")
 			if len(parts) != 3 {
@@ -125,7 +161,16 @@ func fakeGitHub(t *testing.T, keyPEM string) *httptest.Server {
 				http.Error(w, "wrong app", http.StatusUnauthorized)
 				return
 			}
+			if r.URL.Path == "/api/v3/app" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": fakeAppID, "slug": "artifactapi-ci"})
+				return
+			}
+			if hooks.onInstall != nil {
+				hooks.onInstall()
+			}
 			switch strings.TrimPrefix(r.URL.Path, "/api/v3/app/installations/") {
+			case "97":
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
 			case "99":
 				_ = json.NewEncoder(w).Encode(map[string]any{"id": ownInstall, "app_id": fakeAppID})
 			case "98":
@@ -143,6 +188,8 @@ func fakeGitHub(t *testing.T, keyPEM string) *httptest.Server {
 
 type manifestFixture struct {
 	h      http.Handler
+	raw    http.Handler
+	hooks  *ghHooks
 	iss    *testsupport.OIDCIssuer
 	apps   *memApps
 	states *memStates
@@ -152,21 +199,31 @@ type manifestFixture struct {
 }
 
 func newManifestFixture(t *testing.T) *manifestFixture {
+	return newManifestFixtureAuth(t, true)
+}
+
+func newManifestFixtureAuth(t *testing.T, oidc bool) *manifestFixture {
 	t.Helper()
 	keyPEM := testAppKeyPEM(t)
-	gh := fakeGitHub(t, keyPEM)
+	hooks := &ghHooks{}
+	gh := fakeGitHub(t, keyPEM, hooks)
 	ghHost := gh.Listener.Addr().String()
 	iss := testsupport.NewOIDCIssuer()
 	t.Cleanup(iss.Close)
 	f := &manifestFixture{
 		iss: iss, apps: &memApps{apps: map[string]models.GitHubApp{}},
 		states: &memStates{now: time.Now(), vals: map[string]memState{}},
-		ghHost: ghHost, keyPEM: keyPEM, logs: &bytes.Buffer{},
+		ghHost: ghHost, keyPEM: keyPEM, logs: &bytes.Buffer{}, hooks: hooks,
 	}
 	hosts := []string{ghHost, "ghe.example.com"}
 	handler := NewGitHubAppsHandler(nil, hosts).
 		WithManifest(NewGitHubAppManifestHandler(f.apps, f.states, hosts, gh.Client()))
-	f.h = auth.NewBearerOIDC(iss.URL, nil).RequireWrites(handler.Routes())
+	f.raw = handler.Routes()
+	issuer := ""
+	if oidc {
+		issuer = iss.URL
+	}
+	f.h = auth.NewBearerOIDC(issuer, nil).RequireWrites(f.raw)
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
@@ -175,6 +232,11 @@ func newManifestFixture(t *testing.T) *manifestFixture {
 
 func (f *manifestFixture) post(t *testing.T, sub, path string, body any) (int, string) {
 	t.Helper()
+	return f.serve(t, f.h, sub, path, body)
+}
+
+func (f *manifestFixture) serve(t *testing.T, h http.Handler, sub, path string, body any) (int, string) {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(jsonBody(t, body)))
 	req.Host = "artifactapi.example.com"
 	req.Header.Set("X-Forwarded-Proto", "https")
@@ -182,7 +244,7 @@ func (f *manifestFixture) post(t *testing.T, sub, path string, body any) (int, s
 		req.Header.Set("Authorization", "Bearer "+f.iss.Token(nil, "artifactapi", sub, time.Hour))
 	}
 	w := httptest.NewRecorder()
-	f.h.ServeHTTP(w, req)
+	h.ServeHTTP(w, req)
 	return w.Code, w.Body.String()
 }
 
@@ -432,5 +494,174 @@ func TestManifestInstalledRejectsForeignInstallation(t *testing.T) {
 func TestGitHubAppNameManifestReserved(t *testing.T) {
 	if err := validGitHubAppName("manifest"); err == nil {
 		t.Fatal(`"manifest" must be reserved: it collides with the manifest routes`)
+	}
+}
+
+func TestManifestDefaultDisplayNameTruncated(t *testing.T) {
+	f := newManifestFixture(t)
+	name := strings.Repeat("a", 21) + "-" + strings.Repeat("b", 40)
+	code, body := f.post(t, "alice", "/manifest", map[string]any{"name": name})
+	if code != http.StatusOK {
+		t.Fatalf("start = %d %s", code, body)
+	}
+	if got := decodeAs[manifestStartResponse](t, body).Manifest.Name; got != "artifactapi-"+strings.Repeat("a", 21) {
+		t.Fatalf("default github_app_name = %q (%d chars)", got, len(got))
+	}
+}
+
+func TestManifestGitHubHostErrorNamesWebHost(t *testing.T) {
+	f := newManifestFixture(t)
+	code, body := f.post(t, "alice", "/manifest", map[string]any{"name": "ci", "github_host": "api.github.com"})
+	if code != http.StatusBadRequest || !strings.Contains(body, "web host") {
+		t.Fatalf("api host = %d %s", code, body)
+	}
+}
+
+func storedSubjects(t *testing.T, m *memStates) []string {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var subs []string
+	for _, v := range m.vals {
+		var st manifestState
+		if err := json.Unmarshal(v.val, &st); err != nil {
+			t.Fatal(err)
+		}
+		subs = append(subs, st.Subject)
+	}
+	return subs
+}
+
+func TestManifestSubjectReachesHandlerThroughRequireWrites(t *testing.T) {
+	f := newManifestFixture(t)
+	f.start(t, "alice")
+	if subs := storedSubjects(t, f.states); len(subs) != 1 || subs[0] != "alice" {
+		t.Fatalf("stored subjects = %v, want [alice]", subs)
+	}
+}
+
+func TestManifestSubjectMismatchKeepsState(t *testing.T) {
+	f := newManifestFixture(t)
+	start := f.start(t, "alice")
+	if code, _ := f.post(t, "mallory", "/manifest/convert", map[string]any{"code": "good", "state": start.State}); code != http.StatusForbidden {
+		t.Fatalf("other subject convert = %d, want 403", code)
+	}
+	if code, _ := f.serve(t, f.raw, "", "/manifest/convert", map[string]any{"code": "good", "state": start.State}); code != http.StatusForbidden {
+		t.Fatalf("empty subject convert = %d, want 403", code)
+	}
+	conv := f.convert(t, "alice", start.State)
+	install := installStateOf(t, conv.InstallURL)
+	if code, _ := f.post(t, "mallory", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": install}); code != http.StatusForbidden {
+		t.Fatalf("other subject installed = %d, want 403", code)
+	}
+	if code, body := f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": install}); code != http.StatusOK {
+		t.Fatalf("installed after a 403 = %d %s", code, body)
+	}
+}
+
+func TestManifestAuthDisabled(t *testing.T) {
+	f := newManifestFixtureAuth(t, false)
+	start := f.start(t, "")
+	conv := f.convert(t, "", start.State)
+	code, body := f.post(t, "", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": installStateOf(t, conv.InstallURL)})
+	if code != http.StatusOK || f.apps.apps["ci"].InstallationID != ownInstall {
+		t.Fatalf("installed with auth disabled = %d %s", code, body)
+	}
+}
+
+func TestManifestConvertTransientFailureKeepsState(t *testing.T) {
+	f := newManifestFixture(t)
+	start := f.start(t, "alice")
+	code, body := f.post(t, "alice", "/manifest/convert", map[string]any{"code": "flaky", "state": start.State})
+	if code != http.StatusBadGateway || !strings.Contains(body, "retry") {
+		t.Fatalf("flaky convert = %d %s", code, body)
+	}
+	if _, ok := f.apps.apps["ci"]; ok {
+		t.Fatal("app stored after a failed conversion")
+	}
+	f.convert(t, "alice", start.State)
+}
+
+func TestManifestInstalledTransientFailureKeepsState(t *testing.T) {
+	f := newManifestFixture(t)
+	install := installStateOf(t, f.convert(t, "alice", f.start(t, "alice").State).InstallURL)
+	if code, _ := f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": flakyInstall, "state": install}); code != http.StatusBadGateway {
+		t.Fatalf("flaky installed = %d, want 502", code)
+	}
+	if code, body := f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": install}); code != http.StatusOK {
+		t.Fatalf("installed retry = %d %s", code, body)
+	}
+}
+
+func TestManifestInstallStateRetriedOnce(t *testing.T) {
+	f := newManifestFixture(t)
+	start := f.start(t, "alice")
+	f.states.failPuts = 1
+	conv := f.convert(t, "alice", start.State)
+	if code, body := f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": installStateOf(t, conv.InstallURL)}); code != http.StatusOK {
+		t.Fatalf("installed = %d %s", code, body)
+	}
+}
+
+func TestManifestInstallURLRecoversFailedInstallState(t *testing.T) {
+	f := newManifestFixture(t)
+	start := f.start(t, "alice")
+	f.states.failPuts = 2
+	code, body := f.post(t, "alice", "/manifest/convert", map[string]any{"code": "good", "state": start.State})
+	if code != http.StatusInternalServerError || !strings.Contains(body, "was created") || !strings.Contains(body, "/ci/install-url") {
+		t.Fatalf("convert with state store down = %d %s", code, body)
+	}
+	if f.apps.apps["ci"].AppID != fakeAppID {
+		t.Fatal("app not stored")
+	}
+	if code, _ := f.post(t, "", "/ci/install-url", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated install-url = %d, want 401", code)
+	}
+	code, body = f.post(t, "alice", "/ci/install-url", nil)
+	if code != http.StatusOK {
+		t.Fatalf("install-url = %d %s", code, body)
+	}
+	link := decodeAs[manifestConvertResponse](t, body)
+	if !strings.HasPrefix(link.InstallURL, "https://"+f.ghHost+"/github-apps/artifactapi-ci/installations/new?state=") || link.AppID != fakeAppID {
+		t.Fatalf("install-url = %+v", link)
+	}
+	if code, body := f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": installStateOf(t, link.InstallURL)}); code != http.StatusOK {
+		t.Fatalf("installed = %d %s", code, body)
+	}
+	if code, _ := f.post(t, "alice", "/ci/install-url", nil); code != http.StatusConflict {
+		t.Fatalf("install-url for an installed app = %d, want 409", code)
+	}
+	if code, _ := f.post(t, "alice", "/missing/install-url", nil); code != http.StatusNotFound {
+		t.Fatalf("install-url for a missing app = %d, want 404", code)
+	}
+}
+
+func TestManifestInstalledRaceWithReplace(t *testing.T) {
+	f := newManifestFixture(t)
+	install := installStateOf(t, f.convert(t, "alice", f.start(t, "alice").State).InstallURL)
+	replacement := models.GitHubApp{Name: "ci", AppID: 7, PrivateKey: f.keyPEM, Description: "replaced"}
+	f.hooks.onInstall = func() { f.apps.set(replacement) }
+	code, body := f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": install})
+	if code != http.StatusConflict {
+		t.Fatalf("installed after replace = %d %s, want 409", code, body)
+	}
+	if got := f.apps.apps["ci"]; got.AppID != 7 || got.InstallationID != 0 || got.Description != "replaced" {
+		t.Fatalf("replacement overwritten: %+v", got)
+	}
+}
+
+func TestManifestInstalledKeepsConcurrentEdit(t *testing.T) {
+	f := newManifestFixture(t)
+	install := installStateOf(t, f.convert(t, "alice", f.start(t, "alice").State).InstallURL)
+	f.hooks.onInstall = func() {
+		a, _ := f.apps.GetGitHubApp(context.Background(), "ci")
+		a.Description = "edited"
+		f.apps.set(*a)
+	}
+	if code, body := f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": install}); code != http.StatusOK {
+		t.Fatalf("installed = %d %s", code, body)
+	}
+	if got := f.apps.apps["ci"]; got.Description != "edited" || got.InstallationID != ownInstall {
+		t.Fatalf("concurrent edit reverted: %+v", got)
 	}
 }

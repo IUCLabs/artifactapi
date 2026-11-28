@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	v1 "github.com/IUCLabs/artifactapi/internal/api/v1"
+	"github.com/IUCLabs/artifactapi/internal/api/requrl"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	tfprov "github.com/IUCLabs/artifactapi/internal/provider/terraform"
 	"github.com/IUCLabs/artifactapi/internal/tfsign"
@@ -291,5 +291,5 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func baseURL(r *http.Request) string {
-	return v1.Scheme(r) + "://" + r.Host
+	return requrl.Scheme(r) + "://" + r.Host
 }

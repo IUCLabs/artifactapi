@@ -24,6 +24,17 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("github %s: status %d", e.Op, e.Status)
 }
 
+// Transient reports whether err is a GitHub failure worth retrying: a network
+// error, 429 or 5xx.
+func Transient(err error) bool {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Status == http.StatusTooManyRequests || se.Status >= 500
+	}
+	var ue *url.Error
+	return errors.As(err, &ue)
+}
+
 // ManifestConversion is the subset of a manifest conversion response that
 // artifactapi keeps. Webhook and OAuth client secrets are never decoded.
 type ManifestConversion struct {
@@ -64,6 +75,24 @@ func InstallationAppID(ctx context.Context, client *http.Client, apiBase string,
 		return 0, err
 	}
 	return out.AppID, nil
+}
+
+// AppSlug returns the slug of the app authenticated by its own JWT.
+func AppSlug(ctx context.Context, client *http.Client, apiBase string, appID int64, key *rsa.PrivateKey) (string, error) {
+	jwt, err := mintJWT(strconv.FormatInt(appID, 10), key, time.Now())
+	if err != nil {
+		return "", fmt.Errorf("github app: mint jwt: %w", err)
+	}
+	var out struct {
+		Slug string `json:"slug"`
+	}
+	if err := githubJSON(ctx, client, http.MethodGet, strings.TrimRight(apiBase, "/")+"/app", jwt, "app lookup", &out); err != nil {
+		return "", err
+	}
+	if out.Slug == "" {
+		return "", errors.New("github app lookup: response is missing slug")
+	}
+	return out.Slug, nil
 }
 
 func githubJSON(ctx context.Context, client *http.Client, method, u, bearer, op string, out any) error {

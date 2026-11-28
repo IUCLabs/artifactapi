@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -213,11 +214,25 @@ func (r *Redis) PutState(ctx context.Context, key string, val []byte, ttl time.D
 	return r.client.Set(ctx, "state:"+key, val, ttl).Err()
 }
 
-// TakeState atomically reads and deletes key; a missing or expired key returns nil.
-func (r *Redis) TakeState(ctx context.Context, key string) ([]byte, error) {
-	val, err := r.client.GetDel(ctx, "state:"+key).Bytes()
-	if err == redis.Nil {
+// GetState returns the value under key without consuming it; a missing or
+// expired key returns nil.
+func (r *Redis) GetState(ctx context.Context, key string) ([]byte, error) {
+	val, err := r.client.Get(ctx, "state:"+key).Bytes()
+	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	}
 	return val, err
+}
+
+var takeStateIfScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+	return redis.call('DEL', KEYS[1])
+end
+return 0`)
+
+// TakeStateIf atomically deletes key when it still holds val, reporting
+// whether this caller consumed it.
+func (r *Redis) TakeStateIf(ctx context.Context, key string, val []byte) (bool, error) {
+	n, err := takeStateIfScript.Run(ctx, r.client, []string{"state:" + key}, val).Int()
+	return n == 1, err
 }

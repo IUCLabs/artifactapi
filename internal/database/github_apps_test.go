@@ -161,13 +161,15 @@ func TestCreateGitHubAppUninstalled(t *testing.T) {
 		t.Fatalf("list = %+v %v", listed, err)
 	}
 
-	got.InstallationID = 1 << 40
-	before := got.UpdatedAt
-	if err := testDB.PutGitHubApp(ctx(), got); err != nil {
+	if _, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-app", 8, 5); !errors.Is(err, ErrGitHubAppChanged) {
+		t.Fatalf("install with stale app_id err = %v, want ErrGitHubAppChanged", err)
+	}
+	installed, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-app", 7, 1<<40)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.UpdatedAt.After(before) {
-		t.Fatalf("installing did not bump updated_at: %v -> %v", before, got.UpdatedAt)
+	if installed.InstallationID != 1<<40 || !installed.UpdatedAt.After(got.UpdatedAt) || installed.PrivateKey != keyPEM {
+		t.Fatalf("installed = %+v (updated_at before %v)", installed, got.UpdatedAt)
 	}
 	if again, _ := testDB.GetGitHubApp(ctx(), "manifest-app"); again.InstallationID != 1<<40 {
 		t.Fatalf("installation_id = %d", again.InstallationID)

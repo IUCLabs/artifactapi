@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 
@@ -25,11 +26,14 @@ type GitHubAppStore interface {
 
 // GitHubAppsHandler serves /api/v2/github-apps. Private keys are write-only.
 type GitHubAppsHandler struct {
-	store GitHubAppStore
+	store    GitHubAppStore
+	apiHosts []string
 }
 
-func NewGitHubAppsHandler(store GitHubAppStore) *GitHubAppsHandler {
-	return &GitHubAppsHandler{store: store}
+// NewGitHubAppsHandler serves apps whose api_base_url is api.github.com or one
+// of apiHosts.
+func NewGitHubAppsHandler(store GitHubAppStore, apiHosts []string) *GitHubAppsHandler {
+	return &GitHubAppsHandler{store: store, apiHosts: apiHosts}
 }
 
 func (h *GitHubAppsHandler) Routes() chi.Router {
@@ -86,31 +90,25 @@ func (h *GitHubAppsHandler) put(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := spec.Validate(); err != nil {
+	if err := spec.Validate(h.apiHosts); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	key, err := githubauth.ParsePrivateKey(spec.PrivateKey)
-	if err != nil {
+	if _, err := githubauth.ParsePrivateKey(spec.PrivateKey); err != nil {
 		http.Error(w, "invalid private_key: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	fp, err := githubauth.Fingerprint(key)
-	if err != nil {
-		http.Error(w, "invalid private_key", http.StatusBadRequest)
-		return
-	}
 	app := models.GitHubApp{
-		Name:                  name,
-		AppID:                 spec.AppID,
-		InstallationID:        spec.InstallationID,
-		APIBaseURL:            spec.APIBaseURL,
-		Description:           spec.Description,
-		PrivateKeyFingerprint: fp,
-		PrivateKey:            spec.PrivateKey,
+		Name:           name,
+		AppID:          spec.AppID,
+		InstallationID: spec.InstallationID,
+		APIBaseURL:     spec.APIBaseURL,
+		Description:    spec.Description,
+		PrivateKey:     spec.PrivateKey,
 	}
 	if err := h.store.PutGitHubApp(r.Context(), &app); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("put github app", "name", name, "err", err)
+		http.Error(w, "failed to store github app", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, app)

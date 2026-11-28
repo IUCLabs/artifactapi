@@ -3,6 +3,7 @@ package generic
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"path"
 	"strings"
@@ -56,13 +57,16 @@ func (p *Provider) UpstreamURL(remote models.Remote, reqPath string) string {
 	return base + "/" + strings.TrimLeft(reqPath, "/")
 }
 
-// AuthHeaders authenticates outbound requests. A remote github_app (GitHub
-// hosts only) wins, then a per-remote username/password (Basic auth), then the
+// AuthHeaders authenticates outbound requests. A remote github_app wins (and
+// errors on a non-GitHub host rather than falling through), then a per-remote username/password (Basic auth), then the
 // process-wide GitHub credential for GitHub hosts so private downloads work.
 func (p *Provider) AuthHeaders(ctx context.Context, remote models.Remote) (http.Header, error) {
 	h := http.Header{}
 	github := IsGitHubHost(remote.BaseURL)
-	if remote.GitHubApp != "" && github {
+	if remote.GitHubApp != "" {
+		if !github {
+			return nil, fmt.Errorf("remote %q: github_app %q set on non-GitHub base_url", remote.Name, remote.GitHubApp)
+		}
 		tok, err := githubauth.AppToken(ctx, githubauth.AppRegistry(), remote.GitHubApp)
 		if err != nil {
 			return nil, err

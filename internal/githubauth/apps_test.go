@@ -18,18 +18,51 @@ import (
 )
 
 type fakeAppStore struct {
-	mu   sync.Mutex
-	apps map[string]models.GitHubApp
+	mu       sync.Mutex
+	apps     map[string]models.GitHubApp
+	fail     error
+	keyLoads int
+	checks   int
 }
 
 func (f *fakeAppStore) GetGitHubApp(_ context.Context, name string) (*models.GitHubApp, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.keyLoads++
+	if f.fail != nil {
+		return nil, f.fail
+	}
 	a, ok := f.apps[name]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, models.ErrGitHubAppNotFound
 	}
 	return &a, nil
+}
+
+func (f *fakeAppStore) GitHubAppUpdatedAt(_ context.Context, name string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks++
+	if f.fail != nil {
+		return time.Time{}, f.fail
+	}
+	a, ok := f.apps[name]
+	if !ok {
+		return time.Time{}, models.ErrGitHubAppNotFound
+	}
+	return a.UpdatedAt, nil
+}
+
+func (f *fakeAppStore) counts() (keyLoads, checks int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.keyLoads, f.checks
+}
+
+func (f *fakeAppStore) setFail(err error) {
+	f.mu.Lock()
+	f.fail = err
+	f.mu.Unlock()
 }
 
 func (f *fakeAppStore) set(a models.GitHubApp) {
@@ -42,6 +75,18 @@ func (f *fakeAppStore) del(name string) {
 	f.mu.Lock()
 	delete(f.apps, name)
 	f.mu.Unlock()
+}
+
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time          { return c.t }
+func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+func (a *Apps) cached(name string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.cache[name]
+	return ok
 }
 
 // installationServer mints "ghs_<installation>_<n>" for any installation id.
@@ -69,13 +114,15 @@ func installationServer(t *testing.T) (*httptest.Server, *int) {
 	return srv, &exchanges
 }
 
-func TestAppsCacheFollowsUpdatedAt(t *testing.T) {
+func TestAppsCacheRevalidatesAfterTTL(t *testing.T) {
 	srv, exchanges := installationServer(t)
 	keyPEM := testRSAKeyPEM(t)
 	t0 := time.Now()
 	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
 	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 100, PrivateKey: keyPEM, APIBaseURL: srv.URL, UpdatedAt: t0})
+	clock := &fakeClock{t: t0}
 	reg := NewApps(store)
+	reg.now = clock.now
 	ctx := context.Background()
 
 	for range 3 {
@@ -84,24 +131,81 @@ func TestAppsCacheFollowsUpdatedAt(t *testing.T) {
 			t.Fatalf("token = %q, %v; want ghs_100_1", tok, err)
 		}
 	}
+	if loads, checks := store.counts(); loads != 1 || checks != 0 {
+		t.Fatalf("within TTL: %d key loads, %d checks; want 1, 0", loads, checks)
+	}
+
+	clock.advance(AppRevalidateTTL)
+	if tok, err := AppToken(ctx, reg, "ci"); err != nil || tok != "ghs_100_1" {
+		t.Fatalf("unchanged after TTL token = %q, %v", tok, err)
+	}
+	if loads, checks := store.counts(); loads != 1 || checks != 1 {
+		t.Fatalf("unchanged revalidation: %d key loads, %d checks; want 1, 1", loads, checks)
+	}
 	if *exchanges != 1 {
 		t.Fatalf("unchanged app re-exchanged: %d exchanges", *exchanges)
 	}
 
 	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 200, PrivateKey: keyPEM, APIBaseURL: srv.URL, UpdatedAt: t0.Add(time.Second)})
+	if tok, _ := AppToken(ctx, reg, "ci"); tok != "ghs_100_1" {
+		t.Fatalf("update visible before TTL: %q", tok)
+	}
+	clock.advance(AppRevalidateTTL)
 	if tok, err := AppToken(ctx, reg, "ci"); err != nil || tok != "ghs_200_2" {
 		t.Fatalf("after update token = %q, %v; want ghs_200_2", tok, err)
 	}
+	if loads, _ := store.counts(); loads != 2 {
+		t.Fatalf("changed updated_at: %d key loads; want 2", loads)
+	}
 
 	store.del("ci")
-	if _, err := AppToken(ctx, reg, "ci"); err == nil {
-		t.Fatal("deleted app still yields a token")
+	clock.advance(AppRevalidateTTL)
+	if _, err := AppToken(ctx, reg, "ci"); !errors.Is(err, models.ErrGitHubAppNotFound) {
+		t.Fatalf("deleted app: %v; want not found", err)
 	}
-	reg.mu.Lock()
-	_, cached := reg.cache["ci"]
-	reg.mu.Unlock()
-	if cached {
+	if reg.cached("ci") {
 		t.Fatal("deleted app left in cache")
+	}
+}
+
+func TestAppsServeCachedOnTransientError(t *testing.T) {
+	srv, _ := installationServer(t)
+	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
+	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 5, PrivateKey: testRSAKeyPEM(t), APIBaseURL: srv.URL, UpdatedAt: time.Now()})
+	clock := &fakeClock{t: time.Now()}
+	reg := NewApps(store)
+	reg.now = clock.now
+	ctx := context.Background()
+
+	if _, err := AppToken(ctx, reg, "ci"); err != nil {
+		t.Fatal(err)
+	}
+	store.setFail(errors.New("connection refused"))
+	clock.advance(AppRevalidateTTL)
+	if tok, err := AppToken(ctx, reg, "ci"); err != nil || tok != "ghs_5_1" {
+		t.Fatalf("transient error: token = %q, %v; want cached ghs_5_1", tok, err)
+	}
+	if !reg.cached("ci") {
+		t.Fatal("transient error dropped the cache entry")
+	}
+	if _, err := AppToken(ctx, reg, "other"); err == nil {
+		t.Fatal("uncached app with a failing store must error")
+	}
+}
+
+func TestAppsRememberKeepsNewerEntry(t *testing.T) {
+	reg := NewApps(&fakeAppStore{apps: map[string]models.GitHubApp{}})
+	t0 := time.Now()
+	newer, older, same := &appCredential{}, &appCredential{}, &appCredential{}
+	reg.remember("ci", cachedApp{updatedAt: t0.Add(time.Second), checkedAt: t0, cred: newer})
+	if got := reg.remember("ci", cachedApp{updatedAt: t0, checkedAt: t0, cred: older}); got != newer {
+		t.Fatal("older read replaced a newer entry")
+	}
+	if got := reg.remember("ci", cachedApp{updatedAt: t0.Add(time.Second), checkedAt: t0.Add(time.Second), cred: same}); got != newer {
+		t.Fatal("equal version replaced the cached credential")
+	}
+	if c := reg.cache["ci"]; c.cred != newer || !c.checkedAt.Equal(t0.Add(time.Second)) {
+		t.Fatalf("equal version did not refresh checkedAt: %+v", c)
 	}
 }
 

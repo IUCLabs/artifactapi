@@ -1,11 +1,13 @@
 package v2
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,7 +58,7 @@ func testDBOrSkip(t *testing.T) *database.DB {
 
 func TestGitHubAppsAPI(t *testing.T) {
 	db := testDBOrSkip(t)
-	h := NewGitHubAppsHandler(db).Routes()
+	h := NewGitHubAppsHandler(db, []string{"ghe.example.com"}).Routes()
 	keyPEM := testAppKeyPEM(t)
 	keyLine := strings.Split(keyPEM, "\n")[1]
 	valid := map[string]any{"app_id": 11, "installation_id": 22, "private_key": keyPEM, "description": "ci"}
@@ -108,6 +110,7 @@ func TestGitHubAppsAPI(t *testing.T) {
 		"missing private_key": jsonBody(t, with("private_key", nil)),
 		"garbage key":         jsonBody(t, with("private_key", "-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n")),
 		"http api base":       jsonBody(t, with("api_base_url", "http://api.github.com")),
+		"unlisted api host":   jsonBody(t, with("api_base_url", "https://evil.example.com")),
 		"unknown field":       jsonBody(t, with("owner", "x")),
 		"not json":            "{",
 	} {
@@ -115,6 +118,10 @@ func TestGitHubAppsAPI(t *testing.T) {
 			t.Errorf("%s: PUT = %d, want 400", name, code)
 		}
 	}
+	if code, body := call(t, h, "PUT", "/ghes-app", jsonBody(t, with("api_base_url", "https://ghe.example.com/api/v3"))); code != 200 {
+		t.Errorf("allowlisted GHES host PUT = %d %s, want 200", code, body)
+	}
+	t.Cleanup(func() { _ = db.DeleteGitHubApp(t.Context(), "ghes-app") })
 	if code, _ := call(t, h, "PUT", "/bad%20name", jsonBody(t, valid)); code != 400 {
 		t.Errorf("invalid name PUT = %d, want 400", code)
 	}
@@ -128,7 +135,7 @@ func TestGitHubAppsAPI(t *testing.T) {
 
 func TestRemoteGitHubAppReference(t *testing.T) {
 	db := testDBOrSkip(t)
-	apps := NewGitHubAppsHandler(db).Routes()
+	apps := NewGitHubAppsHandler(db, []string{"ghe.example.com"}).Routes()
 	remotes := NewRemotesHandler(db, nil, nil).Routes()
 	if code, body := call(t, apps, "PUT", "/ref-api-app", jsonBody(t, map[string]any{
 		"app_id": 1, "installation_id": 2, "private_key": testAppKeyPEM(t),
@@ -169,5 +176,19 @@ func TestRemoteGitHubAppReference(t *testing.T) {
 	}
 	if code, _ := call(t, apps, "DELETE", "/ref-api-app", ""); code != 204 {
 		t.Fatalf("delete unreferenced = %d, want 204", code)
+	}
+}
+
+type failingAppStore struct{ GitHubAppStore }
+
+func (failingAppStore) PutGitHubApp(context.Context, *models.GitHubApp) error {
+	return errors.New("db exploded: secret detail")
+}
+
+func TestGitHubAppsPutHidesStoreError(t *testing.T) {
+	h := NewGitHubAppsHandler(failingAppStore{}, nil).Routes()
+	code, body := call(t, h, "PUT", "/ci", jsonBody(t, map[string]any{"app_id": 1, "installation_id": 2, "private_key": testAppKeyPEM(t)}))
+	if code != 500 || strings.Contains(body, "secret detail") {
+		t.Fatalf("PUT = %d %q; want 500 without the store error", code, body)
 	}
 }

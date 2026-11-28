@@ -1,26 +1,59 @@
 package database
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"testing"
 
+	"github.com/IUCLabs/artifactapi/internal/githubauth"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
+func testAppKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+}
+
 func TestGitHubAppRoundTrip(t *testing.T) {
 	requireDB(t)
+	keyPEM := testAppKeyPEM(t)
+	key, err := githubauth.ParsePrivateKey(keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFP, _ := githubauth.Fingerprint(key)
 	app := models.GitHubApp{Name: "rt-app", AppID: 1, InstallationID: 2, APIBaseURL: "https://api.github.com",
-		Description: "d", PrivateKeyFingerprint: "SHA256:x", PrivateKey: "PEM"}
+		Description: "d", PrivateKeyFingerprint: "SHA256:caller-supplied", PrivateKey: keyPEM}
 	if err := testDB.PutGitHubApp(ctx(), &app); err != nil {
 		t.Fatal(err)
+	}
+	if app.PrivateKeyFingerprint != wantFP {
+		t.Fatalf("fingerprint = %q; want %q derived from the key", app.PrivateKeyFingerprint, wantFP)
+	}
+	if err := testDB.PutGitHubApp(ctx(), &models.GitHubApp{Name: "rt-bad", AppID: 1, InstallationID: 2, PrivateKey: "junk"}); err == nil {
+		t.Fatal("unparseable key stored")
 	}
 	t.Cleanup(func() { _ = testDB.DeleteGitHubApp(ctx(), "rt-app") })
 	if app.CreatedAt.IsZero() || !app.CreatedAt.Equal(app.UpdatedAt) {
 		t.Fatalf("timestamps on create: %v / %v", app.CreatedAt, app.UpdatedAt)
 	}
 
+	if ua, err := testDB.GitHubAppUpdatedAt(ctx(), "rt-app"); err != nil || !ua.Equal(app.UpdatedAt) {
+		t.Fatalf("updated_at = %v, %v; want %v", ua, err, app.UpdatedAt)
+	}
+	if _, err := testDB.GitHubAppUpdatedAt(ctx(), "rt-missing"); !errors.Is(err, ErrGitHubAppNotFound) {
+		t.Fatalf("updated_at of missing app: %v", err)
+	}
+
 	got, err := testDB.GetGitHubApp(ctx(), "rt-app")
-	if err != nil || got.PrivateKey != "PEM" || got.AppID != 1 || got.InstallationID != 2 || got.Description != "d" {
+	if err != nil || got.PrivateKey != keyPEM || got.PrivateKeyFingerprint != wantFP || got.AppID != 1 || got.InstallationID != 2 || got.Description != "d" {
 		t.Fatalf("get: %+v, %v", got, err)
 	}
 
@@ -61,7 +94,7 @@ func TestGitHubAppRoundTrip(t *testing.T) {
 
 func TestGitHubAppReferencedByRemote(t *testing.T) {
 	requireDB(t)
-	app := models.GitHubApp{Name: "ref-app", AppID: 1, InstallationID: 2, APIBaseURL: "https://api.github.com", PrivateKey: "PEM"}
+	app := models.GitHubApp{Name: "ref-app", AppID: 1, InstallationID: 2, APIBaseURL: "https://api.github.com", PrivateKey: testAppKeyPEM(t)}
 	if err := testDB.PutGitHubApp(ctx(), &app); err != nil {
 		t.Fatal(err)
 	}

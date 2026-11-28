@@ -5,15 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/IUCLabs/artifactapi/internal/githubauth"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
 // ErrGitHubAppNotFound is returned when no GitHub App has the requested name.
-var ErrGitHubAppNotFound = errors.New("github app not found")
+var ErrGitHubAppNotFound = models.ErrGitHubAppNotFound
 
 // GitHubAppInUseError is returned when deleting a GitHub App still referenced by remotes.
 type GitHubAppInUseError struct {
@@ -45,6 +47,17 @@ func (db *DB) GetGitHubApp(ctx context.Context, name string) (*models.GitHubApp,
 	return &a, nil
 }
 
+// GitHubAppUpdatedAt returns only the app's updated_at, so cache revalidation
+// never reads the private key.
+func (db *DB) GitHubAppUpdatedAt(ctx context.Context, name string) (time.Time, error) {
+	var t time.Time
+	err := db.Pool.QueryRow(ctx, `SELECT updated_at FROM github_apps WHERE name = $1`, name).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, ErrGitHubAppNotFound
+	}
+	return t, err
+}
+
 // ListGitHubApps returns every app ordered by name; private keys are not loaded.
 func (db *DB) ListGitHubApps(ctx context.Context) ([]models.GitHubApp, error) {
 	rows, err := db.Pool.Query(ctx, `SELECT name, app_id, installation_id, api_base_url, description,
@@ -64,9 +77,17 @@ func (db *DB) ListGitHubApps(ctx context.Context) ([]models.GitHubApp, error) {
 	return apps, rows.Err()
 }
 
-// PutGitHubApp creates or replaces an app, filling a's timestamps. updated_at
-// only moves when a field changes, so an identical PUT keeps cached credentials.
+// PutGitHubApp creates or replaces an app, filling a's timestamps and deriving
+// private_key_fingerprint from the key. updated_at only moves when a field
+// changes, so an identical PUT keeps cached credentials.
 func (db *DB) PutGitHubApp(ctx context.Context, a *models.GitHubApp) error {
+	key, err := githubauth.ParsePrivateKey(a.PrivateKey)
+	if err != nil {
+		return err
+	}
+	if a.PrivateKeyFingerprint, err = githubauth.Fingerprint(key); err != nil {
+		return err
+	}
 	return db.Pool.QueryRow(ctx, `
 		INSERT INTO github_apps (name, app_id, installation_id, api_base_url, description, private_key_fingerprint, private_key, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, statement_timestamp(), statement_timestamp())

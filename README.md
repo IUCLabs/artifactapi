@@ -115,9 +115,10 @@ GitHub Apps can also be stored via `/api/v2/github-apps/{name}` and referenced
 by name from a remote's `github_app` field (`github_rpm`, `github_deb`,
 `github_alpine`, and `generic`/`vcs` remotes with a GitHub `base_url`). The
 private key is write-only; responses carry `private_key_fingerprint` instead.
-Every replica rereads the app from Postgres, so an update or delete applies
-without a restart, and an app still referenced by a remote cannot be deleted
-(`409`). Precedence per remote: `github_app` > remote `username`/`password` >
+Each replica revalidates a cached app's `updated_at` every 5s, so an update or
+delete applies on every replica within 5s without a restart; an app still
+referenced by a remote cannot be deleted (`409`). `api_base_url` defaults to
+`https://api.github.com`; GHES hosts must be listed in `GITHUB_APP_API_HOSTS`. Precedence per remote: `github_app` > remote `username`/`password` >
 server credential > anonymous.
 
 ```hcl
@@ -258,6 +259,7 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
+| `GITHUB_APP_API_HOSTS` | | Comma-separated GHES hostnames an API-managed GitHub App's `api_base_url` may use besides `api.github.com`; others are rejected with `400` |
 | `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` `PUT`/`PATCH`/`DELETE /api/v2/settings` and `PUT`/`DELETE /api/v2/github-apps/{name}` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
 | `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
 | `ARTIFACTAPI_AUTH_UPLOADS` | `false` | Also require a token for every local repo write: file uploads/deletes, object evictions, `/api/v1/local` publishes and `/v2` push. Requires `ARTIFACTAPI_OIDC_ISSUER` |

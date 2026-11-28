@@ -138,3 +138,14 @@ func TestLoadInvalidHealthProbe(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadGitHubAppAPIHosts(t *testing.T) {
+	t.Setenv("GITHUB_APP_API_HOSTS", " GHE.example.com, ,ghe2.example.com ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.GitHubAppAPIHosts) != 2 || cfg.GitHubAppAPIHosts[0] != "ghe.example.com" || cfg.GitHubAppAPIHosts[1] != "ghe2.example.com" {
+		t.Errorf("hosts = %q", cfg.GitHubAppAPIHosts)
+	}
+}

@@ -4,12 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
 
 // DefaultGitHubAPIBaseURL is the api_base_url a GitHub App gets when none is set.
 const DefaultGitHubAPIBaseURL = "https://api.github.com"
+
+// ErrGitHubAppNotFound is returned when no GitHub App has the requested name.
+var ErrGitHubAppNotFound = errors.New("github app not found")
 
 // GitHubApp is an API-managed GitHub App credential that remotes reference by
 // name. PrivateKey is write-only: it is never serialised.
@@ -34,9 +38,10 @@ type GitHubAppSpec struct {
 	Description    string `json:"description"`
 }
 
-// Validate checks the spec's scalar fields and defaults api_base_url; the
+// Validate checks the spec's scalar fields and defaults api_base_url, which
+// must be https on api.github.com or one of allowedHosts (GHES hostnames). The
 // private key itself is parsed by the caller.
-func (s *GitHubAppSpec) Validate() error {
+func (s *GitHubAppSpec) Validate(allowedHosts []string) error {
 	if s.AppID <= 0 {
 		return errors.New("app_id is required and must be > 0")
 	}
@@ -50,8 +55,11 @@ func (s *GitHubAppSpec) Validate() error {
 		s.APIBaseURL = DefaultGitHubAPIBaseURL
 	}
 	u, err := url.Parse(s.APIBaseURL)
-	if err != nil || u.Scheme != "https" || u.Host == "" {
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
 		return fmt.Errorf("api_base_url must be an absolute https URL, got %q", s.APIBaseURL)
+	}
+	if host := strings.ToLower(u.Hostname()); host != "api.github.com" && !slices.Contains(allowedHosts, host) {
+		return fmt.Errorf("api_base_url host %q is not api.github.com or listed in GITHUB_APP_API_HOSTS", host)
 	}
 	s.APIBaseURL = strings.TrimRight(s.APIBaseURL, "/")
 	return nil

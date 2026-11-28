@@ -67,6 +67,10 @@ type Config struct {
 	GitHubAppPrivateKey     string
 	GitHubAppPrivateKeyPath string
 
+	// GitHubAppAPIHosts are extra hostnames (GHES) an API-managed GitHub App's
+	// api_base_url may target besides api.github.com.
+	GitHubAppAPIHosts []string
+
 	// Bearer-JWT auth on configuration writes; empty issuer disables it.
 	OIDCIssuer    string
 	OIDCAudiences []string
@@ -183,6 +187,7 @@ func Load() (*Config, error) {
 		GitHubAppInstallationID: getenv("GITHUB_APP_INSTALLATION_ID", ""),
 		GitHubAppPrivateKey:     getenv("GITHUB_APP_PRIVATE_KEY", ""),
 		GitHubAppPrivateKeyPath: getenv("GITHUB_APP_PRIVATE_KEY_PATH", ""),
+		GitHubAppAPIHosts:       splitHosts(getenv("GITHUB_APP_API_HOSTS", "")),
 
 		OIDCIssuer:    oidcIssuer,
 		OIDCAudiences: oidcAudiences,
@@ -205,4 +210,15 @@ func wholeMillis(key, def string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid %s: must be a duration in whole milliseconds", key)
 	}
 	return d, nil
+}
+
+// splitHosts parses a comma-separated hostname list, lowercased, blanks dropped.
+func splitHosts(v string) []string {
+	var hosts []string
+	for _, h := range strings.Split(v, ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts
 }

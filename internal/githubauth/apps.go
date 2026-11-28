@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -11,23 +12,31 @@ import (
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
-// AppStore loads API-managed GitHub Apps, private key included.
-// *database.DB satisfies it.
+// AppStore loads API-managed GitHub Apps. *database.DB satisfies it.
 type AppStore interface {
+	// GetGitHubApp returns the app, private key included.
 	GetGitHubApp(ctx context.Context, name string) (*models.GitHubApp, error)
+	// GitHubAppUpdatedAt returns only the app's updated_at.
+	GitHubAppUpdatedAt(ctx context.Context, name string) (time.Time, error)
 }
+
+// AppRevalidateTTL is how long a cached app is served before its updated_at is
+// rechecked; it bounds how stale an update or delete on another replica can be.
+const AppRevalidateTTL = 5 * time.Second
 
 type cachedApp struct {
 	updatedAt time.Time
+	checkedAt time.Time
 	cred      *appCredential
 }
 
-// Apps resolves API-managed GitHub Apps to credentials. Every lookup rereads
-// the row so updates and deletes on any replica apply immediately; the minted
-// credential (and its installation token) is reused while updated_at is unchanged.
+// Apps resolves API-managed GitHub Apps to credentials. A cached credential (and
+// its installation token) is reused for AppRevalidateTTL, then revalidated with
+// a key-less updated_at read; the key is only reloaded when updated_at moves.
 type Apps struct {
 	store  AppStore
 	client httpDoer
+	now    func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]cachedApp
@@ -35,23 +44,45 @@ type Apps struct {
 
 // NewApps builds an app registry over store.
 func NewApps(store AppStore) *Apps {
-	return &Apps{store: store, cache: map[string]cachedApp{}}
+	return &Apps{store: store, now: time.Now, cache: map[string]cachedApp{}}
 }
 
-// Credential returns the credential for the named app.
+// Credential returns the credential for the named app. A missing app drops its
+// cache entry; a transient store error keeps serving a cached credential.
 func (a *Apps) Credential(ctx context.Context, name string) (Credential, error) {
-	app, err := a.store.GetGitHubApp(ctx, name)
-	if err != nil {
-		a.mu.Lock()
-		delete(a.cache, name)
-		a.mu.Unlock()
-		return nil, fmt.Errorf("github app %q: %w", name, err)
+	now := a.now()
+	a.mu.Lock()
+	c, cached := a.cache[name]
+	a.mu.Unlock()
+	if cached && now.Sub(c.checkedAt) < AppRevalidateTTL {
+		return c.cred, nil
 	}
 
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if c, ok := a.cache[name]; ok && c.updatedAt.Equal(app.UpdatedAt) {
-		return c.cred, nil
+	if cached {
+		updatedAt, err := a.store.GitHubAppUpdatedAt(ctx, name)
+		switch {
+		case errors.Is(err, models.ErrGitHubAppNotFound):
+			a.forget(name)
+			return nil, fmt.Errorf("github app %q: %w", name, err)
+		case err != nil:
+			slog.Warn("github app revalidation failed; serving cached credential", "name", name, "err", err)
+			return c.cred, nil
+		case updatedAt.Equal(c.updatedAt):
+			return a.remember(name, cachedApp{updatedAt: updatedAt, checkedAt: now, cred: c.cred}), nil
+		}
+	}
+
+	app, err := a.store.GetGitHubApp(ctx, name)
+	if errors.Is(err, models.ErrGitHubAppNotFound) {
+		a.forget(name)
+		return nil, fmt.Errorf("github app %q: %w", name, err)
+	}
+	if err != nil {
+		if cached {
+			slog.Warn("github app reload failed; serving cached credential", "name", name, "err", err)
+			return c.cred, nil
+		}
+		return nil, fmt.Errorf("github app %q: %w", name, err)
 	}
 	key, err := ParsePrivateKey(app.PrivateKey)
 	if err != nil {
@@ -59,8 +90,32 @@ func (a *Apps) Credential(ctx context.Context, name string) (Credential, error) 
 	}
 	cred := newAppCredentialFromKey(strconv.FormatInt(app.AppID, 10), strconv.FormatInt(app.InstallationID, 10),
 		key, app.APIBaseURL, a.client)
-	a.cache[name] = cachedApp{updatedAt: app.UpdatedAt, cred: cred}
-	return cred, nil
+	return a.remember(name, cachedApp{updatedAt: app.UpdatedAt, checkedAt: now, cred: cred}), nil
+}
+
+// remember caches e unless the entry already holds a newer version, and returns
+// the credential now cached. An equal version keeps the existing credential so
+// its installation token survives concurrent reloads.
+func (a *Apps) remember(name string, e cachedApp) Credential {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if cur, ok := a.cache[name]; ok && !e.updatedAt.After(cur.updatedAt) {
+		if cur.updatedAt.After(e.updatedAt) {
+			return cur.cred
+		}
+		e.cred = cur.cred
+		if cur.checkedAt.After(e.checkedAt) {
+			e.checkedAt = cur.checkedAt
+		}
+	}
+	a.cache[name] = e
+	return e.cred
+}
+
+func (a *Apps) forget(name string) {
+	a.mu.Lock()
+	delete(a.cache, name)
+	a.mu.Unlock()
 }
 
 var (

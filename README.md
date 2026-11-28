@@ -139,29 +139,28 @@ resource "artifactapi_remote_github_rpm" "acme-tools" {
 
 ##### Creating an app from the UI
 
-The UI's **GitHub Apps** page creates an app with a GitHub App Manifest: enter
-a name (and optionally an org owner and a GHES host from
-`GITHUB_APP_API_HOSTS`), confirm on GitHub, then install it. artifactapi
-exchanges the manifest code itself and stores the app id, private key and
-installation id; the key never reaches the browser. The app gets read-only
-`contents` and `metadata` and no webhook. Each step's state is single use and
-expires after 1h; with OIDC write auth it is bound to the token subject that
-started it (with write auth disabled, writes are open and there is no binding).
-A transient GitHub failure keeps the state for a retry. An app that was created
-but never installed shows an **Install** button, which issues a fresh install
-link (`POST /api/v2/github-apps/{name}/install-url`). The UI's API token field
-is a stopgap until UI login exists: it is kept for the browser session and only
-sent on API writes. Reference a UI-created app from Terraform with the data
-source:
+1. Open **GitHub Apps** in the UI and enter a name.
+   - Optional: an org owner (default: your personal account).
+   - Optional: a GHES host listed in `GITHUB_APP_API_HOSTS`.
+2. Confirm the pre-filled app on GitHub.
+3. Install the app on GitHub and pick the repositories.
+4. Reference the app from Terraform with the data source:
 
-```hcl
-data "artifactapi_github_app" "ci" {
-  name = "ci"
-}
+   ```hcl
+   data "artifactapi_github_app" "ci" {
+     name = "ci"
+   }
 
-# in a remote:
-github_app = data.artifactapi_github_app.ci.name
-```
+   # in a remote:
+   github_app = data.artifactapi_github_app.ci.name
+   ```
+
+- The app gets read-only `contents` and `metadata`, and no webhook.
+- artifactapi exchanges the manifest code itself and stores the app id,
+  private key and installation id. The key never reaches the browser.
+- An app that was created but never installed shows an **Install** button,
+  which issues a fresh install link
+  (`POST /api/v2/github-apps/{name}/install-url`).
 
 ## Terraform
 

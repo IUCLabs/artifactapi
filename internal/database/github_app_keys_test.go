@@ -114,6 +114,12 @@ func TestGitHubAppKeysEncryptedAtRest(t *testing.T) {
 				t.Fatal("static re-put reused the nonce")
 			}
 
+			installed, err := db.SetGitHubAppInstallation(ctx(), "created", 3, 9)
+			if err != nil || installed.PrivateKey != keyPEM {
+				t.Fatalf("set installation: %v; key decrypted %v", err, installed != nil && installed.PrivateKey == keyPEM)
+			}
+			assertSealed(t, db, "created", keyPEM, tc.prefix)
+
 			got, err := db.GetGitHubApp(ctx(), "put")
 			if err != nil || got.PrivateKey != keyPEM {
 				t.Fatalf("get decrypted = %v; key match %v", err, got != nil && got.PrivateKey == keyPEM)

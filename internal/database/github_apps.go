@@ -183,6 +183,9 @@ func (db *DB) SetGitHubAppInstallation(ctx context.Context, name string, appID, 
 	if err != nil {
 		return nil, err
 	}
+	if err := db.openKey(ctx, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
 }
 

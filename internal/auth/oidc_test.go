@@ -95,6 +95,7 @@ func TestBearerOIDC(t *testing.T) {
 		{"garbage", "not.a.jwt", http.StatusUnauthorized},
 		{"bad signature", iss.Token(otherKey, "artifactapi", "ci", time.Hour), http.StatusUnauthorized},
 		{"wrong aud", iss.Token(nil, "nope", "ci", time.Hour), http.StatusUnauthorized},
+		{"empty sub", iss.Token(nil, "artifactapi", "", time.Hour), http.StatusUnauthorized},
 		{"expired", iss.Token(nil, "artifactapi", "ci", -time.Hour), http.StatusUnauthorized},
 		{"wrong iss", iss.Sign(nil, claims("https://evil.example")), http.StatusUnauthorized},
 		{"hs256", hs256Token(t, claims(iss.URL)), http.StatusUnauthorized},
@@ -507,4 +508,22 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += n
 	return n, err
+}
+
+func TestRequirePassesSubject(t *testing.T) {
+	iss := testsupport.NewOIDCIssuer()
+	defer iss.Close()
+	var got string
+	h := NewBearerOIDC(iss.URL, nil).Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = Subject(r.Context())
+	}))
+	if code := serve(h, http.MethodPost, iss.Token(nil, "artifactapi", "alice", time.Hour)); code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	if got != "alice" {
+		t.Fatalf("Subject = %q, want alice", got)
+	}
+	if s := Subject(context.Background()); s != "" {
+		t.Fatalf("unauthenticated Subject = %q", s)
+	}
 }

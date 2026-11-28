@@ -444,3 +444,17 @@ func TestFingerprintStableAcrossEncodings(t *testing.T) {
 		t.Fatal("different keys share a fingerprint")
 	}
 }
+
+func TestAppsRefuseUninstalledApp(t *testing.T) {
+	srv, exchanges := installationServer(t)
+	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
+	store.set(models.GitHubApp{Name: "new", AppID: 1, PrivateKey: testRSAKeyPEM(t), APIBaseURL: srv.URL, UpdatedAt: time.Now()})
+	reg := newTestApps(store, srv, nil)
+	_, err := AppToken(context.Background(), reg, "new")
+	if !errors.Is(err, ErrAppNotInstalled) || !strings.Contains(err.Error(), "app not installed") {
+		t.Fatalf("err = %v; want ErrAppNotInstalled", err)
+	}
+	if reg.cached("new") || *exchanges != 0 {
+		t.Fatalf("uninstalled app cached=%v exchanges=%d", reg.cached("new"), *exchanges)
+	}
+}

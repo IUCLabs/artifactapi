@@ -97,3 +97,27 @@ export interface ProbeResult {
   duration_ms: number;
   error: string;
 }
+
+export interface GitHubApp {
+  name: string;
+  app_id: number;
+  installation_id: number;
+  api_base_url: string;
+  description: string;
+  private_key_fingerprint: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GitHubAppManifestStart {
+  post_url: string;
+  manifest: Record<string, unknown>;
+  state: string;
+}
+
+export interface GitHubAppManifestConverted {
+  name: string;
+  app_id: number;
+  slug: string;
+  install_url: string;
+}

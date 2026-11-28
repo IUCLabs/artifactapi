@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/IUCLabs/artifactapi/internal/api/requrl"
 	v2 "github.com/IUCLabs/artifactapi/internal/api/v2"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/provider"
@@ -103,7 +103,7 @@ func (h *ProxyHandler) remoteFor(w http.ResponseWriter, r *http.Request) (*model
 // responses and redirect package downloads instead of proxying bytes.
 func (h *ProxyHandler) serveRemote(w http.ResponseWriter, r *http.Request, remote *models.Remote, prov provider.Provider, path string) bool {
 	rs, ok := prov.(provider.RemoteServer)
-	return ok && rs.ServeRemote(w, r, *remote, path, fmt.Sprintf("%s://%s", Scheme(r), r.Host), h.db)
+	return ok && rs.ServeRemote(w, r, *remote, path, fmt.Sprintf("%s://%s", requrl.Scheme(r), r.Host), h.db)
 }
 
 func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +260,7 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyBaseURL, ok := requestBaseURL(w, r)
+	proxyBaseURL, ok := requrl.BaseURL(w, r)
 	if !ok {
 		return
 	}
@@ -397,19 +397,6 @@ func (h *ProxyHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, re
 	}
 }
 
-// Scheme returns the client-facing scheme: TLS, else the first
-// X-Forwarded-Proto value when it is http or https, else http.
-func Scheme(r *http.Request) string {
-	if r.TLS != nil {
-		return "https"
-	}
-	fwd, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
-	if fwd = strings.ToLower(strings.TrimSpace(fwd)); fwd == "https" {
-		return fwd
-	}
-	return "http"
-}
-
 // forwardQuery appends the provider's validated query params to path in a
 // canonical (sorted, single-valued) form, since the result is the cache key.
 func forwardQuery(prov provider.Provider, path string, query url.Values) string {
@@ -432,7 +419,7 @@ func forwardQuery(prov provider.Provider, path string, query url.Values) string 
 // rewriteServed rewrites a cached body for the requesting host and marks the
 // response uncacheable by shared caches, since it varies per Host.
 func rewriteServed(w http.ResponseWriter, r *http.Request, sr provider.ServeRewriter, remote models.Remote, src io.Reader) ([]byte, bool) {
-	base, ok := requestBaseURL(w, r)
+	base, ok := requrl.BaseURL(w, r)
 	if !ok {
 		return nil, false
 	}
@@ -446,48 +433,4 @@ func rewriteServed(w http.ResponseWriter, r *http.Request, sr provider.ServeRewr
 	w.Header().Set("Vary", "Host, X-Forwarded-Proto")
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	return raw, true
-}
-
-// requestBaseURL returns the client-facing scheme://host, answering 400 on an
-// invalid Host.
-func requestBaseURL(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if !validHost(r.Host) {
-		http.Error(w, "invalid host header", http.StatusBadRequest)
-		return "", false
-	}
-	return Scheme(r) + "://" + r.Host, true
-}
-
-// validHost accepts host[:port] where host is a DNS name or IP literal.
-func validHost(hostport string) bool {
-	host, port := hostport, ""
-	if h, p, err := net.SplitHostPort(hostport); err == nil {
-		if p == "" {
-			return false
-		}
-		host, port = h, p
-	} else if strings.HasPrefix(hostport, "[") {
-		return strings.HasSuffix(hostport, "]") && net.ParseIP(hostport[1:len(hostport)-1]) != nil
-	}
-	if port != "" {
-		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-			return false
-		}
-	}
-	if net.ParseIP(host) != nil {
-		return true
-	}
-	if strings.HasPrefix(hostport, "[") {
-		return false
-	}
-	if host == "" || len(host) > 253 {
-		return false
-	}
-	for _, label := range strings.Split(strings.TrimSuffix(host, "."), ".") {
-		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' ||
-			strings.Trim(strings.ToLower(label), "abcdefghijklmnopqrstuvwxyz0123456789-_") != "" {
-			return false
-		}
-	}
-	return true
 }

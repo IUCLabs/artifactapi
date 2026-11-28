@@ -33,6 +33,15 @@ type BearerOIDC struct {
 
 var errIssuerUnavailable = errors.New("oidc issuer unavailable")
 
+type subjectKey struct{}
+
+// Subject returns the verified token subject of the request, or "" when the
+// request was not authenticated (including when auth is disabled).
+func Subject(ctx context.Context) string {
+	s, _ := ctx.Value(subjectKey{}).(string)
+	return s
+}
+
 // NewBearerOIDC returns nil when issuer is empty, meaning auth is disabled.
 func NewBearerOIDC(issuer string, audiences []string) *BearerOIDC {
 	if issuer == "" {
@@ -132,7 +141,7 @@ func (b *BearerOIDC) require(next http.Handler, challenge string) http.Handler {
 			return
 		}
 		slog.Info("bearer token accepted", "sub", sub, "method", r.Method, "path", r.URL.Path)
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), subjectKey{}, sub)))
 	})
 }
 
@@ -147,6 +156,9 @@ func (b *BearerOIDC) verify(ctx context.Context, raw string) (string, error) {
 	}
 	if len(b.audiences) > 0 && !slices.ContainsFunc(tok.Audience, func(a string) bool { return slices.Contains(b.audiences, a) }) {
 		return "", fmt.Errorf("audience %v not allowed", tok.Audience)
+	}
+	if tok.Subject == "" {
+		return "", errors.New("token has no sub claim")
 	}
 	return tok.Subject, nil
 }

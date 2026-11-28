@@ -10,19 +10,6 @@ import (
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
-func TestValidHost(t *testing.T) {
-	for _, h := range []string{"aa.example", "aa.example:8443", "artifactapi.example.com", "192.0.2.1:80", "[::1]:8080", "[::1]", "::1", "localhost", "my_host.local"} {
-		if !validHost(h) {
-			t.Errorf("validHost(%q) = false, want true", h)
-		}
-	}
-	for _, h := range []string{"", "evil\".example", "a b", "aa.example:0", "aa.example:99999", "aa.example:x", "aa.example:", ":8080", "-bad.example", "a..b", "[::1", "[nope]:80", "a/b", "a<script>", strings.Repeat("a", 64) + ".example"} {
-		if validHost(h) {
-			t.Errorf("validHost(%q) = true, want false", h)
-		}
-	}
-}
-
 var nugetOrg = models.Remote{Name: "nuget-org", BaseURL: "https://api.nuget.org/v3/index.json"}
 
 const serviceIndex = `{"resources":[{"@id":"https://api.nuget.org/v3-flatcontainer/"}]}`

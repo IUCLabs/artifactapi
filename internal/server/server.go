@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/IUCLabs/artifactapi/internal/api/requrl"
 	tfregistry "github.com/IUCLabs/artifactapi/internal/api/terraform"
 	v1 "github.com/IUCLabs/artifactapi/internal/api/v1"
 	v2 "github.com/IUCLabs/artifactapi/internal/api/v2"
@@ -177,7 +178,7 @@ func (s *Server) routes() chi.Router {
 	if s.cfg.AuthUploads {
 		uploadAuth = writeAuth.RequireWrites
 		dockerV2 = writeAuth.RequireRegistryWrites(dockerV2, func(r *http.Request) string {
-			return v1.Scheme(r) + "://" + r.Host + "/v2/token"
+			return requrl.Scheme(r) + "://" + r.Host + "/v2/token"
 		})
 	}
 	r.Mount("/api/v1", uploadAuth(proxyHandler.Routes()))
@@ -199,7 +200,9 @@ func (s *Server) routes() chi.Router {
 		r.Mount("/remotes", writeAuth.RequireWrites(remotesHandler.Routes()))
 		r.Mount("/virtuals", writeAuth.RequireWrites(virtualsHandler.Routes()))
 		r.Mount("/settings", writeAuth.RequireWrites(settingsHandler.Routes()))
-		r.Mount("/github-apps", writeAuth.RequireWrites(v2.NewGitHubAppsHandler(s.db, s.cfg.GitHubAppAPIHosts).Routes()))
+		githubApps := v2.NewGitHubAppsHandler(s.db, s.cfg.GitHubAppAPIHosts).
+			WithManifest(v2.NewGitHubAppManifestHandler(s.db, s.cache, s.cfg.GitHubAppAPIHosts, nil))
+		r.Mount("/github-apps", writeAuth.RequireWrites(githubApps.Routes()))
 		r.Mount("/health", healthHandler.Routes())
 		r.Mount("/stats", statsHandler.Routes())
 		r.Mount("/events", eventsHandler.Routes())

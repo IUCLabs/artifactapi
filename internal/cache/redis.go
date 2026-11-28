@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -206,4 +207,32 @@ func (r *Redis) StoreHealth(ctx context.Context) StoreState {
 // StoreUp reports whether the object store should be used; only a probed down state counts as down.
 func (r *Redis) StoreUp(ctx context.Context) bool {
 	return r.StoreHealth(ctx) != StoreStateDown
+}
+
+// PutState stores a single-use value under key for ttl.
+func (r *Redis) PutState(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+	return r.client.Set(ctx, "state:"+key, val, ttl).Err()
+}
+
+// GetState returns the value under key without consuming it; a missing or
+// expired key returns nil.
+func (r *Redis) GetState(ctx context.Context, key string) ([]byte, error) {
+	val, err := r.client.Get(ctx, "state:"+key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	return val, err
+}
+
+var takeStateIfScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+	return redis.call('DEL', KEYS[1])
+end
+return 0`)
+
+// TakeStateIf atomically deletes key when it still holds val, reporting
+// whether this caller consumed it.
+func (r *Redis) TakeStateIf(ctx context.Context, key string, val []byte) (bool, error) {
+	n, err := takeStateIfScript.Run(ctx, r.client, []string{"state:" + key}, val).Int()
+	return n == 1, err
 }

@@ -28,6 +28,7 @@ type GitHubAppStore interface {
 type GitHubAppsHandler struct {
 	store    GitHubAppStore
 	apiHosts []string
+	manifest *GitHubAppManifestHandler
 }
 
 // NewGitHubAppsHandler serves apps whose api_base_url is api.github.com or one
@@ -36,8 +37,18 @@ func NewGitHubAppsHandler(store GitHubAppStore, apiHosts []string) *GitHubAppsHa
 	return &GitHubAppsHandler{store: store, apiHosts: apiHosts}
 }
 
+// WithManifest serves the manifest create flow under /manifest.
+func (h *GitHubAppsHandler) WithManifest(m *GitHubAppManifestHandler) *GitHubAppsHandler {
+	h.manifest = m
+	return h
+}
+
 func (h *GitHubAppsHandler) Routes() chi.Router {
 	r := chi.NewRouter()
+	if h.manifest != nil {
+		r.Mount("/manifest", h.manifest.Routes())
+		r.Post("/{name}/install-url", h.manifest.installLink)
+	}
 	r.Get("/", h.list)
 	r.Get("/{name}", h.get)
 	r.Put("/{name}", h.put)
@@ -48,6 +59,9 @@ func (h *GitHubAppsHandler) Routes() chi.Router {
 var githubAppNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 func validGitHubAppName(name string) error {
+	if name == "manifest" {
+		return errors.New(`github app name "manifest" is reserved`)
+	}
 	if !githubAppNameRe.MatchString(name) {
 		return fmt.Errorf("invalid github app name %q: must match %s", name, githubAppNameRe)
 	}

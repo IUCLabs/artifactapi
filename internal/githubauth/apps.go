@@ -128,6 +128,10 @@ func (a *Apps) refresh(ctx context.Context, name string) (Credential, error) {
 		}
 		return nil, fmt.Errorf("github app %q: %w", name, err)
 	}
+	if app.InstallationID <= 0 {
+		a.forget(name)
+		return nil, fmt.Errorf("github app %q: %w", name, ErrAppNotInstalled)
+	}
 	apiBase := app.APIBaseURL
 	if apiBase == "" {
 		apiBase = models.DefaultGitHubAPIBaseURL
@@ -191,6 +195,9 @@ func AppRegistry() *Apps {
 }
 
 var errNoAppRegistry = errors.New("github app registry not configured")
+
+// ErrAppNotInstalled is returned for an app with no installation_id yet.
+var ErrAppNotInstalled = errors.New("app not installed")
 
 // AppToken mints a token for the named app from the given registry.
 func AppToken(ctx context.Context, reg *Apps, name string) (string, error) {

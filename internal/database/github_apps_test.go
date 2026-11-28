@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
@@ -132,5 +134,56 @@ func TestGitHubAppReferencedByRemote(t *testing.T) {
 	got.GitHubApp = "ref-app"
 	if err := testDB.UpdateRemote(ctx(), got); !IsForeignKeyViolation(err) {
 		t.Fatalf("referencing a missing app: %v, want fk violation", err)
+	}
+}
+
+func TestCreateGitHubAppUninstalled(t *testing.T) {
+	requireDB(t)
+	keyPEM := testAppKeyPEM(t)
+	app := models.GitHubApp{Name: "manifest-app", AppID: 7, APIBaseURL: "https://api.github.com", PrivateKey: keyPEM}
+	if err := testDB.CreateGitHubApp(ctx(), &app); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = testDB.DeleteGitHubApp(ctx(), "manifest-app") })
+	if !strings.HasPrefix(app.PrivateKeyFingerprint, "SHA256:") || app.CreatedAt.IsZero() {
+		t.Fatalf("created = %+v", app)
+	}
+	dup := models.GitHubApp{Name: "manifest-app", AppID: 8, APIBaseURL: "https://api.github.com", PrivateKey: testAppKeyPEM(t)}
+	if err := testDB.CreateGitHubApp(ctx(), &dup); !errors.Is(err, ErrGitHubAppExists) {
+		t.Fatalf("duplicate create err = %v, want ErrGitHubAppExists", err)
+	}
+	got, err := testDB.GetGitHubApp(ctx(), "manifest-app")
+	if err != nil || got.InstallationID != 0 || got.AppID != 7 || got.PrivateKey != keyPEM {
+		t.Fatalf("get = %+v %v", got, err)
+	}
+	listed, err := testDB.ListGitHubApps(ctx())
+	if err != nil || !slices.ContainsFunc(listed, func(a models.GitHubApp) bool { return a.Name == "manifest-app" && a.InstallationID == 0 }) {
+		t.Fatalf("list = %+v %v", listed, err)
+	}
+
+	if _, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-app", 8, 5); !errors.Is(err, ErrGitHubAppChanged) {
+		t.Fatalf("install with stale app_id err = %v, want ErrGitHubAppChanged", err)
+	}
+	installed, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-app", 7, 1<<40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.InstallationID != 1<<40 || !installed.UpdatedAt.After(got.UpdatedAt) || installed.PrivateKey != keyPEM {
+		t.Fatalf("installed = %+v (updated_at before %v)", installed, got.UpdatedAt)
+	}
+	if again, _ := testDB.GetGitHubApp(ctx(), "manifest-app"); again.InstallationID != 1<<40 {
+		t.Fatalf("installation_id = %d", again.InstallationID)
+	}
+	if _, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-app", 7, 99); !errors.Is(err, ErrGitHubAppInstalled) {
+		t.Fatalf("second install err = %v, want ErrGitHubAppInstalled", err)
+	}
+	if _, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-app", 8, 99); !errors.Is(err, ErrGitHubAppChanged) {
+		t.Fatalf("second install with stale app_id err = %v, want ErrGitHubAppChanged", err)
+	}
+	if _, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-missing", 7, 99); !errors.Is(err, ErrGitHubAppChanged) {
+		t.Fatalf("install on missing app err = %v, want ErrGitHubAppChanged", err)
+	}
+	if again, _ := testDB.GetGitHubApp(ctx(), "manifest-app"); again.InstallationID != 1<<40 {
+		t.Fatalf("installation_id after second install = %d", again.InstallationID)
 	}
 }

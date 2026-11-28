@@ -137,6 +137,31 @@ resource "artifactapi_remote_github_rpm" "acme-tools" {
 }
 ```
 
+##### Creating an app from the UI
+
+1. Open **GitHub Apps** in the UI and enter a name.
+   - Optional: an org owner (default: your personal account).
+   - Optional: a GHES host listed in `GITHUB_APP_API_HOSTS`.
+2. Confirm the pre-filled app on GitHub.
+3. Install the app on GitHub and pick the repositories.
+4. Reference the app from Terraform with the data source:
+
+   ```hcl
+   data "artifactapi_github_app" "ci" {
+     name = "ci"
+   }
+
+   # in a remote:
+   github_app = data.artifactapi_github_app.ci.name
+   ```
+
+- The app gets read-only `contents` and `metadata`, and no webhook.
+- artifactapi exchanges the manifest code itself and stores the app id,
+  private key and installation id. The key never reaches the browser.
+- An app that was created but never installed shows an **Install** button,
+  which issues a fresh install link
+  (`POST /api/v2/github-apps/{name}/install-url`).
+
 ## Terraform
 
 Remotes and virtuals are managed by Terraform. Each package type has its own resource; see `docs/<type>/` for examples.
@@ -178,6 +203,8 @@ POST            /api/v2/probe                Test a remote (fetch without stream
 GET/PUT/PATCH/DELETE /api/v2/settings        Read / replace / merge / reset global settings
 GET             /api/v2/github-apps          List GitHub Apps
 GET/PUT/DELETE  /api/v2/github-apps/{name}   Read / create-or-replace / delete a GitHub App
+POST            /api/v2/github-apps/manifest[/convert|/installed]  GitHub App Manifest create flow (UI)
+POST            /api/v2/github-apps/{name}/install-url  Issue an install link for an uninstalled app
 GET             /api/v2/events               SSE event stream
 ```
 

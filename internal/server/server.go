@@ -22,6 +22,7 @@ import (
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/gc"
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
+	"github.com/IUCLabs/artifactapi/internal/keycrypt"
 	_ "github.com/IUCLabs/artifactapi/internal/provider/all"
 	"github.com/IUCLabs/artifactapi/internal/provider/alpine"
 	"github.com/IUCLabs/artifactapi/internal/provider/deb"
@@ -81,7 +82,11 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		return nil, fmt.Errorf("github auth: %w", err)
 	}
 	githubauth.SetServer(ghCred)
-	githubauth.SetApps(githubauth.NewApps(db, cfg.GitHubAppAPIHosts))
+	apps, err := loadGitHubApps(db, cfg)
+	if err != nil {
+		return nil, err
+	}
+	githubauth.SetApps(apps)
 	if ghCred != nil {
 		slog.Info("github machine credential configured")
 	}
@@ -146,6 +151,29 @@ func New(cfg *config.Config, version string) (*Server, error) {
 
 	s.router = s.routes()
 	return s, nil
+}
+
+// loadGitHubApps installs the key cipher, decrypts (and, when encryption is
+// on, seals legacy) GitHub App keys, and primes the credential cache.
+func loadGitHubApps(db *database.DB, cfg *config.Config) (*githubauth.Apps, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	keys, err := keycrypt.New(ctx, cfg.GitHubAppKeyEncryption)
+	if err != nil {
+		return nil, fmt.Errorf("github app key encryption: %w", err)
+	}
+	db.SetKeyCipher(keys)
+	stored, err := db.LoadGitHubApps(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("github app keys: %w", err)
+	}
+	apps := githubauth.NewApps(db, cfg.GitHubAppAPIHosts)
+	apps.Prime(stored)
+	for i := range stored {
+		stored[i].PrivateKey = ""
+	}
+	slog.Info("github app keys loaded", "apps", len(stored), "encryption", keys.Mode())
+	return apps, nil
 }
 
 func (s *Server) routes() chi.Router {

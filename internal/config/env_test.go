@@ -156,3 +156,18 @@ func TestLoadGitHubAppAPIHosts(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadGitHubAppKeyEncryption(t *testing.T) {
+	cfg, err := Load()
+	if err != nil || cfg.GitHubAppKeyEncryption.Mode != "none" {
+		t.Fatalf("default: %+v, %v", cfg, err)
+	}
+	t.Setenv("GITHUB_APP_KEY_ENCRYPTION", "static")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "GITHUB_APP_KEY_ENCRYPTION_KEY") {
+		t.Fatalf("static without key: %v; want a startup error", err)
+	}
+	t.Setenv("GITHUB_APP_KEY_ENCRYPTION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if cfg, err = Load(); err != nil || len(cfg.GitHubAppKeyEncryption.StaticKey) != 32 {
+		t.Fatalf("static: %v", err)
+	}
+}

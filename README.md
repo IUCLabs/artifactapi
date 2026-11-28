@@ -162,6 +162,34 @@ resource "artifactapi_remote_github_rpm" "acme-tools" {
   which issues a fresh install link
   (`POST /api/v2/github-apps/{name}/install-url`).
 
+##### Private key encryption
+
+`GITHUB_APP_KEY_ENCRYPTION` selects how stored app private keys are written:
+`static` uses AES-256-GCM (random nonce, app name as AAD) under
+`GITHUB_APP_KEY_ENCRYPTION_KEY`; `transit` uses Vault transit via Kubernetes
+auth, with the app name as the key-derivation context. Values are stored as
+`enc:v1:<mode>:…`; unprefixed values are legacy plaintext. Every configured
+cipher can decrypt, only the selected one encrypts, and with encryption on an
+unprefixed value is never accepted as a key except by the startup seal.
+
+At startup, under an advisory lock, every key not stored in the selected mode
+(legacy plaintext or the other cipher) is re-sealed in place, then every key is
+decrypted into the credential cache; any failure names the app and stops the
+server.
+
+- Rollout: run every replica on this version with `none` before enabling
+  encryption, so no older replica reads a sealed key.
+- Re-key (static ↔ transit): keep the old cipher's config, set
+  `GITHUB_APP_KEY_ENCRYPTION` to the new mode, restart; once all rows carry the
+  new prefix, remove the old config.
+- Rollback to `none` is not supported once any key is sealed: startup fails
+  rather than write plaintext back.
+
+Transit needs a key created with `derived=true`, a policy granting `update` on
+`<mount>/encrypt/<key>` and `<mount>/decrypt/<key>`, and a Kubernetes auth role
+bound to the artifactapi service account with that policy. `VAULT_ADDR` must be
+https unless `VAULT_ALLOW_INSECURE_HTTP=true`; redirects are not followed.
+
 ## Terraform
 
 Remotes and virtuals are managed by Terraform. Each package type has its own resource; see `docs/<type>/` for examples.
@@ -287,6 +315,16 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
 | `GITHUB_APP_API_HOSTS` | | Comma-separated GHES hosts an API-managed GitHub App's `api_base_url` may use besides `api.github.com` (default port only). Each entry is a bare hostname (default port only) or `host:port`; schemes, paths and trailing dots fail startup. Other hosts are rejected with `400` on PUT and refused for stored apps |
+| `GITHUB_APP_KEY_ENCRYPTION` | `none` | Encryption at rest for API-managed GitHub App private keys: `none`, `static` or `transit`. Invalid or partial config fails startup. See [Private key encryption](#private-key-encryption) |
+| `GITHUB_APP_KEY_ENCRYPTION_KEY` | | Static key: base64 of exactly 32 bytes. Required for `static`; decrypt-only under `transit` |
+| `VAULT_ADDR` | | `transit` mode: Vault address |
+| `VAULT_K8S_ROLE` | | `transit` mode: Vault Kubernetes auth role (required) |
+| `VAULT_K8S_MOUNT` | `kubernetes` | `transit` mode: Kubernetes auth mount |
+| `VAULT_K8S_TOKEN_PATH` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | `transit` mode: service account JWT, re-read on every login |
+| `VAULT_TRANSIT_MOUNT` | `transit` | `transit` mode: transit engine mount |
+| `VAULT_TRANSIT_KEY` | | `transit` mode: derived transit key name (required). Set under `static` to decrypt transit rows |
+| `VAULT_CACERT` | | `transit` mode: CA bundle for Vault TLS |
+| `VAULT_ALLOW_INSECURE_HTTP` | `false` | `transit` mode: allow an `http://` `VAULT_ADDR` |
 | `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` `PUT`/`PATCH`/`DELETE /api/v2/settings` and `PUT`/`DELETE /api/v2/github-apps/{name}` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
 | `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
 | `ARTIFACTAPI_AUTH_UPLOADS` | `false` | Also require a token for every local repo write: file uploads/deletes, object evictions, `/api/v1/local` publishes and `/v2` push. Requires `ARTIFACTAPI_OIDC_ISSUER` |

@@ -458,3 +458,24 @@ func TestAppsRefuseUninstalledApp(t *testing.T) {
 		t.Fatalf("uninstalled app cached=%v exchanges=%d", reg.cached("new"), *exchanges)
 	}
 }
+
+func TestAppsPrimeServesWithoutKeyLoad(t *testing.T) {
+	srv, _ := installationServer(t)
+	keyPEM := testRSAKeyPEM(t)
+	t0 := time.Now()
+	app := models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 100, PrivateKey: keyPEM, APIBaseURL: srv.URL, UpdatedAt: t0}
+	pending := models.GitHubApp{Name: "pending", AppID: 2, PrivateKey: keyPEM, APIBaseURL: srv.URL, UpdatedAt: t0}
+	store := &fakeAppStore{apps: map[string]models.GitHubApp{"ci": app, "pending": pending}}
+	reg := newTestApps(store, srv, &fakeClock{t: t0})
+
+	reg.Prime([]models.GitHubApp{app, pending})
+	if !reg.cached("ci") || reg.cached("pending") {
+		t.Fatalf("primed: ci=%v pending=%v; want only the installed app cached", reg.cached("ci"), reg.cached("pending"))
+	}
+	if tok, err := AppToken(context.Background(), reg, "ci"); err != nil || tok != "ghs_100_1" {
+		t.Fatalf("token = %q, %v", tok, err)
+	}
+	if loads, checks := store.counts(); loads != 0 || checks != 0 {
+		t.Fatalf("primed app hit the store: %d key loads, %d checks", loads, checks)
+	}
+}

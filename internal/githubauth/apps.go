@@ -128,26 +128,44 @@ func (a *Apps) refresh(ctx context.Context, name string) (Credential, error) {
 		}
 		return nil, fmt.Errorf("github app %q: %w", name, err)
 	}
-	if app.InstallationID <= 0 {
+	cred, err := a.build(app)
+	if err != nil {
 		a.forget(name)
-		return nil, fmt.Errorf("github app %q: %w", name, ErrAppNotInstalled)
+		return nil, fmt.Errorf("github app %q: %w", name, err)
+	}
+	return a.remember(name, cachedApp{updatedAt: app.UpdatedAt, checkedAt: now, cred: cred}), nil
+}
+
+func (a *Apps) build(app *models.GitHubApp) (*appCredential, error) {
+	if app.InstallationID <= 0 {
+		return nil, ErrAppNotInstalled
 	}
 	apiBase := app.APIBaseURL
 	if apiBase == "" {
 		apiBase = models.DefaultGitHubAPIBaseURL
 	}
 	if err := models.ValidateGitHubAPIBaseURL(apiBase, a.allowedHosts); err != nil {
-		a.forget(name)
-		return nil, fmt.Errorf("github app %q: %w", name, err)
+		return nil, err
 	}
 	key, err := ParsePrivateKey(app.PrivateKey)
 	if err != nil {
-		a.forget(name)
-		return nil, fmt.Errorf("github app %q: %w", name, err)
+		return nil, err
 	}
-	cred := newAppCredentialFromKey(strconv.FormatInt(app.AppID, 10), strconv.FormatInt(app.InstallationID, 10),
-		key, apiBase, a.client)
-	return a.remember(name, cachedApp{updatedAt: app.UpdatedAt, checkedAt: now, cred: cred}), nil
+	return newAppCredentialFromKey(strconv.FormatInt(app.AppID, 10), strconv.FormatInt(app.InstallationID, 10),
+		key, apiBase, a.client), nil
+}
+
+// Prime seeds the cache with already-decrypted apps (as loaded at startup).
+// Apps that cannot yield a credential yet are left to load on first use.
+func (a *Apps) Prime(apps []models.GitHubApp) {
+	now := a.now()
+	for i := range apps {
+		cred, err := a.build(&apps[i])
+		if err != nil {
+			continue
+		}
+		a.remember(apps[i].Name, cachedApp{updatedAt: apps[i].UpdatedAt, checkedAt: now, cred: cred})
+	}
 }
 
 // remember caches e unless the entry already holds a newer version, and returns

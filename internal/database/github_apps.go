@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
+	"github.com/IUCLabs/artifactapi/internal/keycrypt"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -55,7 +56,30 @@ func (db *DB) GetGitHubApp(ctx context.Context, name string) (*models.GitHubApp,
 	if err != nil {
 		return nil, err
 	}
+	if err := db.openKey(ctx, &a); err != nil {
+		return nil, err
+	}
 	return &a, nil
+}
+
+func (db *DB) openKey(ctx context.Context, a *models.GitHubApp) error {
+	pt, err := db.keyCipher().Decrypt(ctx, a.Name, a.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("github app %q: decrypt private key: %w", a.Name, err)
+	}
+	a.PrivateKey = string(pt)
+	keycrypt.Zero(pt)
+	return nil
+}
+
+func (db *DB) sealKey(ctx context.Context, a *models.GitHubApp) (string, error) {
+	pt := []byte(a.PrivateKey)
+	defer keycrypt.Zero(pt)
+	stored, err := db.keyCipher().Encrypt(ctx, a.Name, pt)
+	if err != nil {
+		return "", fmt.Errorf("github app %q: encrypt private key: %w", a.Name, err)
+	}
+	return stored, nil
 }
 
 // GitHubAppUpdatedAt returns only the app's updated_at, so cache revalidation
@@ -107,8 +131,12 @@ func (db *DB) CreateGitHubApp(ctx context.Context, a *models.GitHubApp) error {
 	if err := fingerprintApp(a); err != nil {
 		return err
 	}
-	err := db.Pool.QueryRow(ctx, insertGitHubApp+` ON CONFLICT (name) DO NOTHING RETURNING created_at, updated_at`,
-		a.Name, a.AppID, a.InstallationID, a.APIBaseURL, a.Description, a.PrivateKeyFingerprint, a.PrivateKey,
+	stored, err := db.sealKey(ctx, a)
+	if err != nil {
+		return err
+	}
+	err = db.Pool.QueryRow(ctx, insertGitHubApp+` ON CONFLICT (name) DO NOTHING RETURNING created_at, updated_at`,
+		a.Name, a.AppID, a.InstallationID, a.APIBaseURL, a.Description, a.PrivateKeyFingerprint, stored,
 	).Scan(&a.CreatedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrGitHubAppExists
@@ -117,10 +145,15 @@ func (db *DB) CreateGitHubApp(ctx context.Context, a *models.GitHubApp) error {
 }
 
 // PutGitHubApp creates or replaces an app, filling a's timestamps and deriving
-// private_key_fingerprint from the key. updated_at only moves when a field
-// changes, so an identical PUT keeps cached credentials.
+// private_key_fingerprint from the key. updated_at only moves when a field or
+// the key's fingerprint changes (ciphertext differs per write), so an
+// identical PUT keeps cached credentials.
 func (db *DB) PutGitHubApp(ctx context.Context, a *models.GitHubApp) error {
 	if err := fingerprintApp(a); err != nil {
+		return err
+	}
+	stored, err := db.sealKey(ctx, a)
+	if err != nil {
 		return err
 	}
 	return db.Pool.QueryRow(ctx, insertGitHubApp+`
@@ -132,11 +165,11 @@ func (db *DB) PutGitHubApp(ctx context.Context, a *models.GitHubApp) error {
 			private_key_fingerprint = EXCLUDED.private_key_fingerprint,
 			private_key = EXCLUDED.private_key,
 			updated_at = CASE
-				WHEN (github_apps.app_id, github_apps.installation_id, github_apps.api_base_url, github_apps.description, github_apps.private_key)
-					IS DISTINCT FROM (EXCLUDED.app_id, EXCLUDED.installation_id, EXCLUDED.api_base_url, EXCLUDED.description, EXCLUDED.private_key)
+				WHEN (github_apps.app_id, github_apps.installation_id, github_apps.api_base_url, github_apps.description, github_apps.private_key_fingerprint)
+					IS DISTINCT FROM (EXCLUDED.app_id, EXCLUDED.installation_id, EXCLUDED.api_base_url, EXCLUDED.description, EXCLUDED.private_key_fingerprint)
 				THEN statement_timestamp() ELSE github_apps.updated_at END
 		RETURNING created_at, updated_at
-	`, a.Name, a.AppID, a.InstallationID, a.APIBaseURL, a.Description, a.PrivateKeyFingerprint, a.PrivateKey,
+	`, a.Name, a.AppID, a.InstallationID, a.APIBaseURL, a.Description, a.PrivateKeyFingerprint, stored,
 	).Scan(&a.CreatedAt, &a.UpdatedAt)
 }
 
@@ -153,6 +186,9 @@ func (db *DB) SetGitHubAppInstallation(ctx context.Context, name string, appID, 
 		return nil, db.installationConflict(ctx, name, appID)
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := db.openKey(ctx, &a); err != nil {
 		return nil, err
 	}
 	return &a, nil

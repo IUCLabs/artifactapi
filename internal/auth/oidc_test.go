@@ -508,3 +508,21 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	c.n += n
 	return n, err
 }
+
+func TestRequirePassesSubject(t *testing.T) {
+	iss := testsupport.NewOIDCIssuer()
+	defer iss.Close()
+	var got string
+	h := NewBearerOIDC(iss.URL, nil).Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = Subject(r.Context())
+	}))
+	if code := serve(h, http.MethodPost, iss.Token(nil, "artifactapi", "alice", time.Hour)); code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	if got != "alice" {
+		t.Fatalf("Subject = %q, want alice", got)
+	}
+	if s := Subject(context.Background()); s != "" {
+		t.Fatalf("unauthenticated Subject = %q", s)
+	}
+}

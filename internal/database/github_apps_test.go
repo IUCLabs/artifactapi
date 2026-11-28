@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
@@ -132,5 +134,42 @@ func TestGitHubAppReferencedByRemote(t *testing.T) {
 	got.GitHubApp = "ref-app"
 	if err := testDB.UpdateRemote(ctx(), got); !IsForeignKeyViolation(err) {
 		t.Fatalf("referencing a missing app: %v, want fk violation", err)
+	}
+}
+
+func TestCreateGitHubAppUninstalled(t *testing.T) {
+	requireDB(t)
+	keyPEM := testAppKeyPEM(t)
+	app := models.GitHubApp{Name: "manifest-app", AppID: 7, APIBaseURL: "https://api.github.com", PrivateKey: keyPEM}
+	if err := testDB.CreateGitHubApp(ctx(), &app); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = testDB.DeleteGitHubApp(ctx(), "manifest-app") })
+	if !strings.HasPrefix(app.PrivateKeyFingerprint, "SHA256:") || app.CreatedAt.IsZero() {
+		t.Fatalf("created = %+v", app)
+	}
+	dup := models.GitHubApp{Name: "manifest-app", AppID: 8, APIBaseURL: "https://api.github.com", PrivateKey: testAppKeyPEM(t)}
+	if err := testDB.CreateGitHubApp(ctx(), &dup); !errors.Is(err, ErrGitHubAppExists) {
+		t.Fatalf("duplicate create err = %v, want ErrGitHubAppExists", err)
+	}
+	got, err := testDB.GetGitHubApp(ctx(), "manifest-app")
+	if err != nil || got.InstallationID != 0 || got.AppID != 7 || got.PrivateKey != keyPEM {
+		t.Fatalf("get = %+v %v", got, err)
+	}
+	listed, err := testDB.ListGitHubApps(ctx())
+	if err != nil || !slices.ContainsFunc(listed, func(a models.GitHubApp) bool { return a.Name == "manifest-app" && a.InstallationID == 0 }) {
+		t.Fatalf("list = %+v %v", listed, err)
+	}
+
+	got.InstallationID = 1 << 40
+	before := got.UpdatedAt
+	if err := testDB.PutGitHubApp(ctx(), got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.UpdatedAt.After(before) {
+		t.Fatalf("installing did not bump updated_at: %v -> %v", before, got.UpdatedAt)
+	}
+	if again, _ := testDB.GetGitHubApp(ctx(), "manifest-app"); again.InstallationID != 1<<40 {
+		t.Fatalf("installation_id = %d", again.InstallationID)
 	}
 }

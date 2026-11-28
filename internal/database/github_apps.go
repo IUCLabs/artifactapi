@@ -17,6 +17,9 @@ import (
 // ErrGitHubAppNotFound is returned when no GitHub App has the requested name.
 var ErrGitHubAppNotFound = models.ErrGitHubAppNotFound
 
+// ErrGitHubAppExists is returned by CreateGitHubApp when the name is taken.
+var ErrGitHubAppExists = errors.New("github app already exists")
+
 // GitHubAppInUseError is returned when deleting a GitHub App still referenced by remotes.
 type GitHubAppInUseError struct {
 	Name    string
@@ -27,7 +30,7 @@ func (e *GitHubAppInUseError) Error() string {
 	return fmt.Sprintf("github app %q is referenced by remotes: %s", e.Name, strings.Join(e.Remotes, ", "))
 }
 
-const githubAppCols = `name, app_id, installation_id, api_base_url, description, private_key_fingerprint, private_key, created_at, updated_at`
+const githubAppCols = `name, app_id, COALESCE(installation_id, 0), api_base_url, description, private_key_fingerprint, private_key, created_at, updated_at`
 
 func scanGitHubApp(scanner interface{ Scan(...any) error }, a *models.GitHubApp) error {
 	return scanner.Scan(&a.Name, &a.AppID, &a.InstallationID, &a.APIBaseURL, &a.Description,
@@ -60,7 +63,7 @@ func (db *DB) GitHubAppUpdatedAt(ctx context.Context, name string) (time.Time, e
 
 // ListGitHubApps returns every app ordered by name; private keys are not loaded.
 func (db *DB) ListGitHubApps(ctx context.Context) ([]models.GitHubApp, error) {
-	rows, err := db.Pool.Query(ctx, `SELECT name, app_id, installation_id, api_base_url, description,
+	rows, err := db.Pool.Query(ctx, `SELECT name, app_id, COALESCE(installation_id, 0), api_base_url, description,
 		private_key_fingerprint, '', created_at, updated_at FROM github_apps ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -77,20 +80,42 @@ func (db *DB) ListGitHubApps(ctx context.Context) ([]models.GitHubApp, error) {
 	return apps, rows.Err()
 }
 
-// PutGitHubApp creates or replaces an app, filling a's timestamps and deriving
-// private_key_fingerprint from the key. updated_at only moves when a field
-// changes, so an identical PUT keeps cached credentials.
-func (db *DB) PutGitHubApp(ctx context.Context, a *models.GitHubApp) error {
+func fingerprintApp(a *models.GitHubApp) error {
 	key, err := githubauth.ParsePrivateKey(a.PrivateKey)
 	if err != nil {
 		return err
 	}
-	if a.PrivateKeyFingerprint, err = githubauth.Fingerprint(key); err != nil {
+	a.PrivateKeyFingerprint, err = githubauth.Fingerprint(key)
+	return err
+}
+
+const insertGitHubApp = `
+		INSERT INTO github_apps (name, app_id, installation_id, api_base_url, description, private_key_fingerprint, private_key, created_at, updated_at)
+		VALUES ($1, $2, NULLIF($3::bigint, 0), $4, $5, $6, $7, statement_timestamp(), statement_timestamp())`
+
+// CreateGitHubApp inserts a new app, returning ErrGitHubAppExists when the
+// name is taken. An InstallationID of 0 stores the app as not yet installed.
+func (db *DB) CreateGitHubApp(ctx context.Context, a *models.GitHubApp) error {
+	if err := fingerprintApp(a); err != nil {
 		return err
 	}
-	return db.Pool.QueryRow(ctx, `
-		INSERT INTO github_apps (name, app_id, installation_id, api_base_url, description, private_key_fingerprint, private_key, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, statement_timestamp(), statement_timestamp())
+	err := db.Pool.QueryRow(ctx, insertGitHubApp+` ON CONFLICT (name) DO NOTHING RETURNING created_at, updated_at`,
+		a.Name, a.AppID, a.InstallationID, a.APIBaseURL, a.Description, a.PrivateKeyFingerprint, a.PrivateKey,
+	).Scan(&a.CreatedAt, &a.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrGitHubAppExists
+	}
+	return err
+}
+
+// PutGitHubApp creates or replaces an app, filling a's timestamps and deriving
+// private_key_fingerprint from the key. updated_at only moves when a field
+// changes, so an identical PUT keeps cached credentials.
+func (db *DB) PutGitHubApp(ctx context.Context, a *models.GitHubApp) error {
+	if err := fingerprintApp(a); err != nil {
+		return err
+	}
+	return db.Pool.QueryRow(ctx, insertGitHubApp+`
 		ON CONFLICT (name) DO UPDATE SET
 			app_id = EXCLUDED.app_id,
 			installation_id = EXCLUDED.installation_id,

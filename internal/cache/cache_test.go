@@ -322,3 +322,24 @@ func TestStoreUpOnRedisError(t *testing.T) {
 		t.Errorf("a Redis error state = %q, want unknown", s)
 	}
 }
+
+func TestStateSingleUseAndExpiry(t *testing.T) {
+	requireRedis(t)
+	ctx := context.Background()
+	if err := testRedis.PutState(ctx, "s1", []byte("v"), time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := testRedis.TakeState(ctx, "s1"); err != nil || string(v) != "v" {
+		t.Fatalf("first take = %q %v", v, err)
+	}
+	if v, err := testRedis.TakeState(ctx, "s1"); err != nil || v != nil {
+		t.Fatalf("second take = %q %v, want nil", v, err)
+	}
+	if err := testRedis.PutState(ctx, "s2", []byte("v"), 50*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if v, err := testRedis.TakeState(ctx, "s2"); err != nil || v != nil {
+		t.Fatalf("expired take = %q %v, want nil", v, err)
+	}
+}

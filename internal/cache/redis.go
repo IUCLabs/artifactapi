@@ -207,3 +207,17 @@ func (r *Redis) StoreHealth(ctx context.Context) StoreState {
 func (r *Redis) StoreUp(ctx context.Context) bool {
 	return r.StoreHealth(ctx) != StoreStateDown
 }
+
+// PutState stores a single-use value under key for ttl.
+func (r *Redis) PutState(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+	return r.client.Set(ctx, "state:"+key, val, ttl).Err()
+}
+
+// TakeState atomically reads and deletes key; a missing or expired key returns nil.
+func (r *Redis) TakeState(ctx context.Context, key string) ([]byte, error) {
+	val, err := r.client.GetDel(ctx, "state:"+key).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	return val, err
+}

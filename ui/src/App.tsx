@@ -7,6 +7,7 @@ import { LocalDetail } from './pages/LocalDetail';
 import { Virtuals } from './pages/Virtuals';
 import { Objects } from './pages/Objects';
 import { Probe } from './pages/Probe';
+import { GitHubApps, GitHubAppManifestCallback, GitHubAppManifestInstalled } from './pages/GitHubApps';
 import './App.css';
 
 export function App() {
@@ -22,6 +23,7 @@ export function App() {
           <NavLink to="/remotes">Remotes</NavLink>
           <NavLink to="/locals">Locals</NavLink>
           <NavLink to="/virtuals">Virtuals</NavLink>
+          <NavLink to="/github-apps">GitHub Apps</NavLink>
           <NavLink to="/probe">Test Remote</NavLink>
         </div>
         <div className="sidebar-footer">
@@ -38,6 +40,9 @@ export function App() {
           <Route path="/locals/:name" element={<LocalDetail />} />
           <Route path="/locals/:name/objects" element={<Objects />} />
           <Route path="/virtuals" element={<Virtuals />} />
+          <Route path="/github-apps" element={<GitHubApps />} />
+          <Route path="/github-apps/manifest/callback" element={<GitHubAppManifestCallback />} />
+          <Route path="/github-apps/manifest/installed" element={<GitHubAppManifestInstalled />} />
           <Route path="/probe" element={<Probe />} />
         </Routes>
       </main>

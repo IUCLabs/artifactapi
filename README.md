@@ -137,6 +137,26 @@ resource "artifactapi_remote_github_rpm" "acme-tools" {
 }
 ```
 
+##### Creating an app from the UI
+
+The UI's **GitHub Apps** page creates an app with a GitHub App Manifest: enter
+a name (and optionally an org owner and a GHES host from
+`GITHUB_APP_API_HOSTS`), confirm on GitHub, then install it. artifactapi
+exchanges the manifest code itself and stores the app id, private key and
+installation id; the key never reaches the browser. The app gets read-only
+`contents` and `metadata` and no webhook. Each step's state is single use,
+bound to the signed-in subject and expires after 1h. Reference a UI-created app
+from Terraform with the data source:
+
+```hcl
+data "artifactapi_github_app" "ci" {
+  name = "ci"
+}
+
+# in a remote:
+github_app = data.artifactapi_github_app.ci.name
+```
+
 ## Terraform
 
 Remotes and virtuals are managed by Terraform. Each package type has its own resource; see `docs/<type>/` for examples.
@@ -178,6 +198,7 @@ POST            /api/v2/probe                Test a remote (fetch without stream
 GET/PUT/PATCH/DELETE /api/v2/settings        Read / replace / merge / reset global settings
 GET             /api/v2/github-apps          List GitHub Apps
 GET/PUT/DELETE  /api/v2/github-apps/{name}   Read / create-or-replace / delete a GitHub App
+POST            /api/v2/github-apps/manifest[/convert|/installed]  GitHub App Manifest create flow (UI)
 GET             /api/v2/events               SSE event stream
 ```
 

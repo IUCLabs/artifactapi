@@ -199,7 +199,9 @@ func (s *Server) routes() chi.Router {
 		r.Mount("/remotes", writeAuth.RequireWrites(remotesHandler.Routes()))
 		r.Mount("/virtuals", writeAuth.RequireWrites(virtualsHandler.Routes()))
 		r.Mount("/settings", writeAuth.RequireWrites(settingsHandler.Routes()))
-		r.Mount("/github-apps", writeAuth.RequireWrites(v2.NewGitHubAppsHandler(s.db, s.cfg.GitHubAppAPIHosts).Routes()))
+		githubApps := v2.NewGitHubAppsHandler(s.db, s.cfg.GitHubAppAPIHosts).
+			WithManifest(v2.NewGitHubAppManifestHandler(s.db, s.cache, s.cfg.GitHubAppAPIHosts, nil))
+		r.Mount("/github-apps", writeAuth.RequireWrites(githubApps.Routes()))
 		r.Mount("/health", healthHandler.Routes())
 		r.Mount("/stats", statsHandler.Routes())
 		r.Mount("/events", eventsHandler.Routes())

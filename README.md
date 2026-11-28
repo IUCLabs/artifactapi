@@ -109,6 +109,33 @@ GITHUB_APP_PRIVATE_KEY_PATH=/etc/artifactapi/github-app.pem
 # GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
 ```
 
+#### Mode 3 — API-managed GitHub Apps (per remote)
+
+GitHub Apps can also be stored via `/api/v2/github-apps/{name}` and referenced
+by name from a remote's `github_app` field (`github_rpm`, `github_deb`,
+`github_alpine`, and `generic`/`vcs` remotes with a GitHub `base_url`). The
+private key is write-only; responses carry `private_key_fingerprint` instead.
+Every replica rereads the app from Postgres, so an update or delete applies
+without a restart, and an app still referenced by a remote cannot be deleted
+(`409`). Precedence per remote: `github_app` > remote `username`/`password` >
+server credential > anonymous.
+
+```hcl
+resource "artifactapi_github_app" "ci" {
+  name            = "ci"
+  app_id          = 123456
+  installation_id = 7654321
+  private_key     = file("github-app.pem")
+}
+
+resource "artifactapi_remote_github_rpm" "acme-tools" {
+  name            = "acme-tools"
+  base_url        = "https://api.github.com/repos/acme/tools"
+  releases_remote = "github"
+  github_app      = artifactapi_github_app.ci.name
+}
+```
+
 ## Terraform
 
 Remotes and virtuals are managed by Terraform. Each package type has its own resource; see `docs/<type>/` for examples.
@@ -148,6 +175,8 @@ GET             /api/v2/stats                Overview stats
 GET             /api/v2/health               Service health
 POST            /api/v2/probe                Test a remote (fetch without streaming to client)
 GET/PUT/PATCH/DELETE /api/v2/settings        Read / replace / merge / reset global settings
+GET             /api/v2/github-apps          List GitHub Apps
+GET/PUT/DELETE  /api/v2/github-apps/{name}   Read / create-or-replace / delete a GitHub App
 GET             /api/v2/events               SSE event stream
 ```
 
@@ -229,7 +258,7 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
-| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` and `PUT`/`PATCH`/`DELETE /api/v2/settings` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
+| `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` `PUT`/`PATCH`/`DELETE /api/v2/settings` and `PUT`/`DELETE /api/v2/github-apps/{name}` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
 | `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
 | `ARTIFACTAPI_AUTH_UPLOADS` | `false` | Also require a token for every local repo write: file uploads/deletes, object evictions, `/api/v1/local` publishes and `/v2` push. Requires `ARTIFACTAPI_OIDC_ISSUER` |
 

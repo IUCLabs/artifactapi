@@ -15,7 +15,7 @@ const remoteCols = `name, package_type, repo_type, base_url, mirrorlist, mirror_
 	quarantine_enabled, quarantine_days, stale_on_error,
 	releases_remote, managed_by,
 	upstream_dial_timeout, upstream_tls_timeout, upstream_response_header_timeout,
-	serve_stale, cache_repodata,
+	serve_stale, cache_repodata, COALESCE(github_app, ''),
 	created_at, updated_at`
 
 // normalizeMirrorStrategy maps an empty strategy to the round_robin default so
@@ -36,7 +36,7 @@ func scanRemote(scanner interface{ Scan(...any) error }, r *models.Remote) error
 		&r.QuarantineEnabled, &r.QuarantineDays, &r.StaleOnError,
 		&r.ReleasesRemote, &r.ManagedBy,
 		&r.UpstreamDialTimeout, &r.UpstreamTLSTimeout, &r.UpstreamResponseHeaderTimeout,
-		&r.ServeStale, &r.CacheRepodata,
+		&r.ServeStale, &r.CacheRepodata, &r.GitHubApp,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 }
@@ -78,8 +78,8 @@ func (db *DB) CreateRemote(ctx context.Context, r *models.Remote) error {
 			quarantine_enabled, quarantine_days, stale_on_error,
 			releases_remote, managed_by,
 			upstream_dial_timeout, upstream_tls_timeout, upstream_response_header_timeout,
-			mirror_strategy, sync_interval, serve_stale, cache_repodata
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+			mirror_strategy, sync_interval, serve_stale, cache_repodata, github_app
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,NULLIF($30, ''))
 	`,
 		r.Name, r.PackageType, r.RepoType, r.BaseURL, r.Mirrorlist, r.Description, r.Username, r.Password,
 		r.ImmutableTTL, r.MutableTTL, r.CheckMutable,
@@ -88,7 +88,7 @@ func (db *DB) CreateRemote(ctx context.Context, r *models.Remote) error {
 		r.QuarantineEnabled, r.QuarantineDays, r.StaleOnError,
 		r.ReleasesRemote, r.ManagedBy,
 		r.UpstreamDialTimeout, r.UpstreamTLSTimeout, r.UpstreamResponseHeaderTimeout,
-		normalizeMirrorStrategy(r.MirrorStrategy), r.SyncInterval, r.ServeStale, r.CacheRepodata,
+		normalizeMirrorStrategy(r.MirrorStrategy), r.SyncInterval, r.ServeStale, r.CacheRepodata, r.GitHubApp,
 	)
 	return err
 }
@@ -103,7 +103,7 @@ func (db *DB) UpdateRemote(ctx context.Context, r *models.Remote) error {
 			quarantine_enabled=$17, quarantine_days=$18, stale_on_error=$19,
 			releases_remote=$20, managed_by=$21,
 			upstream_dial_timeout=$22, upstream_tls_timeout=$23, upstream_response_header_timeout=$24,
-			mirror_strategy=$26, sync_interval=$27, serve_stale=$28, cache_repodata=$29,
+			mirror_strategy=$26, sync_interval=$27, serve_stale=$28, cache_repodata=$29, github_app=NULLIF($30, ''),
 			updated_at=NOW()
 		WHERE name=$1
 	`,
@@ -115,7 +115,7 @@ func (db *DB) UpdateRemote(ctx context.Context, r *models.Remote) error {
 		r.ReleasesRemote, r.ManagedBy,
 		r.UpstreamDialTimeout, r.UpstreamTLSTimeout, r.UpstreamResponseHeaderTimeout,
 		r.Mirrorlist,
-		normalizeMirrorStrategy(r.MirrorStrategy), r.SyncInterval, r.ServeStale, r.CacheRepodata,
+		normalizeMirrorStrategy(r.MirrorStrategy), r.SyncInterval, r.ServeStale, r.CacheRepodata, r.GitHubApp,
 	)
 	return err
 }

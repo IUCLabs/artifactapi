@@ -2,6 +2,13 @@ package generic_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
@@ -110,5 +117,40 @@ func TestProvider_AuthHeaders_NoAuth(t *testing.T) {
 	h, _ := p.AuthHeaders(context.Background(), models.Remote{})
 	if h.Get("Authorization") != "" {
 		t.Error("expected no auth header")
+	}
+}
+
+type appStore map[string]models.GitHubApp
+
+func (s appStore) GetGitHubApp(_ context.Context, name string) (*models.GitHubApp, error) {
+	a, ok := s[name]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return &a, nil
+}
+
+func TestProvider_AuthHeaders_GitHubAppWins(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"token":"ghs_app","expires_at":"2099-01-01T00:00:00Z"}`))
+	}))
+	t.Cleanup(srv.Close)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	githubauth.SetServer(staticCred("ghs_server"))
+	githubauth.SetApps(githubauth.NewApps(appStore{"ci": {Name: "ci", AppID: 1, InstallationID: 2, PrivateKey: keyPEM, APIBaseURL: srv.URL}}))
+	t.Cleanup(func() { githubauth.SetServer(nil); githubauth.SetApps(nil) })
+
+	p := &generic.Provider{}
+	h, err := p.AuthHeaders(context.Background(), models.Remote{BaseURL: "https://github.com", GitHubApp: "ci"})
+	if err != nil || h.Get("Authorization") != "Bearer ghs_app" {
+		t.Fatalf("Authorization = %q, %v; want Bearer ghs_app", h.Get("Authorization"), err)
+	}
+	if _, err := p.AuthHeaders(context.Background(), models.Remote{BaseURL: "https://github.com", GitHubApp: "gone"}); err == nil {
+		t.Fatal("missing github_app must fail rather than fall back to the server credential")
 	}
 }

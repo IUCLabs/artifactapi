@@ -52,6 +52,10 @@ type Remote struct {
 	Description    string `json:"description,omitempty"`
 	Username       string `json:"-"`
 	Password       string `json:"-"`
+	// GitHubApp names an API-managed GitHub App that authenticates this
+	// remote's GitHub requests, overriding username/password and the server
+	// credential.
+	GitHubApp string `json:"github_app,omitempty"`
 
 	ImmutableTTL int  `json:"immutable_ttl"`
 	MutableTTL   int  `json:"mutable_ttl"`

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // Transit encrypts with a derived Vault transit key, using the app name as
@@ -24,6 +26,8 @@ type Transit struct {
 	cfg    VaultConfig
 	client *http.Client
 	now    func() time.Time
+
+	auth singleflight.Group
 
 	mu        sync.Mutex
 	token     string
@@ -62,7 +66,8 @@ func NewTransit(cfg VaultConfig) (*Transit, error) {
 func (t *Transit) Mode() string { return ModeTransit }
 
 // Check logs in and round-trips a probe value, so a bad role, policy or key
-// fails startup instead of the first write.
+// fails startup instead of the first write. It also proves the key is
+// derived: a probe sealed for one app must not open as another.
 func (t *Transit) Check(ctx context.Context) error {
 	const probe = "artifactapi-keycrypt-probe"
 	ct, err := t.Encrypt(ctx, probe, []byte(probe))
@@ -73,8 +78,14 @@ func (t *Transit) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if string(pt) != probe {
+	ok := string(pt) == probe
+	Zero(pt)
+	if !ok {
 		return errors.New("vault transit probe round-trip mismatch")
+	}
+	if pt, err := t.Decrypt(ctx, probe+"-other", ct); err == nil {
+		Zero(pt)
+		return fmt.Errorf("vault transit key %q ignores the derivation context: transit key must be derived=true", t.cfg.TransitKey)
 	}
 	return nil
 }
@@ -165,7 +176,7 @@ func (t *Transit) call(ctx context.Context, op string, body []byte) ([]byte, err
 		if err != nil {
 			return nil, fmt.Errorf("vault transit %s: %w", op, err)
 		}
-		if status == http.StatusForbidden && attempt == 0 {
+		if status == http.StatusForbidden && attempt == 0 && !t.tokenValid(ctx, token) {
 			Zero(resp)
 			t.invalidate(token)
 			continue
@@ -182,6 +193,16 @@ func (t *Transit) call(ctx context.Context, op string, body []byte) ([]byte, err
 	}
 }
 
+// tokenValid tells a rejected token apart from a policy denial, so a 403
+// from policy does not trigger a fresh login.
+func (t *Transit) tokenValid(ctx context.Context, token string) bool {
+	ctx, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
+	status, resp, err := t.post(ctx, "/v1/auth/token/lookup-self", token, []byte(`{}`))
+	Zero(resp)
+	return err == nil && status == http.StatusOK
+}
+
 func (t *Transit) invalidate(token string) {
 	t.mu.Lock()
 	if t.token == token {
@@ -192,28 +213,50 @@ func (t *Transit) invalidate(token string) {
 
 const authTimeout = 10 * time.Second
 
-func (t *Transit) ensureToken(ctx context.Context) (string, error) {
+// cachedToken returns the token when it needs no renewal, else "".
+func (t *Transit) cachedToken() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.token != "" {
-		if t.lease == 0 {
-			return t.token, nil
-		}
-		age := t.now().Sub(t.issued)
-		if age < t.lease*2/3 {
-			return t.token, nil
-		}
-		if age < t.lease && t.renewable {
-			if err := t.renewLocked(ctx); err == nil {
-				return t.token, nil
-			}
-		}
-		t.token = ""
+	if t.token != "" && (t.lease == 0 || t.now().Sub(t.issued) < t.lease*2/3) {
+		return t.token
 	}
-	if err := t.loginLocked(ctx); err != nil {
-		return "", err
+	return ""
+}
+
+// ensureToken returns a usable token. Renewal and login run once at a time
+// outside the mutex; waiters give up when their ctx ends.
+func (t *Transit) ensureToken(ctx context.Context) (string, error) {
+	if tok := t.cachedToken(); tok != "" {
+		return tok, nil
 	}
-	return t.token, nil
+	ch := t.auth.DoChan("auth", func() (any, error) {
+		return t.refresh(context.WithoutCancel(ctx))
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case r := <-ch:
+		if r.Err != nil {
+			return "", r.Err
+		}
+		return r.Val.(string), nil
+	}
+}
+
+func (t *Transit) refresh(ctx context.Context) (string, error) {
+	if tok := t.cachedToken(); tok != "" {
+		return tok, nil
+	}
+	t.mu.Lock()
+	token, renewable, lease, age := t.token, t.renewable, t.lease, t.now().Sub(t.issued)
+	t.mu.Unlock()
+	if token != "" && renewable && age < lease {
+		if tok, err := t.renew(ctx, token); err == nil {
+			return tok, nil
+		}
+	}
+	t.invalidate(token)
+	return t.login(ctx)
 }
 
 type vaultAuth struct {
@@ -224,52 +267,54 @@ type vaultAuth struct {
 	} `json:"auth"`
 }
 
-func (t *Transit) loginLocked(ctx context.Context) error {
+func (t *Transit) login(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, authTimeout)
 	defer cancel()
 	jwt, err := os.ReadFile(t.cfg.TokenPath)
 	if err != nil {
-		return fmt.Errorf("vault kubernetes login: read service account token: %w", err)
+		return "", fmt.Errorf("vault kubernetes login: read service account token: %w", err)
 	}
 	body, err := json.Marshal(map[string]string{"role": t.cfg.Role, "jwt": string(bytes.TrimSpace(jwt))})
 	Zero(jwt)
 	if err != nil {
-		return err
+		return "", err
 	}
 	status, resp, err := t.post(ctx, "/v1/auth/"+strings.Trim(t.cfg.K8sMount, "/")+"/login", "", body)
 	Zero(body)
 	if err != nil {
-		return fmt.Errorf("vault kubernetes login: %w", err)
+		return "", fmt.Errorf("vault kubernetes login: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("vault kubernetes login (role %q): HTTP %d%s", t.cfg.Role, status, vaultErrors(resp))
+		return "", fmt.Errorf("vault kubernetes login (role %q): HTTP %d%s", t.cfg.Role, status, vaultErrors(resp))
 	}
 	return t.setAuth(resp, "vault kubernetes login")
 }
 
-func (t *Transit) renewLocked(ctx context.Context) error {
+func (t *Transit) renew(ctx context.Context, token string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, authTimeout)
 	defer cancel()
-	status, resp, err := t.post(ctx, "/v1/auth/token/renew-self", t.token, []byte(`{}`))
+	status, resp, err := t.post(ctx, "/v1/auth/token/renew-self", token, []byte(`{}`))
 	if err != nil {
-		return err
+		return "", err
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("vault token renew: HTTP %d", status)
+		return "", fmt.Errorf("vault token renew: HTTP %d", status)
 	}
 	return t.setAuth(resp, "vault token renew")
 }
 
-func (t *Transit) setAuth(resp []byte, op string) error {
+func (t *Transit) setAuth(resp []byte, op string) (string, error) {
 	var out vaultAuth
 	if err := json.Unmarshal(resp, &out); err != nil || out.Auth == nil || out.Auth.ClientToken == "" {
-		return fmt.Errorf("%s: response has no client token", op)
+		return "", fmt.Errorf("%s: response has no client token", op)
 	}
+	t.mu.Lock()
 	t.token = out.Auth.ClientToken
 	t.renewable = out.Auth.Renewable
 	t.lease = time.Duration(out.Auth.LeaseDuration) * time.Second
 	t.issued = t.now()
-	return nil
+	t.mu.Unlock()
+	return out.Auth.ClientToken, nil
 }
 
 func (t *Transit) post(ctx context.Context, path, token string, body []byte) (int, []byte, error) {

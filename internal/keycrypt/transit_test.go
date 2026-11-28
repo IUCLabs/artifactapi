@@ -2,6 +2,7 @@ package keycrypt_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -163,11 +164,75 @@ func TestTransitPersistent403Fails(t *testing.T) {
 	ctx := context.Background()
 	stored, _ := tr.Encrypt(ctx, "ci", []byte("x"))
 	v.Set(func(v *keycrypttest.Vault) { v.DenyTransit = true })
-	if _, err := tr.Decrypt(ctx, "ci", stored); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
-		t.Fatalf("err = %v; want HTTP 403", err)
+	for range 3 {
+		if _, err := tr.Decrypt(ctx, "ci", stored); err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+			t.Fatalf("err = %v; want HTTP 403", err)
+		}
 	}
-	if n := len(v.Logins()); n != 2 {
-		t.Fatalf("%d logins; want exactly one re-login before giving up", n)
+	if n := len(v.Logins()); n != 1 {
+		t.Fatalf("%d logins; a policy denial on a valid token must not re-login", n)
+	}
+	if n := v.LookupCount(); n != 3 {
+		t.Fatalf("%d lookup-self calls; want one per denied call", n)
+	}
+}
+
+func TestTransitCheckRequiresDerivedKey(t *testing.T) {
+	v := keycrypttest.NewVault(t)
+	v.Set(func(v *keycrypttest.Vault) { v.NonDerived = true })
+	tr, _ := newTransit(t, v)
+	if err := tr.Check(context.Background()); err == nil || !strings.Contains(err.Error(), "derived=true") {
+		t.Fatalf("non-derived key: %v; want startup failure", err)
+	}
+	v.Set(func(v *keycrypttest.Vault) { v.NonDerived = false })
+	if err := tr.Check(context.Background()); err != nil {
+		t.Fatalf("derived key: %v", err)
+	}
+}
+
+func TestTransitConcurrentCallersLoginOnce(t *testing.T) {
+	v := keycrypttest.NewVault(t)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	v.Set(func(v *keycrypttest.Vault) {
+		v.BeforeLogin = func() {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+		}
+	})
+	tr, _ := newTransit(t, v)
+	ctx := context.Background()
+	const n = 8
+	errs := make(chan error, n)
+	for range n {
+		go func() {
+			_, err := tr.Encrypt(ctx, "ci", []byte("x"))
+			errs <- err
+		}()
+	}
+	<-started
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	begin := time.Now()
+	if _, err := tr.Encrypt(cancelled, "ci", []byte("x")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled caller: %v; want context.Canceled", err)
+	}
+	if d := time.Since(begin); d > time.Second {
+		t.Fatalf("cancelled caller waited %s on an in-flight login", d)
+	}
+
+	close(release)
+	for range n {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := len(v.Logins()); got != 1 {
+		t.Fatalf("%d logins for %d concurrent callers; want 1", got, n)
 	}
 }
 

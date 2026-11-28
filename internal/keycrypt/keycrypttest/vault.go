@@ -36,10 +36,16 @@ type Vault struct {
 	EchoErrors  bool
 	FailEncrypt bool
 	DenyTransit bool
+	// NonDerived ignores the derivation context, like a derived=false key.
+	NonDerived bool
+	// BeforeLogin, when set, runs before each login is handled, outside the
+	// fake's lock.
+	BeforeLogin func()
 	tokens      map[string]bool
 	n           int
 	JWTs        []string
 	Renews      int
+	Lookups     int
 	Transit     int
 }
 
@@ -90,6 +96,13 @@ func (v *Vault) Stats() (renews, transit int) {
 	return v.Renews, v.Transit
 }
 
+// LookupCount returns the number of successful lookup-self calls.
+func (v *Vault) LookupCount() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.Lookups
+}
+
 // Set mutates fake state under its lock.
 func (v *Vault) Set(f func(v *Vault)) {
 	v.mu.Lock()
@@ -115,6 +128,14 @@ func reverse(b []byte) []byte {
 }
 
 func (v *Vault) serve(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/v1/auth/kubernetes/login" {
+		v.mu.Lock()
+		hook := v.BeforeLogin
+		v.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	var body map[string]string
@@ -143,6 +164,14 @@ func (v *Vault) serve(w http.ResponseWriter, r *http.Request) {
 		v.Renews++
 		v.authResponse(w, token)
 		return
+	case "/v1/auth/token/lookup-self":
+		if !v.tokens[token] {
+			vaultError(w, http.StatusForbidden, "permission denied")
+			return
+		}
+		v.Lookups++
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"policies": []string{"default"}}})
+		return
 	}
 	if !v.tokens[token] || v.DenyTransit {
 		vaultError(w, http.StatusForbidden, "permission denied")
@@ -151,7 +180,9 @@ func (v *Vault) serve(w http.ResponseWriter, r *http.Request) {
 	v.Transit++
 	switch r.URL.Path {
 	case "/v1/transit/encrypt/" + Key:
-		if body["context"] == "" {
+		if v.NonDerived {
+			body["context"] = ""
+		} else if body["context"] == "" {
 			vaultError(w, http.StatusBadRequest, "missing 'context' for key derivation")
 			return
 		}
@@ -176,7 +207,7 @@ func (v *Vault) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pt, err := base64.StdEncoding.DecodeString(sealed)
-		if err != nil || dctx != body["context"] {
+		if err != nil || (!v.NonDerived && dctx != body["context"]) {
 			vaultError(w, http.StatusBadRequest, "cipher: message authentication failed")
 			return
 		}

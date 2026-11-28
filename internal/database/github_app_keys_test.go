@@ -210,8 +210,12 @@ func TestGitHubAppKeysReKey(t *testing.T) {
 			if err := withCipher(base, tc.from).PutGitHubApp(ctx(), &a); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := withCipher(base, keycrypt.NewKeyring(tc.to)).LoadGitHubApps(ctx()); err == nil {
-				t.Fatal("loaded ciphertext of an unconfigured cipher")
+			if _, err := withCipher(base, keycrypt.NewKeyring(tc.to)).LoadGitHubApps(ctx()); err == nil ||
+				!strings.Contains(err.Error(), "no cipher for mode "+tc.from.Mode()+" is configured") {
+				t.Fatalf("loaded ciphertext of an unconfigured cipher: %v", err)
+			}
+			if raw := rawKey(t, base, "ci"); !strings.HasPrefix(raw, "enc:v1:"+tc.from.Mode()+":") {
+				t.Fatalf("unconfigured cipher rewrote the row: %.30q", raw)
 			}
 			db := withCipher(base, keycrypt.NewKeyring(tc.to, tc.from))
 			apps, err := db.LoadGitHubApps(ctx())
@@ -389,5 +393,73 @@ func TestGitHubAppKeysBoundToRow(t *testing.T) {
 	}
 	if _, err := db.LoadGitHubApps(ctx()); err == nil || !strings.Contains(err.Error(), `"b"`) {
 		t.Fatalf("load with moved ciphertext: %v", err)
+	}
+}
+
+// racingCipher rewrites the row it is sealing, as a concurrent PUT would,
+// while the seal's cipher call is in flight.
+type racingCipher struct {
+	keycrypt.Cipher
+	once  sync.Once
+	race  func()
+	calls atomic.Int64
+}
+
+func (c *racingCipher) Encrypt(ctx context.Context, name string, pt []byte) (string, error) {
+	c.calls.Add(1)
+	c.once.Do(c.race)
+	return c.Cipher.Encrypt(ctx, name, pt)
+}
+
+func TestGitHubAppKeysSealSkipsConcurrentChange(t *testing.T) {
+	base := isolatedDB(t)
+	seedPlaintext(t, base, "ci")
+	static := staticCipher(t, 1)
+	writer := withCipher(base, static)
+	newKey := testAppKeyPEM(t)
+	var put models.GitHubApp
+	c := &racingCipher{Cipher: static, race: func() {
+		put = models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 2, PrivateKey: newKey}
+		if err := writer.PutGitHubApp(ctx(), &put); err != nil {
+			t.Error(err)
+		}
+	}}
+	done := make(chan struct{})
+	var apps []models.GitHubApp
+	var err error
+	go func() {
+		defer close(done)
+		apps, err = withCipher(base, c).LoadGitHubApps(ctx())
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("seal blocked a concurrent write")
+	}
+	if err != nil || len(apps) != 1 || apps[0].PrivateKey != newKey {
+		t.Fatalf("load after concurrent change: %d apps, %v; want the concurrently written key", len(apps), err)
+	}
+	if !apps[0].UpdatedAt.Equal(put.UpdatedAt) {
+		t.Fatalf("seal moved updated_at %v -> %v", put.UpdatedAt, apps[0].UpdatedAt)
+	}
+	assertSealed(t, base, "ci", newKey, "enc:v1:static:")
+}
+
+func TestGitHubAppKeysUnknownFormatFailsLoad(t *testing.T) {
+	for _, c := range []keycrypt.Cipher{keycrypt.None{}, staticCipher(t, 1)} {
+		t.Run(c.Mode(), func(t *testing.T) {
+			base := isolatedDB(t)
+			seedPlaintext(t, base, "ci")
+			const future = "enc:v2:static:AAAA"
+			if _, err := base.Pool.Exec(ctx(), `UPDATE github_apps SET private_key = $1 WHERE name = 'ci'`, future); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := withCipher(base, c).LoadGitHubApps(ctx()); err == nil || !strings.Contains(err.Error(), `"ci"`) {
+				t.Fatalf("unknown format: %v; want startup failure naming the app", err)
+			}
+			if rawKey(t, base, "ci") != future {
+				t.Fatal("unknown-format value was rewritten")
+			}
+		})
 	}
 }

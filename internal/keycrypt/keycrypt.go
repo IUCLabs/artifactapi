@@ -34,26 +34,50 @@ type Cipher interface {
 	Decrypt(ctx context.Context, name, stored string) ([]byte, error)
 }
 
-// IsLegacy reports whether stored is an unencrypted (pre-encryption) value.
-func IsLegacy(stored string) bool { return !strings.HasPrefix(stored, prefix) }
+// encMarker starts every encrypted value, whatever its format version.
+const encMarker = "enc:"
 
-// StoredMode returns the mode that produced stored ("none" for legacy values).
-func StoredMode(stored string) string {
-	if IsLegacy(stored) {
-		return ModeNone
+// IsLegacy reports whether stored is an unencrypted (pre-encryption) value.
+// A value in an unknown encrypted format is an error, never legacy.
+func IsLegacy(stored string) (bool, error) {
+	if !strings.HasPrefix(stored, encMarker) {
+		return true, nil
 	}
-	mode, _, _ := strings.Cut(strings.TrimPrefix(stored, prefix), ":")
-	return mode
+	if _, err := StoredMode(stored); err != nil {
+		return false, err
+	}
+	return false, nil
 }
+
+// StoredMode returns the mode that produced stored ("none" for legacy
+// values), or an error for an unknown encrypted format.
+func StoredMode(stored string) (string, error) {
+	switch {
+	case !strings.HasPrefix(stored, encMarker):
+		return ModeNone, nil
+	case strings.HasPrefix(stored, staticPrefix):
+		return ModeStatic, nil
+	case strings.HasPrefix(stored, transitPrefix):
+		return ModeTransit, nil
+	}
+	return "", ErrUnknownFormat
+}
+
+// ErrUnknownFormat is returned for an "enc:" value this build cannot read.
+var ErrUnknownFormat = errors.New("private key is stored in an unknown encrypted format")
 
 // Zero overwrites b.
 func Zero(b []byte) { clear(b) }
 
 func mismatch(stored, mode string) error {
-	if IsLegacy(stored) {
+	from, err := StoredMode(stored)
+	switch {
+	case err != nil:
+		return err
+	case from == ModeNone:
 		return fmt.Errorf("private key is not encrypted but GITHUB_APP_KEY_ENCRYPTION=%s", mode)
 	}
-	return fmt.Errorf("private key is encrypted with mode %q but GITHUB_APP_KEY_ENCRYPTION=%s", StoredMode(stored), mode)
+	return fmt.Errorf("private key is encrypted with mode %q but GITHUB_APP_KEY_ENCRYPTION=%s", from, mode)
 }
 
 // New builds the Cipher for cfg: it encrypts with the selected mode and
@@ -117,10 +141,17 @@ func NewKeyring(write Cipher, others ...Cipher) *Keyring {
 
 func (k *Keyring) Mode() string { return k.write.Mode() }
 
-// CanDecrypt reports whether a cipher for stored's mode is configured.
-func (k *Keyring) CanDecrypt(stored string) bool {
-	_, ok := k.byMod[StoredMode(stored)]
-	return ok
+// CanDecrypt returns an error unless a cipher for stored's mode is
+// configured. Legacy values need none.
+func (k *Keyring) CanDecrypt(stored string) error {
+	mode, err := StoredMode(stored)
+	if err != nil {
+		return err
+	}
+	if _, ok := k.byMod[mode]; !ok && mode != ModeNone {
+		return fmt.Errorf("private key is encrypted with mode %q but no cipher for mode %s is configured", mode, mode)
+	}
+	return nil
 }
 
 func (k *Keyring) Encrypt(ctx context.Context, name string, plaintext []byte) (string, error) {
@@ -128,12 +159,16 @@ func (k *Keyring) Encrypt(ctx context.Context, name string, plaintext []byte) (s
 }
 
 func (k *Keyring) Decrypt(ctx context.Context, name, stored string) ([]byte, error) {
-	c, ok := k.byMod[StoredMode(stored)]
+	mode, err := StoredMode(stored)
+	if err != nil {
+		return nil, err
+	}
+	c, ok := k.byMod[mode]
 	if !ok {
-		if IsLegacy(stored) {
+		if mode == ModeNone {
 			return nil, fmt.Errorf("private key is not encrypted but GITHUB_APP_KEY_ENCRYPTION=%s", k.Mode())
 		}
-		return nil, fmt.Errorf("private key is encrypted with mode %q, which is not configured", StoredMode(stored))
+		return nil, fmt.Errorf("private key is encrypted with mode %q, which is not configured", mode)
 	}
 	return c.Decrypt(ctx, name, stored)
 }
@@ -148,7 +183,7 @@ func (None) Encrypt(_ context.Context, _ string, plaintext []byte) (string, erro
 }
 
 func (None) Decrypt(_ context.Context, _, stored string) ([]byte, error) {
-	if !IsLegacy(stored) {
+	if legacy, err := IsLegacy(stored); err != nil || !legacy {
 		return nil, mismatch(stored, ModeNone)
 	}
 	return []byte(stored), nil

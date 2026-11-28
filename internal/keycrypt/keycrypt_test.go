@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
 
@@ -42,8 +43,9 @@ func TestStaticRoundTrip(t *testing.T) {
 	if err != nil || string(pt) != pemText {
 		t.Fatalf("decrypt = %q, %v", pt, err)
 	}
-	if keycrypt.IsLegacy(a) || keycrypt.StoredMode(a) != keycrypt.ModeStatic {
-		t.Fatalf("stored mode of %q = %q", a, keycrypt.StoredMode(a))
+	legacy, _ := keycrypt.IsLegacy(a)
+	if mode, err := keycrypt.StoredMode(a); legacy || err != nil || mode != keycrypt.ModeStatic {
+		t.Fatalf("stored mode of %q = %q, %v", a, mode, err)
 	}
 }
 
@@ -169,6 +171,31 @@ func TestConfigFromEnv(t *testing.T) {
 			_ = cfg
 		})
 	}
+	for _, addr := range []string{
+		"https://user:hunter2@vault:8200", "https://vault:8200?token=hunter2", "https://vault:8200#hunter2",
+		"https://vault:8200/hunter2", "https://vault:8200/v1/", "https://vault:8200?", "https://vault:8200#",
+	} {
+		_, err := keycrypt.ConfigFromEnv(env(with(transit, "VAULT_ADDR", addr)))
+		if err == nil || !strings.Contains(err.Error(), "invalid VAULT_ADDR for https://vault:8200") || strings.Contains(err.Error(), "hunter2") {
+			t.Fatalf("VAULT_ADDR %q: %v; want rejection naming only scheme+host", addr, err)
+		}
+	}
+	if _, err := keycrypt.ConfigFromEnv(env(with(transit, "VAULT_ADDR", "https://vault:8200/"))); err != nil {
+		t.Fatalf("trailing slash: %v", err)
+	}
+	if _, err := keycrypt.ConfigFromEnv(env(with(transit, "VAULT_ADDR", "https:hunter2"))); err == nil || strings.Contains(err.Error(), "hunter2") {
+		t.Fatalf("opaque VAULT_ADDR: %v", err)
+	}
+	padded, err := keycrypt.ConfigFromEnv(env(map[string]string{"GITHUB_APP_KEY_ENCRYPTION": "transit",
+		"VAULT_ADDR": " https://vault:8200\n", "VAULT_K8S_ROLE": " artifactapi ", "VAULT_K8S_MOUNT": "kubernetes\n",
+		"VAULT_K8S_TOKEN_PATH": " /token ", "VAULT_TRANSIT_MOUNT": " transit", "VAULT_TRANSIT_KEY": "github-apps\t"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := padded.Vault; v.Addr != "https://vault:8200" || v.Role != "artifactapi" || v.K8sMount != "kubernetes" ||
+		v.TokenPath != "/token" || v.TransitMount != "transit" || v.TransitKey != "github-apps" {
+		t.Fatalf("values not trimmed: %+v", v)
+	}
 	cfg, _ := keycrypt.ConfigFromEnv(env(transit))
 	if v := cfg.Vault; v.K8sMount != "kubernetes" || v.TransitMount != "transit" ||
 		v.TokenPath != "/var/run/secrets/kubernetes.io/serviceaccount/token" {
@@ -203,8 +230,39 @@ func TestKeyringDecryptsEveryConfiguredMode(t *testing.T) {
 	if _, err := strict.Decrypt(ctx, "ci", "enc:v1:transit:vault:v1:x"); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("unconfigured transit: %v", err)
 	}
-	if strict.CanDecrypt("enc:v1:transit:vault:v1:x") || !strict.CanDecrypt(written) {
-		t.Fatal("CanDecrypt wrong")
+	if err := strict.CanDecrypt("enc:v1:transit:vault:v1:x"); err == nil || !strings.Contains(err.Error(), "no cipher for mode transit") {
+		t.Fatalf("CanDecrypt unconfigured transit: %v", err)
+	}
+	if err := strict.CanDecrypt(written); err != nil {
+		t.Fatal(err)
+	}
+	if err := strict.CanDecrypt(pemText); err != nil {
+		t.Fatalf("CanDecrypt legacy: %v", err)
+	}
+	if err := strict.CanDecrypt("enc:v2:static:x"); !errors.Is(err, keycrypt.ErrUnknownFormat) {
+		t.Fatalf("CanDecrypt unknown format: %v", err)
+	}
+}
+
+func TestUnknownEncryptedFormat(t *testing.T) {
+	ctx := context.Background()
+	s := newStatic(t, 1)
+	for _, v := range []string{"enc:v2:static:AAAA", "enc:", "enc:v1:aes:AAAA", "enc:v1:static"} {
+		if legacy, err := keycrypt.IsLegacy(v); legacy || !errors.Is(err, keycrypt.ErrUnknownFormat) {
+			t.Fatalf("IsLegacy(%q) = %v, %v; want unknown format", v, legacy, err)
+		}
+		if _, err := keycrypt.StoredMode(v); !errors.Is(err, keycrypt.ErrUnknownFormat) {
+			t.Fatalf("StoredMode(%q): %v", v, err)
+		}
+		if pt, err := (keycrypt.None{}).Decrypt(ctx, "ci", v); !errors.Is(err, keycrypt.ErrUnknownFormat) {
+			t.Fatalf("None.Decrypt(%q) = %q, %v; want unknown format", v, pt, err)
+		}
+		if _, err := keycrypt.NewKeyring(s).Decrypt(ctx, "ci", v); !errors.Is(err, keycrypt.ErrUnknownFormat) {
+			t.Fatalf("Keyring.Decrypt(%q): %v", v, err)
+		}
+	}
+	if legacy, err := keycrypt.IsLegacy(pemText); !legacy || err != nil {
+		t.Fatalf("IsLegacy(pem) = %v, %v", legacy, err)
 	}
 }
 

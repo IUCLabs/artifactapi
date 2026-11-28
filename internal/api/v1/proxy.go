@@ -103,7 +103,7 @@ func (h *ProxyHandler) remoteFor(w http.ResponseWriter, r *http.Request) (*model
 // responses and redirect package downloads instead of proxying bytes.
 func (h *ProxyHandler) serveRemote(w http.ResponseWriter, r *http.Request, remote *models.Remote, prov provider.Provider, path string) bool {
 	rs, ok := prov.(provider.RemoteServer)
-	return ok && rs.ServeRemote(w, r, *remote, path, fmt.Sprintf("%s://%s", Scheme(r), r.Host), h.db)
+	return ok && rs.ServeRemote(w, r, *remote, path, fmt.Sprintf("%s://%s", requrl.Scheme(r), r.Host), h.db)
 }
 
 func (h *ProxyHandler) handleProxy(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +260,7 @@ func (h *ProxyHandler) handleVirtual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	proxyBaseURL, ok := requestBaseURL(w, r)
+	proxyBaseURL, ok := requrl.BaseURL(w, r)
 	if !ok {
 		return
 	}
@@ -397,9 +397,6 @@ func (h *ProxyHandler) serveLocalFile(w http.ResponseWriter, r *http.Request, re
 	}
 }
 
-// Scheme returns the client-facing scheme; see requrl.Scheme.
-func Scheme(r *http.Request) string { return requrl.Scheme(r) }
-
 // forwardQuery appends the provider's validated query params to path in a
 // canonical (sorted, single-valued) form, since the result is the cache key.
 func forwardQuery(prov provider.Provider, path string, query url.Values) string {
@@ -422,7 +419,7 @@ func forwardQuery(prov provider.Provider, path string, query url.Values) string 
 // rewriteServed rewrites a cached body for the requesting host and marks the
 // response uncacheable by shared caches, since it varies per Host.
 func rewriteServed(w http.ResponseWriter, r *http.Request, sr provider.ServeRewriter, remote models.Remote, src io.Reader) ([]byte, bool) {
-	base, ok := requestBaseURL(w, r)
+	base, ok := requrl.BaseURL(w, r)
 	if !ok {
 		return nil, false
 	}
@@ -437,9 +434,3 @@ func rewriteServed(w http.ResponseWriter, r *http.Request, sr provider.ServeRewr
 	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
 	return raw, true
 }
-
-func requestBaseURL(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return requrl.BaseURL(w, r)
-}
-
-func validHost(hostport string) bool { return requrl.ValidHost(hostport) }

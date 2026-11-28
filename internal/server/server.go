@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/IUCLabs/artifactapi/internal/api/requrl"
 	tfregistry "github.com/IUCLabs/artifactapi/internal/api/terraform"
 	v1 "github.com/IUCLabs/artifactapi/internal/api/v1"
 	v2 "github.com/IUCLabs/artifactapi/internal/api/v2"
@@ -205,7 +206,7 @@ func (s *Server) routes() chi.Router {
 	if s.cfg.AuthUploads {
 		uploadAuth = writeAuth.RequireWrites
 		dockerV2 = writeAuth.RequireRegistryWrites(dockerV2, func(r *http.Request) string {
-			return v1.Scheme(r) + "://" + r.Host + "/v2/token"
+			return requrl.Scheme(r) + "://" + r.Host + "/v2/token"
 		})
 	}
 	r.Mount("/api/v1", uploadAuth(proxyHandler.Routes()))

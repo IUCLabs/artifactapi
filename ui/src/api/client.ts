@@ -4,8 +4,8 @@ const BASE = '';
 
 const TOKEN_KEY = 'artifactapi.token';
 
-// The write token lives in sessionStorage so it survives the GitHub redirects
-// of the manifest flow but not the browser session.
+// Stopgap until the UI has its own login: a pasted write token lives in
+// sessionStorage so it survives the GitHub redirects of the manifest flow.
 export function getToken(): string {
   try {
     return sessionStorage.getItem(TOKEN_KEY) ?? '';
@@ -23,6 +23,17 @@ export function setToken(token: string) {
   }
 }
 
+export function clearToken() {
+  setToken('');
+}
+
+// The token is only sent on same-origin API writes; reads never need it.
+function authHeader(path: string, method: string): Record<string, string> {
+  if (method === 'GET' || method === 'HEAD' || !path.startsWith('/api/v2/')) return {};
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export class APIError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -32,12 +43,11 @@ export class APIError extends Error {
 }
 
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken();
   const resp = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...authHeader(path, (init?.method ?? 'GET').toUpperCase()),
       ...init?.headers,
     },
   });
@@ -90,6 +100,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ code, state }),
     }),
+
+  githubAppInstallURL: (name: string) =>
+    fetchJSON<GitHubAppManifestConverted>(`/api/v2/github-apps/${encodeURIComponent(name)}/install-url`, { method: 'POST' }),
 
   githubAppInstalled: (installationID: number, state: string) =>
     fetchJSON<GitHubApp>('/api/v2/github-apps/manifest/installed', {

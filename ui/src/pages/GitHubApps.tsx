@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { api, APIError, getToken, setToken } from '../api/client';
+import { api, APIError, clearToken, getToken, setToken } from '../api/client';
 import type { GitHubApp, GitHubAppManifestConverted } from '../api/types';
 import { Badge } from '../components/Badge';
 import { DataTable } from '../components/DataTable';
@@ -10,7 +10,7 @@ function errorMessage(e: unknown): string {
   if (e instanceof APIError) {
     if (e.status === 401) return 'Not authorised: paste a valid API token above and try again.';
     if (e.status === 403) return 'This step was started by a different user; start again while signed in as yourself.';
-    if (e.status === 409) return `Name taken: ${e.message.replace(/^409: /, '')}`;
+    if (e.status === 409) return e.message.replace(/^409: /, '');
     if (/expired|already used/.test(e.message)) return 'This link has expired or was already used (each step is valid once, for 1 hour). Start again from the GitHub Apps page.';
     return e.message;
   }
@@ -26,10 +26,11 @@ function TokenField() {
         id="gha-token"
         className="search-input gha-input"
         type="password"
-        placeholder="OIDC bearer token (only needed when writes require auth)"
+        placeholder="OIDC bearer token (stopgap until UI login exists; only needed when writes require auth)"
         value={token}
         onChange={e => { set(e.target.value); setToken(e.target.value.trim()); }}
       />
+      <button className="btn" onClick={() => { clearToken(); set(''); }} disabled={!token}>Clear token</button>
     </div>
   );
 }
@@ -64,6 +65,15 @@ export function GitHubApps() {
       .finally(() => setLoading(false));
   }, []);
 
+  const install = async (app: string) => {
+    setError('');
+    try {
+      window.location.href = (await api.githubAppInstallURL(app)).install_url;
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+
   const create = async () => {
     setBusy(true);
     setError('');
@@ -96,8 +106,13 @@ export function GitHubApps() {
               key: 'installation_id',
               header: 'Installation',
               render: (a: GitHubApp) =>
-                a.installation_id ? <span className="mono">{a.installation_id}</span> : <Badge variant="yellow">not installed</Badge>,
-              width: '140px',
+                a.installation_id ? <span className="mono">{a.installation_id}</span> : (
+                  <span className="gha-install">
+                    <Badge variant="yellow">not installed</Badge>
+                    <button className="btn btn-primary" onClick={() => install(a.name)}>Install</button>
+                  </span>
+                ),
+              width: '220px',
             },
             { key: 'fingerprint', header: 'Key fingerprint', render: (a: GitHubApp) => <span className="mono gha-fp">{a.private_key_fingerprint}</span> },
           ]}

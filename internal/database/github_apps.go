@@ -21,6 +21,10 @@ var ErrGitHubAppNotFound = models.ErrGitHubAppNotFound
 // ErrGitHubAppExists is returned by CreateGitHubApp when the name is taken.
 var ErrGitHubAppExists = errors.New("github app already exists")
 
+// ErrGitHubAppChanged is returned by SetGitHubAppInstallation when no app with
+// that name and app_id exists any more.
+var ErrGitHubAppChanged = errors.New("github app was deleted or replaced")
+
 // GitHubAppInUseError is returned when deleting a GitHub App still referenced by remotes.
 type GitHubAppInUseError struct {
 	Name    string
@@ -163,6 +167,23 @@ func (db *DB) PutGitHubApp(ctx context.Context, a *models.GitHubApp) error {
 		RETURNING created_at, updated_at
 	`, a.Name, a.AppID, a.InstallationID, a.APIBaseURL, a.Description, a.PrivateKeyFingerprint, stored,
 	).Scan(&a.CreatedAt, &a.UpdatedAt)
+}
+
+// SetGitHubAppInstallation records installationID on the app only while it is
+// still name with appID, so a concurrent replace is never overwritten.
+func (db *DB) SetGitHubAppInstallation(ctx context.Context, name string, appID, installationID int64) (*models.GitHubApp, error) {
+	var a models.GitHubApp
+	err := scanGitHubApp(db.Pool.QueryRow(ctx, `
+		UPDATE github_apps SET installation_id = $3, updated_at = now()
+		WHERE name = $1 AND app_id = $2
+		RETURNING `+githubAppCols, name, appID, installationID), &a)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrGitHubAppChanged
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
 }
 
 // DeleteGitHubApp removes an app, refusing with *GitHubAppInUseError while

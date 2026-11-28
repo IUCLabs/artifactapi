@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/IUCLabs/artifactapi/internal/api/requrl"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/provider/ansible"
 	"github.com/IUCLabs/artifactapi/internal/virtual"
@@ -59,7 +60,7 @@ func (h *ProxyHandler) handleAnsiblePublish(w http.ResponseWriter, r *http.Reque
 		ansibleError(w, http.StatusMethodNotAllowed, "publish is only supported on local ansible repositories")
 		return
 	}
-	base, ok := requestBaseURL(w, r)
+	base, ok := requrl.BaseURL(w, r)
 	if !ok {
 		return
 	}
@@ -186,7 +187,7 @@ func readAnsibleUpload(r *http.Request) ([]byte, string, error) {
 
 // serveLocalAnsible answers the Galaxy v3 API of a local ansible repo.
 func (h *ProxyHandler) serveLocalAnsible(w http.ResponseWriter, r *http.Request, remote *models.Remote, ap ansible.APIPath) {
-	base, ok := requestBaseURL(w, r)
+	base, ok := requrl.BaseURL(w, r)
 	if !ok {
 		return
 	}

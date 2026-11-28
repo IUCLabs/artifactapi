@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/IUCLabs/artifactapi/internal/api/requrl"
 	"github.com/IUCLabs/artifactapi/internal/database"
 	"github.com/IUCLabs/artifactapi/internal/storage"
 	"github.com/IUCLabs/artifactapi/pkg/models"
@@ -253,7 +254,7 @@ func (h *ProxyHandler) serveNPMPackument(w http.ResponseWriter, r *http.Request,
 		npmError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	base, ok := requestBaseURL(w, r)
+	base, ok := requrl.BaseURL(w, r)
 	if !ok {
 		return
 	}

@@ -144,9 +144,15 @@ a name (and optionally an org owner and a GHES host from
 `GITHUB_APP_API_HOSTS`), confirm on GitHub, then install it. artifactapi
 exchanges the manifest code itself and stores the app id, private key and
 installation id; the key never reaches the browser. The app gets read-only
-`contents` and `metadata` and no webhook. Each step's state is single use,
-bound to the signed-in subject and expires after 1h. Reference a UI-created app
-from Terraform with the data source:
+`contents` and `metadata` and no webhook. Each step's state is single use and
+expires after 1h; with OIDC write auth it is bound to the token subject that
+started it (with write auth disabled, writes are open and there is no binding).
+A transient GitHub failure keeps the state for a retry. An app that was created
+but never installed shows an **Install** button, which issues a fresh install
+link (`POST /api/v2/github-apps/{name}/install-url`). The UI's API token field
+is a stopgap until UI login exists: it is kept for the browser session and only
+sent on API writes. Reference a UI-created app from Terraform with the data
+source:
 
 ```hcl
 data "artifactapi_github_app" "ci" {
@@ -215,6 +221,7 @@ GET/PUT/PATCH/DELETE /api/v2/settings        Read / replace / merge / reset glob
 GET             /api/v2/github-apps          List GitHub Apps
 GET/PUT/DELETE  /api/v2/github-apps/{name}   Read / create-or-replace / delete a GitHub App
 POST            /api/v2/github-apps/manifest[/convert|/installed]  GitHub App Manifest create flow (UI)
+POST            /api/v2/github-apps/{name}/install-url  Issue an install link for an uninstalled app
 GET             /api/v2/events               SSE event stream
 ```
 

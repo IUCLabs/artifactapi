@@ -47,6 +47,7 @@ func (h *GitHubAppsHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	if h.manifest != nil {
 		r.Mount("/manifest", h.manifest.Routes())
+		r.Post("/{name}/install-url", h.manifest.installLink)
 	}
 	r.Get("/", h.list)
 	r.Get("/{name}", h.get)

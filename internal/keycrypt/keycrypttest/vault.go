@@ -23,8 +23,9 @@ const (
 	Key  = "github-apps"
 )
 
-// Vault is an httptest Vault. Ciphertext is "vault:v1:" + base64 of the
-// reversed plaintext, so it never contains the plaintext.
+// Vault is an httptest Vault with a derived transit key. Ciphertext is
+// "vault:v1:" + base64(context ":" base64(reversed plaintext)), so it never
+// contains the plaintext and only decrypts under the same context.
 type Vault struct {
 	*httptest.Server
 	TokenPath string
@@ -56,7 +57,7 @@ func NewVault(t *testing.T) *Vault {
 func (v *Vault) Config() keycrypt.VaultConfig {
 	return keycrypt.VaultConfig{
 		Addr: v.URL, Role: Role, K8sMount: keycrypt.DefaultK8sMount, TokenPath: v.TokenPath,
-		TransitMount: keycrypt.DefaultTransitMount, TransitKey: Key,
+		TransitMount: keycrypt.DefaultTransitMount, TransitKey: Key, AllowInsecureHTTP: true,
 	}
 }
 
@@ -150,6 +151,10 @@ func (v *Vault) serve(w http.ResponseWriter, r *http.Request) {
 	v.Transit++
 	switch r.URL.Path {
 	case "/v1/transit/encrypt/" + Key:
+		if body["context"] == "" {
+			vaultError(w, http.StatusBadRequest, "missing 'context' for key derivation")
+			return
+		}
 		pt, err := base64.StdEncoding.DecodeString(body["plaintext"])
 		if err != nil || v.FailEncrypt {
 			msg := "encryption failed"
@@ -160,16 +165,23 @@ func (v *Vault) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
-			"ciphertext": "vault:v1:" + base64.StdEncoding.EncodeToString(reverse(pt)),
+			"ciphertext": "vault:v1:" + base64.StdEncoding.EncodeToString(
+				[]byte(body["context"]+":"+base64.StdEncoding.EncodeToString(reverse(pt)))),
 		}})
 	case "/v1/transit/decrypt/" + Key:
 		raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(body["ciphertext"], "vault:v1:"))
-		if err != nil || !strings.HasPrefix(body["ciphertext"], "vault:v1:") {
+		dctx, sealed, ok := strings.Cut(string(raw), ":")
+		if err != nil || !ok || !strings.HasPrefix(body["ciphertext"], "vault:v1:") {
 			vaultError(w, http.StatusBadRequest, "invalid ciphertext")
 			return
 		}
+		pt, err := base64.StdEncoding.DecodeString(sealed)
+		if err != nil || dctx != body["context"] {
+			vaultError(w, http.StatusBadRequest, "cipher: message authentication failed")
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{
-			"plaintext": base64.StdEncoding.EncodeToString(reverse(raw)),
+			"plaintext": base64.StdEncoding.EncodeToString(reverse(pt)),
 		}})
 	default:
 		vaultError(w, http.StatusNotFound, "no handler")

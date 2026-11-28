@@ -2,6 +2,8 @@ package keycrypt_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -166,5 +168,70 @@ func TestTransitPersistent403Fails(t *testing.T) {
 	}
 	if n := len(v.Logins()); n != 2 {
 		t.Fatalf("%d logins; want exactly one re-login before giving up", n)
+	}
+}
+
+func TestTransitBindsAppName(t *testing.T) {
+	v := keycrypttest.NewVault(t)
+	tr, _ := newTransit(t, v)
+	ctx := context.Background()
+	ct, err := tr.Encrypt(ctx, "a", []byte(pemText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.Decrypt(ctx, "b", ct); err == nil {
+		t.Fatal("ciphertext for app a decrypted as app b")
+	}
+	if _, err := tr.Encrypt(ctx, "", []byte("x")); err == nil {
+		t.Fatal("encrypted without an app name")
+	}
+	if _, err := tr.Decrypt(ctx, "a", pemText); err == nil || strings.Contains(err.Error(), "MIIEsecret") {
+		t.Fatalf("transit accepted unprefixed value: %v", err)
+	}
+}
+
+func TestTransitDoesNotFollowRedirects(t *testing.T) {
+	var mu sync.Mutex
+	var leaked []string
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		leaked = append(leaked, r.Header.Get("X-Vault-Token"))
+		mu.Unlock()
+	}))
+	t.Cleanup(sink.Close)
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/auth/kubernetes/login" {
+			_, _ = w.Write([]byte(`{"auth":{"client_token":"hvs.secret","lease_duration":3600,"renewable":true}}`))
+			return
+		}
+		http.Redirect(w, r, sink.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirect.Close)
+	cfg := keycrypttest.NewVault(t).Config()
+	cfg.Addr = redirect.URL
+	tr, err := keycrypt.NewTransit(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.Encrypt(context.Background(), "ci", []byte("x")); err == nil || !strings.Contains(err.Error(), "HTTP 307") {
+		t.Fatalf("redirected encrypt: %v; want HTTP 307", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(leaked) != 0 {
+		t.Fatalf("redirect followed: token sent to target %d times", len(leaked))
+	}
+}
+
+func TestTransitRequiresHTTPS(t *testing.T) {
+	v := keycrypttest.NewVault(t)
+	cfg := v.Config()
+	cfg.AllowInsecureHTTP = false
+	if _, err := keycrypt.NewTransit(cfg); err == nil || !strings.Contains(err.Error(), "VAULT_ALLOW_INSECURE_HTTP") {
+		t.Fatalf("http VAULT_ADDR without opt-in: %v", err)
+	}
+	cfg.AllowInsecureHTTP = true
+	if _, err := keycrypt.NewTransit(cfg); err != nil {
+		t.Fatal(err)
 	}
 }

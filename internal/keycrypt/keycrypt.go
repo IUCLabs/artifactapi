@@ -30,7 +30,7 @@ type Cipher interface {
 	Mode() string
 	Encrypt(ctx context.Context, name string, plaintext []byte) (string, error)
 	// Decrypt returns the plaintext; the caller should Zero it after use.
-	// Legacy unprefixed values are returned as-is.
+	// Only None accepts legacy unprefixed values.
 	Decrypt(ctx context.Context, name, stored string) ([]byte, error)
 }
 
@@ -50,28 +50,92 @@ func StoredMode(stored string) string {
 func Zero(b []byte) { clear(b) }
 
 func mismatch(stored, mode string) error {
+	if IsLegacy(stored) {
+		return fmt.Errorf("private key is not encrypted but GITHUB_APP_KEY_ENCRYPTION=%s", mode)
+	}
 	return fmt.Errorf("private key is encrypted with mode %q but GITHUB_APP_KEY_ENCRYPTION=%s", StoredMode(stored), mode)
 }
 
-// New builds the Cipher for cfg; a transit cipher logs in and probes Vault.
+// New builds the Cipher for cfg: it encrypts with the selected mode and
+// decrypts with every configured cipher. A transit write cipher logs in and
+// probes Vault. Mode none ignores other ciphers.
 func New(ctx context.Context, cfg Config) (Cipher, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	switch cfg.Mode {
-	case ModeStatic:
-		return NewStatic(cfg.StaticKey)
-	case ModeTransit:
+	if cfg.Mode == ModeNone || cfg.Mode == "" {
+		return None{}, nil
+	}
+	var write Cipher
+	var others []Cipher
+	if cfg.HasStatic() {
+		s, err := NewStatic(cfg.StaticKey)
+		if err != nil {
+			return nil, err
+		}
+		others = append(others, s)
+	}
+	if cfg.HasTransit() {
 		t, err := NewTransit(cfg.Vault)
 		if err != nil {
 			return nil, err
 		}
-		if err := t.Check(ctx); err != nil {
-			return nil, err
+		if cfg.Mode == ModeTransit {
+			if err := t.Check(ctx); err != nil {
+				return nil, err
+			}
 		}
-		return t, nil
+		others = append(others, t)
 	}
-	return None{}, nil
+	for i, c := range others {
+		if c.Mode() == cfg.Mode {
+			write = c
+			others = append(others[:i], others[i+1:]...)
+			break
+		}
+	}
+	return NewKeyring(write, others...), nil
+}
+
+// Keyring encrypts with one cipher and decrypts with whichever configured
+// cipher matches a value's mode prefix.
+type Keyring struct {
+	write Cipher
+	byMod map[string]Cipher
+}
+
+// NewKeyring returns a Keyring writing with write and also reading others.
+func NewKeyring(write Cipher, others ...Cipher) *Keyring {
+	k := &Keyring{write: write, byMod: map[string]Cipher{write.Mode(): write}}
+	for _, c := range others {
+		if _, ok := k.byMod[c.Mode()]; !ok {
+			k.byMod[c.Mode()] = c
+		}
+	}
+	return k
+}
+
+func (k *Keyring) Mode() string { return k.write.Mode() }
+
+// CanDecrypt reports whether a cipher for stored's mode is configured.
+func (k *Keyring) CanDecrypt(stored string) bool {
+	_, ok := k.byMod[StoredMode(stored)]
+	return ok
+}
+
+func (k *Keyring) Encrypt(ctx context.Context, name string, plaintext []byte) (string, error) {
+	return k.write.Encrypt(ctx, name, plaintext)
+}
+
+func (k *Keyring) Decrypt(ctx context.Context, name, stored string) ([]byte, error) {
+	c, ok := k.byMod[StoredMode(stored)]
+	if !ok {
+		if IsLegacy(stored) {
+			return nil, fmt.Errorf("private key is not encrypted but GITHUB_APP_KEY_ENCRYPTION=%s", k.Mode())
+		}
+		return nil, fmt.Errorf("private key is encrypted with mode %q, which is not configured", StoredMode(stored))
+	}
+	return c.Decrypt(ctx, name, stored)
 }
 
 // None stores keys as plaintext and refuses encrypted values.
@@ -123,9 +187,6 @@ func (s *Static) Encrypt(_ context.Context, name string, plaintext []byte) (stri
 }
 
 func (s *Static) Decrypt(_ context.Context, name, stored string) ([]byte, error) {
-	if IsLegacy(stored) {
-		return []byte(stored), nil
-	}
 	if !strings.HasPrefix(stored, staticPrefix) {
 		return nil, mismatch(stored, ModeStatic)
 	}

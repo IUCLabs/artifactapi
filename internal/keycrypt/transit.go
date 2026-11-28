@@ -18,7 +18,8 @@ import (
 	"time"
 )
 
-// Transit encrypts with Vault transit, authenticating via Kubernetes auth.
+// Transit encrypts with a derived Vault transit key, using the app name as
+// the derivation context, authenticating via Kubernetes auth.
 type Transit struct {
 	cfg    VaultConfig
 	client *http.Client
@@ -49,7 +50,13 @@ func NewTransit(cfg VaultConfig) (*Transit, error) {
 		tr.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	}
 	cfg.Addr = strings.TrimRight(cfg.Addr, "/")
-	return &Transit{cfg: cfg, client: &http.Client{Transport: tr, Timeout: 30 * time.Second}, now: time.Now}, nil
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   30 * time.Second,
+		// A redirect would re-send X-Vault-Token to wherever it points.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	return &Transit{cfg: cfg, client: client, now: time.Now}, nil
 }
 
 func (t *Transit) Mode() string { return ModeTransit }
@@ -58,11 +65,11 @@ func (t *Transit) Mode() string { return ModeTransit }
 // fails startup instead of the first write.
 func (t *Transit) Check(ctx context.Context) error {
 	const probe = "artifactapi-keycrypt-probe"
-	ct, err := t.Encrypt(ctx, "", []byte(probe))
+	ct, err := t.Encrypt(ctx, probe, []byte(probe))
 	if err != nil {
 		return err
 	}
-	pt, err := t.Decrypt(ctx, "", ct)
+	pt, err := t.Decrypt(ctx, probe, ct)
 	if err != nil {
 		return err
 	}
@@ -72,12 +79,25 @@ func (t *Transit) Check(ctx context.Context) error {
 	return nil
 }
 
-func (t *Transit) Encrypt(ctx context.Context, _ string, plaintext []byte) (string, error) {
+func transitContext(name string) (string, error) {
+	if name == "" {
+		return "", errors.New("vault transit: empty app name")
+	}
+	return base64.StdEncoding.EncodeToString([]byte(name)), nil
+}
+
+func (t *Transit) Encrypt(ctx context.Context, name string, plaintext []byte) (string, error) {
+	dctx, err := transitContext(name)
+	if err != nil {
+		return "", err
+	}
 	enc := make([]byte, base64.StdEncoding.EncodedLen(len(plaintext)))
 	base64.StdEncoding.Encode(enc, plaintext)
-	body := make([]byte, 0, len(enc)+16)
+	body := make([]byte, 0, len(enc)+len(dctx)+32)
 	body = append(body, `{"plaintext":"`...)
 	body = append(body, enc...)
+	body = append(body, `","context":"`...)
+	body = append(body, dctx...)
 	body = append(body, `"}`...)
 	Zero(enc)
 	resp, err := t.call(ctx, "encrypt", body)
@@ -96,14 +116,15 @@ func (t *Transit) Encrypt(ctx context.Context, _ string, plaintext []byte) (stri
 	return transitPrefix + out.Data.Ciphertext, nil
 }
 
-func (t *Transit) Decrypt(ctx context.Context, _, stored string) ([]byte, error) {
-	if IsLegacy(stored) {
-		return []byte(stored), nil
-	}
+func (t *Transit) Decrypt(ctx context.Context, name, stored string) ([]byte, error) {
 	if !strings.HasPrefix(stored, transitPrefix) {
 		return nil, mismatch(stored, ModeTransit)
 	}
-	body, err := json.Marshal(map[string]string{"ciphertext": strings.TrimPrefix(stored, transitPrefix)})
+	dctx, err := transitContext(name)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.Marshal(map[string]string{"ciphertext": strings.TrimPrefix(stored, transitPrefix), "context": dctx})
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +190,8 @@ func (t *Transit) invalidate(token string) {
 	t.mu.Unlock()
 }
 
+const authTimeout = 10 * time.Second
+
 func (t *Transit) ensureToken(ctx context.Context) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -202,6 +225,8 @@ type vaultAuth struct {
 }
 
 func (t *Transit) loginLocked(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
 	jwt, err := os.ReadFile(t.cfg.TokenPath)
 	if err != nil {
 		return fmt.Errorf("vault kubernetes login: read service account token: %w", err)
@@ -223,6 +248,8 @@ func (t *Transit) loginLocked(ctx context.Context) error {
 }
 
 func (t *Transit) renewLocked(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, authTimeout)
+	defer cancel()
 	status, resp, err := t.post(ctx, "/v1/auth/token/renew-self", t.token, []byte(`{}`))
 	if err != nil {
 		return err

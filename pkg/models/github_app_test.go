@@ -32,6 +32,77 @@ func TestGitHubAppSpecValidate(t *testing.T) {
 	}
 }
 
+func TestValidateGitHubAPIBaseURL(t *testing.T) {
+	allowed := []string{"ghe.example.com", "GHE2.example.com:8443"}
+	for _, u := range []string{
+		"https://api.github.com",
+		"https://API.GitHub.com/",
+		"https://api.github.com:443",
+		"https://ghe.example.com/api/v3",
+		"https://GHE.example.com:443/api/v3/",
+		"https://ghe2.example.com:8443/api/v3",
+	} {
+		if err := ValidateGitHubAPIBaseURL(u, allowed); err != nil {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+	for name, u := range map[string]string{
+		"http":                 "http://api.github.com",
+		"relative":             "/api",
+		"github on other port": "https://api.github.com:8443",
+		"bare host other port": "https://ghe.example.com:8443",
+		"host:port wrong port": "https://ghe2.example.com:9443",
+		"host:port on default": "https://ghe2.example.com",
+		"unlisted host":        "https://evil.example.com",
+		"lookalike host":       "https://api.github.com.evil.example.com",
+		"trailing dot host":    "https://api.github.com.",
+		"trailing dot ghes":    "https://ghe.example.com./api/v3",
+		"empty port":           "https://api.github.com:",
+		"userinfo":             "https://x@ghe.example.com",
+		"query":                "https://ghe.example.com/api/v3?x=1",
+		"empty query":          "https://ghe.example.com/api/v3?",
+		"fragment":             "https://ghe.example.com/api/v3#x",
+		"empty fragment":       "https://ghe.example.com/api/v3#",
+		"dotdot":               "https://ghe.example.com/api/../v3",
+		"trailing dotdot":      "https://ghe.example.com/api/..",
+		"encoded dotdot":       "https://ghe.example.com/api/%2e%2e/v3",
+		"dot segment":          "https://ghe.example.com/./api",
+		"space in path":        "https://ghe.example.com/api v3",
+		"encoded space":        "https://ghe.example.com/api%20v3",
+		"tab":                  "https://ghe.example.com/api\tv3",
+		"leading space":        " https://api.github.com",
+		"newline":              "https://api.github.com\n",
+	} {
+		if err := ValidateGitHubAPIBaseURL(u, allowed); err == nil {
+			t.Errorf("%s (%q): want error", name, u)
+		}
+	}
+}
+
+func TestParseGitHubAPIHost(t *testing.T) {
+	for in, want := range map[string]string{
+		"ghe.example.com":      "ghe.example.com",
+		" GHE.Example.com ":    "ghe.example.com",
+		"ghe.example.com:8443": "ghe.example.com:8443",
+		"ghe.example.com:443":  "ghe.example.com",
+		"localhost":            "localhost",
+	} {
+		if got, err := ParseGitHubAPIHost(in); err != nil || got != want {
+			t.Errorf("%q: got %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{
+		"", "https://ghe.example.com", "ghe.example.com/api", "ghe.example.com.", "ghe..example.com",
+		"ghe.example.com:", "ghe.example.com:0", "ghe.example.com:65536", "ghe.example.com:08443",
+		"ghe.example.com:x", "user@ghe.example.com", "-ghe.example.com", "ghe_x.example.com", "[::1]:443",
+		"ghe example.com",
+	} {
+		if got, err := ParseGitHubAPIHost(in); err == nil {
+			t.Errorf("%q: got %q; want error", in, got)
+		}
+	}
+}
+
 func TestRemoteValidateGitHubApp(t *testing.T) {
 	remote := func(pt PackageType, base string) Remote {
 		return Remote{PackageType: pt, RepoType: RepoTypeRemote, BaseURL: base, GitHubApp: "ci"}

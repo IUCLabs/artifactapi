@@ -57,7 +57,8 @@ func validGitHubAppName(name string) error {
 func (h *GitHubAppsHandler) list(w http.ResponseWriter, r *http.Request) {
 	apps, err := h.store.ListGitHubApps(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("list github apps", "err", err)
+		http.Error(w, "failed to list github apps", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, apps)
@@ -71,7 +72,8 @@ func (h *GitHubAppsHandler) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("get github app", "name", name, "err", err)
+		http.Error(w, "failed to load github app", http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, http.StatusOK, app)
@@ -124,7 +126,8 @@ func (h *GitHubAppsHandler) del(w http.ResponseWriter, r *http.Request) {
 	case errors.As(err, &inUse):
 		http.Error(w, inUse.Error(), http.StatusConflict)
 	case err != nil:
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("delete github app", "name", name, "err", err)
+		http.Error(w, "failed to delete github app", http.StatusInternalServerError)
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}

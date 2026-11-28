@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,10 +79,32 @@ func (f *fakeAppStore) del(name string) {
 	f.mu.Unlock()
 }
 
-type fakeClock struct{ t time.Time }
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
 
-func (c *fakeClock) now() time.Time          { return c.t }
-func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// newTestApps builds a registry that trusts and allowlists srv.
+func newTestApps(store AppStore, srv *httptest.Server, clock *fakeClock) *Apps {
+	reg := NewApps(store, []string{srv.Listener.Addr().String()})
+	reg.SetHTTPClient(srv.Client())
+	if clock != nil {
+		reg.now = clock.now
+	}
+	return reg
+}
 
 func (a *Apps) cached(name string) bool {
 	a.mu.Lock()
@@ -94,7 +118,7 @@ func installationServer(t *testing.T) (*httptest.Server, *int) {
 	t.Helper()
 	var mu sync.Mutex
 	exchanges := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.URL.Path, "/")
 		if len(parts) != 5 || parts[1] != "app" || parts[4] != "access_tokens" {
 			http.NotFound(w, r)
@@ -121,8 +145,7 @@ func TestAppsCacheRevalidatesAfterTTL(t *testing.T) {
 	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
 	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 100, PrivateKey: keyPEM, APIBaseURL: srv.URL, UpdatedAt: t0})
 	clock := &fakeClock{t: t0}
-	reg := NewApps(store)
-	reg.now = clock.now
+	reg := newTestApps(store, srv, clock)
 	ctx := context.Background()
 
 	for range 3 {
@@ -173,8 +196,7 @@ func TestAppsServeCachedOnTransientError(t *testing.T) {
 	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
 	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 5, PrivateKey: testRSAKeyPEM(t), APIBaseURL: srv.URL, UpdatedAt: time.Now()})
 	clock := &fakeClock{t: time.Now()}
-	reg := NewApps(store)
-	reg.now = clock.now
+	reg := newTestApps(store, srv, clock)
 	ctx := context.Background()
 
 	if _, err := AppToken(ctx, reg, "ci"); err != nil {
@@ -188,13 +210,159 @@ func TestAppsServeCachedOnTransientError(t *testing.T) {
 	if !reg.cached("ci") {
 		t.Fatal("transient error dropped the cache entry")
 	}
+	_, checks := store.counts()
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			if tok, err := AppToken(ctx, reg, "ci"); err != nil || tok != "ghs_5_1" {
+				t.Errorf("stale serve within TTL: %q, %v", tok, err)
+			}
+		})
+	}
+	wg.Wait()
+	if _, c := store.counts(); c != checks {
+		t.Fatalf("stale serve did not advance checkedAt: %d extra store checks", c-checks)
+	}
+	clock.advance(AppRevalidateTTL)
+	for range 16 {
+		wg.Go(func() {
+			if _, err := AppToken(ctx, reg, "ci"); err != nil {
+				t.Errorf("outage: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if _, c := store.counts(); c-checks != 1 {
+		t.Fatalf("outage revalidations not collapsed: %d store checks for 16 callers", c-checks)
+	}
 	if _, err := AppToken(ctx, reg, "other"); err == nil {
 		t.Fatal("uncached app with a failing store must error")
 	}
 }
 
+func TestAppsConcurrentKeyRotation(t *testing.T) {
+	srv, _ := installationServer(t)
+	t0 := time.Now()
+	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
+	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 1, PrivateKey: testRSAKeyPEM(t), APIBaseURL: srv.URL, UpdatedAt: t0})
+	newKey := testRSAKeyPEM(t)
+	clock := &fakeClock{t: t0}
+	reg := newTestApps(store, srv, clock)
+	ctx := context.Background()
+
+	const workers, calls = 32, 200
+	var (
+		mu       sync.Mutex
+		seen     = map[string]map[*appCredential]bool{}
+		progress atomic.Int64
+		wg       sync.WaitGroup
+	)
+	record := func() string {
+		c, err := reg.Credential(ctx, "ci")
+		if err != nil {
+			t.Errorf("credential: %v", err)
+			return ""
+		}
+		ac := c.(*appCredential)
+		mu.Lock()
+		if seen[ac.installationID] == nil {
+			seen[ac.installationID] = map[*appCredential]bool{}
+		}
+		seen[ac.installationID][ac] = true
+		mu.Unlock()
+		return ac.installationID
+	}
+	for range workers {
+		wg.Go(func() {
+			for range calls {
+				record()
+				progress.Add(1)
+			}
+		})
+	}
+	for progress.Load() < workers*calls/4 {
+		runtime.Gosched()
+	}
+	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 2, PrivateKey: newKey, APIBaseURL: srv.URL, UpdatedAt: t0.Add(time.Second)})
+	clock.advance(AppRevalidateTTL)
+	wg.Wait()
+
+	for range workers {
+		wg.Go(func() {
+			if id := record(); id != "2" {
+				t.Errorf("old key served after TTL: installation %q", id)
+			}
+		})
+	}
+	wg.Wait()
+	for id, creds := range seen {
+		if len(creds) != 1 {
+			t.Errorf("installation %s: %d credential instances; want 1 shared", id, len(creds))
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("versions seen = %d; want 2", len(seen))
+	}
+	if loads, _ := store.counts(); loads != 2 {
+		t.Errorf("key loads = %d; want one per version", loads)
+	}
+}
+
+func TestAppsDeleteAcrossTTL(t *testing.T) {
+	srv, _ := installationServer(t)
+	t0 := time.Now()
+	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
+	app := models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 1, PrivateKey: testRSAKeyPEM(t), APIBaseURL: srv.URL, UpdatedAt: t0}
+	store.set(app)
+	clock := &fakeClock{t: t0}
+	reg := newTestApps(store, srv, clock)
+	ctx := context.Background()
+
+	first, err := reg.Credential(ctx, "ci")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.del("ci")
+	clock.advance(AppRevalidateTTL - time.Millisecond)
+	if c, err := reg.Credential(ctx, "ci"); err != nil || c != first {
+		t.Fatalf("within TTL after delete: %v, %v; want cached credential", c, err)
+	}
+	clock.advance(time.Millisecond)
+	if _, err := reg.Credential(ctx, "ci"); !errors.Is(err, models.ErrGitHubAppNotFound) {
+		t.Fatalf("after TTL: %v; want not found", err)
+	}
+	if reg.cached("ci") {
+		t.Fatal("deleted app left in cache")
+	}
+	if _, err := reg.Credential(ctx, "ci"); !errors.Is(err, models.ErrGitHubAppNotFound) {
+		t.Fatalf("repeat after delete: %v; want not found", err)
+	}
+
+	app.UpdatedAt = t0.Add(time.Minute)
+	store.set(app)
+	again, err := reg.Credential(ctx, "ci")
+	if err != nil || again == first {
+		t.Fatalf("recreated app: %v, same instance %v; want a fresh credential", err, again == first)
+	}
+}
+
+func TestAppsRefuseUnlistedStoredHost(t *testing.T) {
+	srv, exchanges := installationServer(t)
+	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
+	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 1, PrivateKey: testRSAKeyPEM(t), APIBaseURL: srv.URL, UpdatedAt: time.Now()})
+	reg := NewApps(store, []string{"ghe.example.com"})
+	reg.SetHTTPClient(srv.Client())
+	_, err := AppToken(context.Background(), reg, "ci")
+	if err == nil || !strings.Contains(err.Error(), "GITHUB_APP_API_HOSTS") {
+		t.Fatalf("unlisted stored host: %v; want a host policy error", err)
+	}
+	if reg.cached("ci") || *exchanges != 0 {
+		t.Fatalf("unlisted host cached=%v exchanges=%d; want neither", reg.cached("ci"), *exchanges)
+	}
+}
+
 func TestAppsRememberKeepsNewerEntry(t *testing.T) {
-	reg := NewApps(&fakeAppStore{apps: map[string]models.GitHubApp{}})
+	reg := NewApps(&fakeAppStore{apps: map[string]models.GitHubApp{}}, nil)
 	t0 := time.Now()
 	newer, older, same := &appCredential{}, &appCredential{}, &appCredential{}
 	reg.remember("ci", cachedApp{updatedAt: t0.Add(time.Second), checkedAt: t0, cred: newer})
@@ -211,7 +379,7 @@ func TestAppsRememberKeepsNewerEntry(t *testing.T) {
 
 func TestAppsRejectsBadStoredKey(t *testing.T) {
 	store := &fakeAppStore{apps: map[string]models.GitHubApp{"bad": {Name: "bad", AppID: 1, InstallationID: 1, PrivateKey: "junk"}}}
-	_, err := NewApps(store).Credential(context.Background(), "bad")
+	_, err := NewApps(store, nil).Credential(context.Background(), "bad")
 	if err == nil || strings.Contains(err.Error(), "junk") {
 		t.Fatalf("err = %v; want a key error without key material", err)
 	}
@@ -221,7 +389,7 @@ func TestRemoteTokenPrecedence(t *testing.T) {
 	srv, _ := installationServer(t)
 	store := &fakeAppStore{apps: map[string]models.GitHubApp{}}
 	store.set(models.GitHubApp{Name: "ci", AppID: 1, InstallationID: 7, PrivateKey: testRSAKeyPEM(t), APIBaseURL: srv.URL, UpdatedAt: time.Now()})
-	reg := NewApps(store)
+	reg := newTestApps(store, srv, nil)
 	server := staticToken{token: "server"}
 	ctx := context.Background()
 

@@ -259,7 +259,7 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_INSTALLATION_ID` | | GitHub App installation id |
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
-| `GITHUB_APP_API_HOSTS` | | Comma-separated GHES hostnames an API-managed GitHub App's `api_base_url` may use besides `api.github.com`; others are rejected with `400` |
+| `GITHUB_APP_API_HOSTS` | | Comma-separated GHES hosts an API-managed GitHub App's `api_base_url` may use besides `api.github.com` (default port only). Each entry is a bare hostname (default port only) or `host:port`; schemes, paths and trailing dots fail startup. Other hosts are rejected with `400` on PUT and refused for stored apps |
 | `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` `PUT`/`PATCH`/`DELETE /api/v2/settings` and `PUT`/`DELETE /api/v2/github-apps/{name}` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
 | `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
 | `ARTIFACTAPI_AUTH_UPLOADS` | `false` | Also require a token for every local repo write: file uploads/deletes, object evictions, `/api/v1/local` publishes and `/v2` push. Requires `ARTIFACTAPI_OIDC_ISSUER` |

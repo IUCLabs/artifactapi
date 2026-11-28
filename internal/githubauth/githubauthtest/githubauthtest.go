@@ -39,7 +39,7 @@ func (s store) GitHubAppUpdatedAt(_ context.Context, name string) (time.Time, er
 // installation token exchange returns token. The registry is removed on cleanup.
 func InstallApp(t *testing.T, name, token string) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"token": token, "expires_at": time.Now().Add(time.Hour).UTC()})
 	}))
@@ -49,7 +49,9 @@ func InstallApp(t *testing.T, name, token string) {
 		t.Fatal(err)
 	}
 	keyPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	githubauth.SetApps(githubauth.NewApps(store{name: {Name: name, AppID: 1, InstallationID: 2, PrivateKey: keyPEM,
-		APIBaseURL: srv.URL, UpdatedAt: time.Now()}}))
+	reg := githubauth.NewApps(store{name: {Name: name, AppID: 1, InstallationID: 2, PrivateKey: keyPEM,
+		APIBaseURL: srv.URL, UpdatedAt: time.Now()}}, []string{srv.Listener.Addr().String()})
+	reg.SetHTTPClient(srv.Client())
+	githubauth.SetApps(reg)
 	t.Cleanup(func() { githubauth.SetApps(nil) })
 }

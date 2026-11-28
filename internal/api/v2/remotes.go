@@ -212,7 +212,7 @@ func (h *RemotesHandler) validateGitHubApp(w http.ResponseWriter, r *http.Reques
 	if remote.GitHubApp == "" {
 		return true
 	}
-	_, err := h.db.GetGitHubApp(r.Context(), remote.GitHubApp)
+	_, err := h.db.GitHubAppUpdatedAt(r.Context(), remote.GitHubApp)
 	if errors.Is(err, database.ErrGitHubAppNotFound) {
 		http.Error(w, fmt.Sprintf("github_app %q does not exist", remote.GitHubApp), http.StatusBadRequest)
 		return false

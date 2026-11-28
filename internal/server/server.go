@@ -80,7 +80,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		return nil, fmt.Errorf("github auth: %w", err)
 	}
 	githubauth.SetServer(ghCred)
-	githubauth.SetApps(githubauth.NewApps(db))
+	githubauth.SetApps(githubauth.NewApps(db, cfg.GitHubAppAPIHosts))
 	if ghCred != nil {
 		slog.Info("github machine credential configured")
 	}

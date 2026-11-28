@@ -181,14 +181,29 @@ func TestRemoteGitHubAppReference(t *testing.T) {
 
 type failingAppStore struct{ GitHubAppStore }
 
-func (failingAppStore) PutGitHubApp(context.Context, *models.GitHubApp) error {
-	return errors.New("db exploded: secret detail")
+var errStoreSecret = errors.New("db exploded: secret detail")
+
+func (failingAppStore) ListGitHubApps(context.Context) ([]models.GitHubApp, error) {
+	return nil, errStoreSecret
 }
 
-func TestGitHubAppsPutHidesStoreError(t *testing.T) {
+func (failingAppStore) GetGitHubApp(context.Context, string) (*models.GitHubApp, error) {
+	return nil, errStoreSecret
+}
+
+func (failingAppStore) PutGitHubApp(context.Context, *models.GitHubApp) error { return errStoreSecret }
+
+func (failingAppStore) DeleteGitHubApp(context.Context, string) error { return errStoreSecret }
+
+func TestGitHubAppsHideStoreErrors(t *testing.T) {
 	h := NewGitHubAppsHandler(failingAppStore{}, nil).Routes()
-	code, body := call(t, h, "PUT", "/ci", jsonBody(t, map[string]any{"app_id": 1, "installation_id": 2, "private_key": testAppKeyPEM(t)}))
-	if code != 500 || strings.Contains(body, "secret detail") {
-		t.Fatalf("PUT = %d %q; want 500 without the store error", code, body)
+	put := jsonBody(t, map[string]any{"app_id": 1, "installation_id": 2, "private_key": testAppKeyPEM(t)})
+	for _, c := range []struct{ method, path, body string }{
+		{"GET", "/", ""}, {"GET", "/ci", ""}, {"PUT", "/ci", put}, {"DELETE", "/ci", ""},
+	} {
+		code, body := call(t, h, c.method, c.path, c.body)
+		if code != 500 || strings.Contains(body, "secret detail") {
+			t.Errorf("%s %s = %d %q; want 500 without the store error", c.method, c.path, code, body)
+		}
 	}
 }

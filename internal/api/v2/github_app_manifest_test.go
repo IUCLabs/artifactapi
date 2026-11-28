@@ -72,8 +72,9 @@ func (m *memStates) advance(d time.Duration) {
 }
 
 type memApps struct {
-	mu   sync.Mutex
-	apps map[string]models.GitHubApp
+	mu         sync.Mutex
+	apps       map[string]models.GitHubApp
+	failCreate error
 }
 
 func (m *memApps) GetGitHubApp(_ context.Context, name string) (*models.GitHubApp, error) {
@@ -89,6 +90,9 @@ func (m *memApps) GetGitHubApp(_ context.Context, name string) (*models.GitHubAp
 func (m *memApps) CreateGitHubApp(_ context.Context, a *models.GitHubApp) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failCreate != nil {
+		return m.failCreate
+	}
 	if _, ok := m.apps[a.Name]; ok {
 		return database.ErrGitHubAppExists
 	}
@@ -103,6 +107,9 @@ func (m *memApps) SetGitHubAppInstallation(_ context.Context, name string, appID
 	a, ok := m.apps[name]
 	if !ok || a.AppID != appID {
 		return nil, database.ErrGitHubAppChanged
+	}
+	if a.InstallationID != 0 {
+		return nil, database.ErrGitHubAppInstalled
 	}
 	a.InstallationID = installationID
 	a.UpdatedAt = time.Now()
@@ -663,5 +670,93 @@ func TestManifestInstalledKeepsConcurrentEdit(t *testing.T) {
 	}
 	if got := f.apps.apps["ci"]; got.Description != "edited" || got.InstallationID != ownInstall {
 		t.Fatalf("concurrent edit reverted: %+v", got)
+	}
+}
+
+func TestManifestConvertStoreFailureNamesOrphan(t *testing.T) {
+	f := newManifestFixture(t)
+	start := f.start(t, "alice")
+	f.apps.failCreate = errors.New("db down")
+	code, body := f.post(t, "alice", "/manifest/convert", map[string]any{"code": "good", "state": start.State})
+	if code != http.StatusInternalServerError || !strings.Contains(body, "delete GitHub App artifactapi-ci and retry") {
+		t.Fatalf("convert with store down = %d %s", code, body)
+	}
+	if strings.Contains(body, "PRIVATE KEY") || strings.Contains(body, "db down") {
+		t.Fatalf("convert leaked internals: %s", body)
+	}
+}
+
+func TestManifestSecondInstallStateKeepsFirstInstallation(t *testing.T) {
+	f := newManifestFixture(t)
+	first := installStateOf(t, f.convert(t, "alice", f.start(t, "alice").State).InstallURL)
+	code, body := f.post(t, "alice", "/ci/install-url", nil)
+	if code != http.StatusOK {
+		t.Fatalf("install-url = %d %s", code, body)
+	}
+	second := installStateOf(t, decodeAs[manifestConvertResponse](t, body).InstallURL)
+	if code, body := f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": first}); code != http.StatusOK {
+		t.Fatalf("first installed = %d %s", code, body)
+	}
+	f.hooks.onInstall = func() {
+		a, _ := f.apps.GetGitHubApp(context.Background(), "ci")
+		a.InstallationID = 555
+		f.apps.set(*a)
+	}
+	code, body = f.post(t, "alice", "/manifest/installed", map[string]any{"installation_id": ownInstall, "state": second})
+	if code != http.StatusConflict || !strings.Contains(body, "already installed") {
+		t.Fatalf("second installed = %d %s, want 409 already installed", code, body)
+	}
+	if got := f.apps.apps["ci"].InstallationID; got != 555 {
+		t.Fatalf("installation_id = %d, want the existing 555 kept", got)
+	}
+}
+
+func TestManifestInstallLinkErrors(t *testing.T) {
+	f := newManifestFixture(t)
+	ghes := "https://" + f.ghHost + "/api/v3"
+	cases := []struct {
+		name string
+		app  *models.GitHubApp
+		path string
+		want int
+		body string
+	}{
+		{"unknown app", nil, "/missing/install-url", http.StatusNotFound, "not found"},
+		{"invalid name", nil, "/-bad/install-url", http.StatusBadRequest, "invalid github app name"},
+		{"already installed", &models.GitHubApp{Name: "ci", AppID: fakeAppID, InstallationID: ownInstall, APIBaseURL: ghes, PrivateKey: f.keyPEM}, "/ci/install-url", http.StatusConflict, "already installed"},
+		{"github lookup fails", &models.GitHubApp{Name: "ci", AppID: 7, APIBaseURL: ghes, PrivateKey: f.keyPEM}, "/ci/install-url", http.StatusBadGateway, "lookup failed"},
+		{"unsupported api base", &models.GitHubApp{Name: "ci", AppID: fakeAppID, APIBaseURL: "https://" + f.ghHost + "/api", PrivateKey: f.keyPEM}, "/ci/install-url", http.StatusBadRequest, "cannot build an install link"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			delete(f.apps.apps, "ci")
+			if c.app != nil {
+				f.apps.set(*c.app)
+			}
+			code, body := f.post(t, "alice", c.path, nil)
+			if code != c.want || !strings.Contains(body, c.body) {
+				t.Fatalf("install-url = %d %s, want %d %q", code, body, c.want, c.body)
+			}
+		})
+	}
+}
+
+func TestWebBaseFor(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://api.github.com":             "https://github.com",
+		"https://api.github.com/":            "https://github.com",
+		"https://ghe.example.com/api/v3":     "https://ghe.example.com",
+		"https://ghe.example.com/api/v3/":    "https://ghe.example.com",
+		"https://ghe.example.com":            "",
+		"https://ghe.example.com/api":        "",
+		"https://api.github.com/api/v3":      "",
+		"http://ghe.example.com/api/v3":      "",
+		"https://ghe.example.com/api/v3?x=1": "",
+		"::":                                 "",
+	} {
+		got, err := webBaseFor(in)
+		if got != want || (err == nil) != (want != "") {
+			t.Errorf("webBaseFor(%q) = %q, %v; want %q", in, got, err, want)
+		}
 	}
 }

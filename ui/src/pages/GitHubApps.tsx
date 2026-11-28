@@ -8,7 +8,7 @@ import './GitHubApps.css';
 
 function errorMessage(e: unknown): string {
   if (e instanceof APIError) {
-    if (e.status === 401) return 'Not authorised: paste a valid API token above and try again.';
+    if (e.status === 401) return 'Not authorised: paste a valid API write token above and try again.';
     if (e.status === 403) return 'This step was started by a different user; start again while signed in as yourself.';
     if (e.status === 409) return e.message.replace(/^409: /, '');
     if (/expired|already used/.test(e.message)) return 'This link has expired or was already used (each step is valid once, for 1 hour). Start again from the GitHub Apps page.';
@@ -21,12 +21,12 @@ function TokenField() {
   const [token, set] = useState(getToken());
   return (
     <div className="gha-row">
-      <label htmlFor="gha-token">API token</label>
+      <label htmlFor="gha-token">API write token</label>
       <input
         id="gha-token"
         className="search-input gha-input"
         type="password"
-        placeholder="OIDC bearer token (stopgap until UI login exists; only needed when writes require auth)"
+        placeholder="OIDC bearer token for all API writes in this tab (stopgap until UI login exists)"
         value={token}
         onChange={e => { set(e.target.value); setToken(e.target.value.trim()); }}
       />

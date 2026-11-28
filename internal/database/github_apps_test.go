@@ -174,4 +174,16 @@ func TestCreateGitHubAppUninstalled(t *testing.T) {
 	if again, _ := testDB.GetGitHubApp(ctx(), "manifest-app"); again.InstallationID != 1<<40 {
 		t.Fatalf("installation_id = %d", again.InstallationID)
 	}
+	if _, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-app", 7, 99); !errors.Is(err, ErrGitHubAppInstalled) {
+		t.Fatalf("second install err = %v, want ErrGitHubAppInstalled", err)
+	}
+	if _, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-app", 8, 99); !errors.Is(err, ErrGitHubAppChanged) {
+		t.Fatalf("second install with stale app_id err = %v, want ErrGitHubAppChanged", err)
+	}
+	if _, err := testDB.SetGitHubAppInstallation(ctx(), "manifest-missing", 7, 99); !errors.Is(err, ErrGitHubAppChanged) {
+		t.Fatalf("install on missing app err = %v, want ErrGitHubAppChanged", err)
+	}
+	if again, _ := testDB.GetGitHubApp(ctx(), "manifest-app"); again.InstallationID != 1<<40 {
+		t.Fatalf("installation_id after second install = %d", again.InstallationID)
+	}
 }

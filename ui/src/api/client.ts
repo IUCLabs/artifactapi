@@ -4,8 +4,8 @@ const BASE = '';
 
 const TOKEN_KEY = 'artifactapi.token';
 
-// Stopgap until the UI has its own login: a pasted write token lives in
-// sessionStorage so it survives the GitHub redirects of the manifest flow.
+// Stopgap until the UI has its own login: a pasted global API write token
+// lives in sessionStorage so it survives the GitHub redirects of the manifest flow.
 export function getToken(): string {
   try {
     return sessionStorage.getItem(TOKEN_KEY) ?? '';
@@ -27,7 +27,7 @@ export function clearToken() {
   setToken('');
 }
 
-// The token is only sent on same-origin API writes; reads never need it.
+// The global write token is sent on every same-origin API write; reads never need it.
 function authHeader(path: string, method: string): Record<string, string> {
   if (method === 'GET' || method === 'HEAD' || !path.startsWith('/api/v2/')) return {};
   const token = getToken();

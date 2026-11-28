@@ -98,13 +98,20 @@ var (
 // maxGitHubAppNameLen is GitHub's limit on an app's display name.
 const maxGitHubAppNameLen = 34
 
-// webBaseFor returns the web base URL of a stored app's API base URL.
-func webBaseFor(apiBase string) string {
+// webBaseFor returns the web base URL of a stored app's API base URL:
+// https://api.github.com or a GHES https://<host>/api/v3.
+func webBaseFor(apiBase string) (string, error) {
 	u, err := url.Parse(apiBase)
-	if err != nil || u.Host == "api.github.com" {
-		return "https://github.com"
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("api_base_url %q is not a GitHub API base URL", apiBase)
 	}
-	return "https://" + u.Host
+	switch path := strings.TrimSuffix(u.Path, "/"); {
+	case u.Host == "api.github.com" && path == "":
+		return "https://github.com", nil
+	case u.Host != "api.github.com" && path == "/api/v3":
+		return "https://" + u.Host, nil
+	}
+	return "", fmt.Errorf("api_base_url %q is neither https://api.github.com nor a GHES /api/v3 base; cannot build an install link", apiBase)
 }
 
 // githubEndpoints maps a web host to its web and API base URLs: github.com, or
@@ -404,8 +411,8 @@ func (h *GitHubAppManifestHandler) convert(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err != nil {
-		slog.Error("github app manifest: store app", "name", st.Name, "slug", conv.Slug, "err", err)
-		http.Error(w, "failed to store github app", http.StatusInternalServerError)
+		slog.Error("github app manifest: store app; delete the orphaned GitHub App", "name", st.Name, "slug", conv.Slug, "err", err)
+		http.Error(w, fmt.Sprintf("failed to store github app %q; delete GitHub App %s and retry", st.Name, conv.Slug), http.StatusInternalServerError)
 		return
 	}
 	slog.Info("github app created from manifest", "name", st.Name, "app_id", conv.ID, "slug", conv.Slug)
@@ -479,6 +486,10 @@ func (h *GitHubAppManifestHandler) installed(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	saved, err := h.store.SetGitHubAppInstallation(r.Context(), st.Name, st.AppID, req.InstallationID)
+	if errors.Is(err, database.ErrGitHubAppInstalled) {
+		http.Error(w, fmt.Sprintf("github app %q is already installed", st.Name), http.StatusConflict)
+		return
+	}
 	if errors.Is(err, database.ErrGitHubAppChanged) {
 		http.Error(w, fmt.Sprintf("github app %q was deleted or replaced since it was created", st.Name), http.StatusConflict)
 		return
@@ -512,6 +523,11 @@ func (h *GitHubAppManifestHandler) installLink(w http.ResponseWriter, r *http.Re
 		http.Error(w, fmt.Sprintf("github app %q is already installed", name), http.StatusConflict)
 		return
 	}
+	webBase, err := webBaseFor(app.APIBaseURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	key, err := githubauth.ParsePrivateKey(app.PrivateKey)
 	if err != nil {
 		slog.Error("github app manifest: stored key", "name", name, "err", err)
@@ -524,7 +540,6 @@ func (h *GitHubAppManifestHandler) installLink(w http.ResponseWriter, r *http.Re
 		http.Error(w, "GitHub app lookup failed", http.StatusBadGateway)
 		return
 	}
-	webBase := webBaseFor(app.APIBaseURL)
 	state, err := h.issueInstallState(r.Context(), manifestState{
 		Name: name, WebBase: webBase, APIBase: app.APIBaseURL, Subject: auth.Subject(r.Context()), AppID: app.AppID,
 	})

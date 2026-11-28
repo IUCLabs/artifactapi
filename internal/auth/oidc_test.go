@@ -95,6 +95,7 @@ func TestBearerOIDC(t *testing.T) {
 		{"garbage", "not.a.jwt", http.StatusUnauthorized},
 		{"bad signature", iss.Token(otherKey, "artifactapi", "ci", time.Hour), http.StatusUnauthorized},
 		{"wrong aud", iss.Token(nil, "nope", "ci", time.Hour), http.StatusUnauthorized},
+		{"empty sub", iss.Token(nil, "artifactapi", "", time.Hour), http.StatusUnauthorized},
 		{"expired", iss.Token(nil, "artifactapi", "ci", -time.Hour), http.StatusUnauthorized},
 		{"wrong iss", iss.Sign(nil, claims("https://evil.example")), http.StatusUnauthorized},
 		{"hs256", hs256Token(t, claims(iss.URL)), http.StatusUnauthorized},

@@ -25,6 +25,10 @@ var ErrGitHubAppExists = errors.New("github app already exists")
 // that name and app_id exists any more.
 var ErrGitHubAppChanged = errors.New("github app was deleted or replaced")
 
+// ErrGitHubAppInstalled is returned by SetGitHubAppInstallation when the app
+// already records an installation.
+var ErrGitHubAppInstalled = errors.New("github app is already installed")
+
 // GitHubAppInUseError is returned when deleting a GitHub App still referenced by remotes.
 type GitHubAppInUseError struct {
 	Name    string
@@ -170,15 +174,16 @@ func (db *DB) PutGitHubApp(ctx context.Context, a *models.GitHubApp) error {
 }
 
 // SetGitHubAppInstallation records installationID on the app only while it is
-// still name with appID, so a concurrent replace is never overwritten.
+// still name with appID and not yet installed, so neither a concurrent replace
+// nor an earlier installation is overwritten.
 func (db *DB) SetGitHubAppInstallation(ctx context.Context, name string, appID, installationID int64) (*models.GitHubApp, error) {
 	var a models.GitHubApp
 	err := scanGitHubApp(db.Pool.QueryRow(ctx, `
 		UPDATE github_apps SET installation_id = $3, updated_at = now()
-		WHERE name = $1 AND app_id = $2
+		WHERE name = $1 AND app_id = $2 AND installation_id IS NULL
 		RETURNING `+githubAppCols, name, appID, installationID), &a)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrGitHubAppChanged
+		return nil, db.installationConflict(ctx, name, appID)
 	}
 	if err != nil {
 		return nil, err
@@ -187,6 +192,21 @@ func (db *DB) SetGitHubAppInstallation(ctx context.Context, name string, appID, 
 		return nil, err
 	}
 	return &a, nil
+}
+
+func (db *DB) installationConflict(ctx context.Context, name string, appID int64) error {
+	var current int64
+	var installed bool
+	err := db.Pool.QueryRow(ctx, `SELECT app_id, installation_id IS NOT NULL FROM github_apps WHERE name = $1`, name).Scan(&current, &installed)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ErrGitHubAppChanged
+	case err != nil:
+		return err
+	case current == appID && installed:
+		return ErrGitHubAppInstalled
+	}
+	return ErrGitHubAppChanged
 }
 
 // DeleteGitHubApp removes an app, refusing with *GitHubAppInUseError while

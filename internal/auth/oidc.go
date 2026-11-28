@@ -157,6 +157,9 @@ func (b *BearerOIDC) verify(ctx context.Context, raw string) (string, error) {
 	if len(b.audiences) > 0 && !slices.ContainsFunc(tok.Audience, func(a string) bool { return slices.Contains(b.audiences, a) }) {
 		return "", fmt.Errorf("audience %v not allowed", tok.Audience)
 	}
+	if tok.Subject == "" {
+		return "", errors.New("token has no sub claim")
+	}
 	return tok.Subject, nil
 }
 

@@ -69,23 +69,25 @@ func newAppCredential(opts Options) (*appCredential, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newAppCredentialFromKey(opts.AppID, opts.InstallationID, key, opts.apiBaseURL, opts.httpClient), nil
+}
 
-	apiBase := opts.apiBaseURL
+// newAppCredentialFromKey builds an app credential from already-parsed values;
+// an empty apiBase uses api.github.com and a nil client a 30s default.
+func newAppCredentialFromKey(appID, installationID string, key *rsa.PrivateKey, apiBase string, client httpDoer) *appCredential {
 	if apiBase == "" {
 		apiBase = defaultAPIBase
 	}
-	client := opts.httpClient
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-
 	return &appCredential{
-		appID:          opts.AppID,
-		installationID: opts.InstallationID,
+		appID:          appID,
+		installationID: installationID,
 		key:            key,
 		apiBase:        strings.TrimRight(apiBase, "/"),
 		client:         client,
-	}, nil
+	}
 }
 
 // Token returns a cached installation token, refreshing it under a single-flight
@@ -175,6 +177,23 @@ func mintJWT(appID string, key *rsa.PrivateKey, now time.Time) (string, error) {
 
 func b64url(b []byte) string {
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// ParsePrivateKey parses a GitHub App PEM private key (PKCS#1 or PKCS#8 RSA).
+// Errors never include key material.
+func ParsePrivateKey(pemKey string) (*rsa.PrivateKey, error) {
+	return parseRSAPrivateKey([]byte(pemKey))
+}
+
+// Fingerprint is "SHA256:" + unpadded base64 of the SHA-256 of the key's
+// DER-encoded PKIX public key.
+func Fingerprint(key *rsa.PrivateKey) (string, error) {
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(der)
+	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:]), nil
 }
 
 // parseRSAPrivateKey accepts PKCS#1 ("RSA PRIVATE KEY") and PKCS#8 ("PRIVATE

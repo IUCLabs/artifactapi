@@ -666,19 +666,9 @@ func (p *GitHubProvider) githubHeaders(ctx context.Context, remote models.Remote
 	return h, nil
 }
 
-// githubToken resolves the bearer token for a remote. Precedence: a per-remote
-// credential (password, then username) overrides the server credential.
+// githubToken resolves the bearer token for a remote; see githubauth.RemoteToken.
 func (p *GitHubProvider) githubToken(ctx context.Context, remote models.Remote) (string, error) {
-	if remote.Password != "" {
-		return remote.Password, nil
-	}
-	if remote.Username != "" {
-		return remote.Username, nil
-	}
-	if c := p.serverCredential(); c != nil {
-		return c.Token(ctx)
-	}
-	return "", nil
+	return githubauth.RemoteToken(ctx, githubauth.AppRegistry(), remote, p.serverCredential())
 }
 
 func (p *GitHubProvider) serverCredential() githubauth.Credential {

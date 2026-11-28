@@ -80,6 +80,7 @@ func New(cfg *config.Config, version string) (*Server, error) {
 		return nil, fmt.Errorf("github auth: %w", err)
 	}
 	githubauth.SetServer(ghCred)
+	githubauth.SetApps(githubauth.NewApps(db, cfg.GitHubAppAPIHosts))
 	if ghCred != nil {
 		slog.Info("github machine credential configured")
 	}
@@ -198,6 +199,7 @@ func (s *Server) routes() chi.Router {
 		r.Mount("/remotes", writeAuth.RequireWrites(remotesHandler.Routes()))
 		r.Mount("/virtuals", writeAuth.RequireWrites(virtualsHandler.Routes()))
 		r.Mount("/settings", writeAuth.RequireWrites(settingsHandler.Routes()))
+		r.Mount("/github-apps", writeAuth.RequireWrites(v2.NewGitHubAppsHandler(s.db, s.cfg.GitHubAppAPIHosts).Routes()))
 		r.Mount("/health", healthHandler.Routes())
 		r.Mount("/stats", statsHandler.Routes())
 		r.Mount("/events", eventsHandler.Routes())

@@ -3,8 +3,8 @@ package generic
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"net/http"
-	"net/url"
 	"path"
 	"strings"
 
@@ -57,17 +57,28 @@ func (p *Provider) UpstreamURL(remote models.Remote, reqPath string) string {
 	return base + "/" + strings.TrimLeft(reqPath, "/")
 }
 
-// AuthHeaders authenticates outbound requests. A per-remote username/password
-// (Basic auth) takes precedence. Otherwise, when the remote points at a GitHub
-// host (e.g. a releases_remote proxying private release assets), the process-wide
-// GitHub credential is attached as a bearer token so private downloads work.
+// AuthHeaders authenticates outbound requests. A remote github_app wins (and
+// errors on a non-GitHub host rather than falling through), then a per-remote username/password (Basic auth), then the
+// process-wide GitHub credential for GitHub hosts so private downloads work.
 func (p *Provider) AuthHeaders(ctx context.Context, remote models.Remote) (http.Header, error) {
 	h := http.Header{}
+	github := IsGitHubHost(remote.BaseURL)
+	if remote.GitHubApp != "" {
+		if !github {
+			return nil, fmt.Errorf("remote %q: github_app %q set on non-GitHub base_url", remote.Name, remote.GitHubApp)
+		}
+		tok, err := githubauth.AppToken(ctx, githubauth.AppRegistry(), remote.GitHubApp)
+		if err != nil {
+			return nil, err
+		}
+		h.Set("Authorization", "Bearer "+tok)
+		return h, nil
+	}
 	if remote.Username != "" {
 		h.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(remote.Username+":"+remote.Password)))
 		return h, nil
 	}
-	if IsGitHubHost(remote.BaseURL) {
+	if github {
 		if c := githubauth.Server(); c != nil {
 			tok, err := c.Token(ctx)
 			if err != nil {
@@ -81,18 +92,6 @@ func (p *Provider) AuthHeaders(ctx context.Context, remote models.Remote) (http.
 	return h, nil
 }
 
-// IsGitHubHost reports whether rawURL targets a GitHub API/download host that
-// accepts the server credential. objects.githubusercontent.com is deliberately
-// excluded: release-asset downloads 302-redirect there with a pre-signed URL
-// that must not carry an Authorization header.
-func IsGitHubHost(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(u.Hostname()) {
-	case "github.com", "www.github.com", "api.github.com", "codeload.github.com", "uploads.github.com":
-		return true
-	}
-	return false
-}
+// IsGitHubHost reports whether rawURL targets a GitHub host that accepts a
+// GitHub credential; see models.IsGitHubHost.
+func IsGitHubHost(rawURL string) bool { return models.IsGitHubHost(rawURL) }

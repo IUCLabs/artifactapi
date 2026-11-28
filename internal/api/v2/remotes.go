@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -112,8 +113,11 @@ func (h *RemotesHandler) create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !h.validateGitHubApp(w, r, &remote) {
+		return
+	}
 	if err := h.db.CreateRemote(r.Context(), &remote); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeRemoteWriteError(w, err)
 		return
 	}
 	// Prime a metadata-only remote (github_rpm/github_deb) in the background so
@@ -175,8 +179,11 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if !h.validateGitHubApp(w, r, &remote) {
+		return
+	}
 	if err := h.db.UpdateRemote(r.Context(), &remote); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeRemoteWriteError(w, err)
 		return
 	}
 	// Changing the backend invalidates any cached mutable metadata (repodata /
@@ -193,6 +200,37 @@ func (h *RemotesHandler) update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, remote)
+}
+
+// validateGitHubApp writes a 400 and returns false when the remote's
+// github_app is misplaced or names a missing app.
+func (h *RemotesHandler) validateGitHubApp(w http.ResponseWriter, r *http.Request, remote *models.Remote) bool {
+	if err := remote.ValidateGitHubApp(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return false
+	}
+	if remote.GitHubApp == "" {
+		return true
+	}
+	_, err := h.db.GitHubAppUpdatedAt(r.Context(), remote.GitHubApp)
+	if errors.Is(err, database.ErrGitHubAppNotFound) {
+		http.Error(w, fmt.Sprintf("github_app %q does not exist", remote.GitHubApp), http.StatusBadRequest)
+		return false
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return false
+	}
+	return true
+}
+
+// writeRemoteWriteError maps a github_app deleted mid-request to a 400.
+func writeRemoteWriteError(w http.ResponseWriter, err error) {
+	if database.IsForeignKeyViolation(err) {
+		http.Error(w, "github_app does not exist", http.StatusBadRequest)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusInternalServerError)
 }
 
 func (h *RemotesHandler) del(w http.ResponseWriter, r *http.Request) {

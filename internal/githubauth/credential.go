@@ -1,8 +1,8 @@
-// Package githubauth provides the process-wide GitHub machine credential used to
-// authenticate every outbound GitHub request (releases scan, ranged asset header
-// fetches, and the generic-github byte proxy for private assets). The credential
-// is delivered via env/secret only — it is never stored per-remote in the DB,
-// never returned by any API, and never logged.
+// Package githubauth provides the GitHub credentials used to authenticate
+// outbound GitHub requests (releases scan, ranged asset header fetches, and the
+// generic-github byte proxy for private assets): a process-wide credential from
+// env, and API-managed GitHub Apps that remotes reference by name. Credentials
+// are never returned by any API and never logged.
 package githubauth
 
 import (

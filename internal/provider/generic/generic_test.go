@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/IUCLabs/artifactapi/internal/githubauth"
+	"github.com/IUCLabs/artifactapi/internal/githubauth/githubauthtest"
 	"github.com/IUCLabs/artifactapi/internal/provider"
 	"github.com/IUCLabs/artifactapi/internal/provider/generic"
 	"github.com/IUCLabs/artifactapi/pkg/models"
@@ -110,5 +111,23 @@ func TestProvider_AuthHeaders_NoAuth(t *testing.T) {
 	h, _ := p.AuthHeaders(context.Background(), models.Remote{})
 	if h.Get("Authorization") != "" {
 		t.Error("expected no auth header")
+	}
+}
+
+func TestProvider_AuthHeaders_GitHubAppWins(t *testing.T) {
+	githubauthtest.InstallApp(t, "ci", "ghs_app")
+	githubauth.SetServer(staticCred("ghs_server"))
+	t.Cleanup(func() { githubauth.SetServer(nil) })
+
+	p := &generic.Provider{}
+	h, err := p.AuthHeaders(context.Background(), models.Remote{BaseURL: "https://github.com", GitHubApp: "ci"})
+	if err != nil || h.Get("Authorization") != "Bearer ghs_app" {
+		t.Fatalf("Authorization = %q, %v; want Bearer ghs_app", h.Get("Authorization"), err)
+	}
+	if _, err := p.AuthHeaders(context.Background(), models.Remote{BaseURL: "https://github.com", GitHubApp: "gone"}); err == nil {
+		t.Fatal("missing github_app must fail rather than fall back to the server credential")
+	}
+	if h, err := p.AuthHeaders(context.Background(), models.Remote{BaseURL: "https://example.com", GitHubApp: "ci"}); err == nil {
+		t.Fatalf("github_app on a non-GitHub host must fail, got Authorization %q", h.Get("Authorization"))
 	}
 }

@@ -67,6 +67,10 @@ type Config struct {
 	GitHubAppPrivateKey     string
 	GitHubAppPrivateKeyPath string
 
+	// GitHubAppAPIHosts are extra hostnames (GHES) an API-managed GitHub App's
+	// api_base_url may target besides api.github.com.
+	GitHubAppAPIHosts []string
+
 	// Bearer-JWT auth on configuration writes; empty issuer disables it.
 	OIDCIssuer    string
 	OIDCAudiences []string
@@ -141,6 +145,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid ARTIFACTAPI_AUTH_UPLOADS: %w", err)
 	}
+	apiHosts, err := splitHosts(getenv("GITHUB_APP_API_HOSTS", ""))
+	if err != nil {
+		return nil, fmt.Errorf("invalid GITHUB_APP_API_HOSTS: %w", err)
+	}
 	if authUploads && oidcIssuer == "" {
 		return nil, fmt.Errorf("ARTIFACTAPI_OIDC_ISSUER is required when ARTIFACTAPI_AUTH_UPLOADS is set")
 	}
@@ -183,6 +191,7 @@ func Load() (*Config, error) {
 		GitHubAppInstallationID: getenv("GITHUB_APP_INSTALLATION_ID", ""),
 		GitHubAppPrivateKey:     getenv("GITHUB_APP_PRIVATE_KEY", ""),
 		GitHubAppPrivateKeyPath: getenv("GITHUB_APP_PRIVATE_KEY_PATH", ""),
+		GitHubAppAPIHosts:       apiHosts,
 
 		OIDCIssuer:    oidcIssuer,
 		OIDCAudiences: oidcAudiences,
@@ -205,4 +214,21 @@ func wholeMillis(key, def string) (time.Duration, error) {
 		return 0, fmt.Errorf("invalid %s: must be a duration in whole milliseconds", key)
 	}
 	return d, nil
+}
+
+// splitHosts parses a comma-separated list of bare hostnames or host:port
+// entries, lowercased, blanks dropped; any other entry is an error.
+func splitHosts(v string) ([]string, error) {
+	var hosts []string
+	for _, h := range strings.Split(v, ",") {
+		if strings.TrimSpace(h) == "" {
+			continue
+		}
+		host, err := models.ParseGitHubAPIHost(h)
+		if err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/IUCLabs/artifactapi/internal/keycrypt"
 	"github.com/IUCLabs/artifactapi/pkg/models"
 )
 
@@ -70,6 +71,9 @@ type Config struct {
 	// GitHubAppAPIHosts are extra hostnames (GHES) an API-managed GitHub App's
 	// api_base_url may target besides api.github.com.
 	GitHubAppAPIHosts []string
+
+	// GitHubAppKeyEncryption seals API-managed GitHub App private keys at rest.
+	GitHubAppKeyEncryption keycrypt.Config
 
 	// Bearer-JWT auth on configuration writes; empty issuer disables it.
 	OIDCIssuer    string
@@ -149,6 +153,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid GITHUB_APP_API_HOSTS: %w", err)
 	}
+	keyEnc, err := keycrypt.ConfigFromEnv(getenv)
+	if err != nil {
+		return nil, err
+	}
 	if authUploads && oidcIssuer == "" {
 		return nil, fmt.Errorf("ARTIFACTAPI_OIDC_ISSUER is required when ARTIFACTAPI_AUTH_UPLOADS is set")
 	}
@@ -192,6 +200,7 @@ func Load() (*Config, error) {
 		GitHubAppPrivateKey:     getenv("GITHUB_APP_PRIVATE_KEY", ""),
 		GitHubAppPrivateKeyPath: getenv("GITHUB_APP_PRIVATE_KEY_PATH", ""),
 		GitHubAppAPIHosts:       apiHosts,
+		GitHubAppKeyEncryption:  keyEnc,
 
 		OIDCIssuer:    oidcIssuer,
 		OIDCAudiences: oidcAudiences,

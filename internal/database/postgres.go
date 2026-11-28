@@ -7,6 +7,7 @@ import (
 
 	"github.com/IUCLabs/golib/pg"
 
+	"github.com/IUCLabs/artifactapi/internal/keycrypt"
 	"github.com/IUCLabs/artifactapi/migrations"
 )
 
@@ -17,6 +18,18 @@ const migrationLockName = "artifactapi-migrations"
 
 type DB struct {
 	Pool *pgxpool.Pool
+	keys keycrypt.Cipher
+}
+
+// SetKeyCipher sets how GitHub App private keys are sealed at rest. Call
+// before use; unset means plaintext (keycrypt.None).
+func (db *DB) SetKeyCipher(c keycrypt.Cipher) { db.keys = c }
+
+func (db *DB) keyCipher() keycrypt.Cipher {
+	if db.keys == nil {
+		return keycrypt.None{}
+	}
+	return db.keys
 }
 
 func New(dsn string) (*DB, error) {

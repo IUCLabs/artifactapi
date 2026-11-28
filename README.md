@@ -157,6 +157,22 @@ data "artifactapi_github_app" "ci" {
 github_app = data.artifactapi_github_app.ci.name
 ```
 
+##### Private key encryption
+
+`GITHUB_APP_KEY_ENCRYPTION` seals stored app private keys: `static` uses
+AES-256-GCM (random nonce, app name as AAD) under
+`GITHUB_APP_KEY_ENCRYPTION_KEY`; `transit` uses Vault transit via Kubernetes
+auth. Values are stored as `enc:v1:<mode>:…`; unprefixed values are legacy
+plaintext. At startup every key is decrypted into the credential cache and any
+failure names the app and stops the server; with encryption on, legacy rows
+are encrypted in place under an advisory lock. Changing mode or rotating the
+static key is not supported in place: a server only decrypts its own mode, so
+startup fails until the previous config is restored.
+
+Transit needs a transit key, a policy granting `update` on
+`<mount>/encrypt/<key>` and `<mount>/decrypt/<key>`, and a Kubernetes auth role
+bound to the artifactapi service account with that policy.
+
 ## Terraform
 
 Remotes and virtuals are managed by Terraform. Each package type has its own resource; see `docs/<type>/` for examples.
@@ -281,6 +297,15 @@ additive and idempotent for the same reason; a test enforces it.
 | `GITHUB_APP_PRIVATE_KEY` | | GitHub App private key, inline PEM |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | | GitHub App private key, file path (alternative to inline PEM) |
 | `GITHUB_APP_API_HOSTS` | | Comma-separated GHES hosts an API-managed GitHub App's `api_base_url` may use besides `api.github.com` (default port only). Each entry is a bare hostname (default port only) or `host:port`; schemes, paths and trailing dots fail startup. Other hosts are rejected with `400` on PUT and refused for stored apps |
+| `GITHUB_APP_KEY_ENCRYPTION` | `none` | Encryption at rest for API-managed GitHub App private keys: `none`, `static` or `transit`. Invalid or partial config fails startup. See [Private key encryption](#private-key-encryption) |
+| `GITHUB_APP_KEY_ENCRYPTION_KEY` | | `static` mode key: base64 of exactly 32 bytes |
+| `VAULT_ADDR` | | `transit` mode: Vault address |
+| `VAULT_K8S_ROLE` | | `transit` mode: Vault Kubernetes auth role (required) |
+| `VAULT_K8S_MOUNT` | `kubernetes` | `transit` mode: Kubernetes auth mount |
+| `VAULT_K8S_TOKEN_PATH` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | `transit` mode: service account JWT, re-read on every login |
+| `VAULT_TRANSIT_MOUNT` | `transit` | `transit` mode: transit engine mount |
+| `VAULT_TRANSIT_KEY` | | `transit` mode: transit key name (required) |
+| `VAULT_CACERT` | | `transit` mode: CA bundle for Vault TLS |
 | `ARTIFACTAPI_OIDC_ISSUER` | | OIDC issuer URL (e.g. Vault `https://vault.example.com/v1/identity/oidc`). When set, `POST /api/v2/remotes`, `POST /api/v2/virtuals`, `PUT`/`DELETE` on `/api/v2/{remotes,virtuals}/{name}` `PUT`/`PATCH`/`DELETE /api/v2/settings` and `PUT`/`DELETE /api/v2/github-apps/{name}` require a token verified against the issuer's JWKS. Unset = no auth. See [docs/common/auth.md](docs/common/auth.md) |
 | `ARTIFACTAPI_OIDC_AUDIENCE` | | Comma-separated allowed `aud` values (e.g. the Vault OIDC role's client_id). Required when `ARTIFACTAPI_OIDC_ISSUER` is set |
 | `ARTIFACTAPI_AUTH_UPLOADS` | `false` | Also require a token for every local repo write: file uploads/deletes, object evictions, `/api/v1/local` publishes and `/v2` push. Requires `ARTIFACTAPI_OIDC_ISSUER` |
